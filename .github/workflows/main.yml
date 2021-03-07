@@ -13,5 +13,21 @@ jobs:
 
       - name: Build
         run: |
-          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk-bundle"
-          $ANDROID_NDK_HOME/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=./Android.mk
+          sudo apt install -y meson libx11-dev libvulkan1 libvulkan-dev
+          pip3 install mako
+          meson build-android-aarch64 \
+            --prefix=/tmp/zink \
+            -Dplatforms=x11 \
+            -Dllvm=disabled \
+            -Dgbm=disabled \
+            -Dopengl=true \
+            -Dvulkan-drivers= \
+            -Dgallium-drivers=zink
+          ## disable swrast for libGL fixme
+          ninja -C build-android-aarch64 install
+          cp build-android-aarch64/src/gallium/drivers/zink/libzink.a /tmp/zink/lib/
+      - name: Upload libraries
+        uses: actions/upload-artifact@v2
+        with:
+          name: libzink
+          path: /tmp/zink
