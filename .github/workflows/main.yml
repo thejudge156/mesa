@@ -13,7 +13,7 @@ jobs:
 
       - name: Build
         run: |
-          sudo apt install -y meson libxcb-glx0-dev libxfixes-dev libdrm-dev libx11-dev libvulkan1 libvulkan-dev
+          sudo apt install -y meson libxrandr-dev libxxf86vm-dev libxshmfence-dev libxcb-*-dev libx11-xcb-dev libxfixes-dev libdrm-dev libx11-dev libvulkan1 libvulkan-dev
           pip3 install mako
           meson build-android-aarch64 \
             --prefix=/tmp/zink \
