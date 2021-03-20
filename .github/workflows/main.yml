@@ -25,7 +25,7 @@ jobs:
             --cross-file ios-aarch64 \
             -Dllvm=disabled \
             -Dxlib-lease=disabled \
-            -Degl=enabled \
+            -Degl=disabled \
             -Dgbm=disabled \
             -Dglx=dri \
             -Dglx-direct=true \
