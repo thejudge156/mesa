@@ -35,11 +35,7 @@
 
 #if defined(__APPLE__)
 // Source of MVK_VERSION
-#if defined(__OBJC__)
-#import "MoltenVK/vk_mvk_moltenvk.h"
-#else
 #include "MoltenVK/vk_mvk_moltenvk.h"
-#endif
 #endif
 
 extern uint32_t zink_debug;
