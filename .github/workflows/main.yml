@@ -20,6 +20,7 @@ jobs:
           # cp -R /usr/include/GL/* include/GL/
           pip3 install mako
           # -Dglx=gallium-xlib \
+          # -Dglx=dri
           meson build-ios-aarch64 \
             --prefix=/tmp/zink \
             --cross-file ios-aarch64 \
@@ -27,7 +28,7 @@ jobs:
             -Dxlib-lease=disabled \
             -Degl=disabled \
             -Dgbm=disabled \
-            -Dglx=dri \
+            -Dglx=disabled \
             -Dglx-direct=true \
             -Dopengl=true \
             -Dvulkan-drivers= \
