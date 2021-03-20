@@ -1,4 +1,4 @@
 Name: vulkan
 Description: MoltenVK library
 Version: 1.2
-Libs: -FFrameworks -framework MoltenVK
+Libs: -L. -lMoltenVK
