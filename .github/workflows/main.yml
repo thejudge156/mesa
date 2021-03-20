@@ -13,7 +13,7 @@ jobs:
 
       - name: Build iOS
         run: |
-          brew install meson
+          brew install meson pkg-config
           # sudo apt install -y meson libxrandr-dev libxxf86vm-dev libxshmfence-dev libxcb-*-dev libx11-xcb-dev libxfixes-dev libdrm-dev libx11-dev
           # cp -R /usr/include/X11 include/
           # cp -R /usr/include/xcb include/
