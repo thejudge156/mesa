@@ -997,8 +997,10 @@ zink_internal_setup_moltenvk(struct zink_screen *screen)
 
    GET_PROC_ADDR_INSTANCE(GetPhysicalDeviceMetalFeaturesMVK);
    GET_PROC_ADDR_INSTANCE(GetVersionStringsMVK);
+#if 0 // skip objc methods
    GET_PROC_ADDR_INSTANCE(UseIOSurfaceMVK);
    GET_PROC_ADDR_INSTANCE(GetIOSurfaceMVK);
+#endif
 
    if (screen->vk_GetVersionStringsMVK) {
       char molten_version[64] = {0};
