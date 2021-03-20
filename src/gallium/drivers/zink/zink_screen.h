@@ -109,10 +109,8 @@ struct zink_screen {
 
    PFN_vkGetPhysicalDeviceMetalFeaturesMVK vk_GetPhysicalDeviceMetalFeaturesMVK;
    PFN_vkGetVersionStringsMVK vk_GetVersionStringsMVK;
-#if 0 // skip them
    PFN_vkUseIOSurfaceMVK vk_UseIOSurfaceMVK;
    PFN_vkGetIOSurfaceMVK vk_GetIOSurfaceMVK;
-#endif
 #endif
 };
 
