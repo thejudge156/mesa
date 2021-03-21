@@ -25,7 +25,6 @@ if with_dri_platform == 'windows'
   subdir('windows')
 endif
 
-if not with_platform_android and host_machine.system() != 'darwin'
 files_libglx = files(
   'clientattrib.c',
   'clientinfo.c',
@@ -73,8 +72,8 @@ files_libglx = files(
   'vertarr.c',
   'xfont.c',
 )
-else
-files_libglx = files('eval.c')
+
+if with_platform_android or host_machine.system() == 'darwin'
 dep_xdamage = null_dep
 endif
 
@@ -133,7 +132,7 @@ gl_lib_cargs = [
 
 libglx = static_library(
   'glx',
-  not with_platform_android and host_machine.system() != 'darwin' ? [files_libglx, glx_generated] : [],
+  not with_platform_android and host_machine.system() != 'darwin' ? [files_libglx, glx_generated] : files('eval.c'),
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_glapi, inc_loader],
   c_args : [
     gl_lib_cargs,
