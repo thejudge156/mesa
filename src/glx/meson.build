@@ -154,7 +154,6 @@ libglx = static_library(
 libgl = shared_library(
   gl_lib_name,
   [],
-  c_args : host_machine.system() == 'darwin' ? ['-undefined', 'dynamic_lookup'] : [],
   link_with : [libglapi],
   link_whole : [
     libglx, libglapi_static, libdricommon, libmegadriver_stub,
