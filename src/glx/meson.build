@@ -74,7 +74,7 @@ files_libglx = files(
   'xfont.c',
 )
 else
-files_libglx = files()
+files_libglx = files('eval.c')
 dep_xdamage = null_dep
 endif
 
