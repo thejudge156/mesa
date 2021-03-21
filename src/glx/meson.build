@@ -25,6 +25,7 @@ if with_dri_platform == 'windows'
   subdir('windows')
 endif
 
+if not with_platform_android
 files_libglx = files(
   'clientattrib.c',
   'clientinfo.c',
@@ -72,6 +73,9 @@ files_libglx = files(
   'vertarr.c',
   'xfont.c',
 )
+else
+files_libglx = files()
+endif
 
 extra_libs_libglx = []
 extra_deps_libgl = []
@@ -128,7 +132,7 @@ gl_lib_cargs = [
 
 libglx = static_library(
   'glx',
-  [files_libglx, glx_generated],
+  not with_platform_android ? [files_libglx, glx_generated] : [],
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_glapi, inc_loader],
   c_args : [
     gl_lib_cargs,
@@ -145,15 +149,19 @@ libglx = static_library(
   ],
 )
 
+# link_with : [libglapi],
+# libwsw, libswdri, libswkmsdri, libws_null,
 libgl = shared_library(
   gl_lib_name,
   [],
-  link_with : [libglapi_static, libglapi],
-  link_whole : libglx,
+  link_with : [libglapi],
+  link_whole : [
+    libglx, libglapi_static, libdricommon, libmegadriver_stub,
+  ],
   link_args : [ld_args_bsymbolic, ld_args_gc_sections, extra_ld_args_libgl],
   dependencies : [
     dep_libdrm, dep_dl, dep_m, dep_thread, dep_x11, dep_xcb_glx, dep_xcb,
-    dep_x11_xcb, dep_xcb_dri2, dep_xext, dep_xfixes, dep_xxf86vm,
+    dep_x11_xcb, dep_xcb_dri2, dep_xext, dep_xfixes, dep_xdamage, dep_xxf86vm,
     dep_xcb_shm, extra_deps_libgl,
   ],
   version : gl_lib_version,
