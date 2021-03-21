@@ -24,7 +24,6 @@ jobs:
           mkdir build && cd build
           meson ../build-ios-aarch64 \
             --prefix="" \
-            --root=.. \
             --cross-file ../ios-aarch64 \
             -Db_lundef=false \
             -Dllvm=disabled \
