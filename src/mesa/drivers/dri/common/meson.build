@@ -27,6 +27,7 @@ libdricommon = static_library(
   gnu_symbol_visibility : 'hidden',
   dependencies : [dep_libdrm, idep_mesautil],
   build_by_default : false,
+  link_with : libmesa_common,
 )
 
 libmegadriver_stub = static_library(
