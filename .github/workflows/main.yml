@@ -19,7 +19,7 @@ jobs:
           # cp -R /usr/include/xcb include/
           # cp -R /usr/include/GL/* include/GL/
           cp -R /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks/OpenGL.framework/Headers/* \
-             /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/usr/include/
+            include/
           pip3 install mako
           # -Dglx=gallium-xlib \
           # -Dglx=dri
