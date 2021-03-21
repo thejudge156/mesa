@@ -75,6 +75,7 @@ files_libglx = files(
 )
 else
 files_libglx = files()
+dep_xdamage = null_dep
 endif
 
 extra_libs_libglx = []
