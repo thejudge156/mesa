@@ -21,9 +21,11 @@ jobs:
           pip3 install mako
           # -Dglx=gallium-xlib \
           # -Dglx=dri
-          meson build-ios-aarch64 \
-            --prefix=/tmp/zink \
-            --cross-file ios-aarch64 \
+          mkdir build && cd build
+          meson ../build-ios-aarch64 \
+            --prefix="" \
+            --root=.. \
+            --cross-file ../ios-aarch64 \
             -Db_lundef=false \
             -Dllvm=disabled \
             -Dxlib-lease=disabled \
@@ -35,9 +37,10 @@ jobs:
             -Dvulkan-drivers= \
             -Dgallium-drivers=zink
           ninja -C build-ios-aarch64 install
-          cp build-ios-aarch64/src/gallium/drivers/zink/libzink.a /tmp/zink/lib/
+          cd ..
+          cp build-ios-aarch64/src/gallium/drivers/zink/libzink.a build/lib/
       - name: Upload libraries
         uses: actions/upload-artifact@v2
         with:
           name: libzink
-          path: /tmp/zink
+          path: build
