@@ -37,7 +37,6 @@ jobs:
             -Dandroid-stub=true \
             -Dllvm=disabled \
             -Dxlib-lease=disabled \
-            -Dosmesa=enabled \
             -Degl=disabled \
             -Dgbm=disabled \
             -Dglx=dri \
