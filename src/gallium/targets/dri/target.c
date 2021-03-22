@@ -9,7 +9,7 @@ PUBLIC const __DRIextension **__driDriverGetExtensions_##drivername(void) \
 {                                                                         \
    //globalDriverAPI = &galliumdrm_driver_api;                              \
    //return galliumdrm_driver_extensions;                                   \
-   printf("STUB: __driDriverGetExtensions");
+   printf("STUB: __driDriverGetExtensions\n");
    return NULL; \
 }
 
