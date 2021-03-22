@@ -3,13 +3,17 @@
 
 #include "dri_screen.h"
 
+/*
+
+   globalDriverAPI = &galliumdrm_driver_api;                              \
+   return galliumdrm_driver_extensions;                                  \
+*/
+
 #define DEFINE_LOADER_DRM_ENTRYPOINT(drivername)                          \
 const __DRIextension **__driDriverGetExtensions_##drivername(void);       \
 PUBLIC const __DRIextension **__driDriverGetExtensions_##drivername(void) \
 {                                                                         \
-   //globalDriverAPI = &galliumdrm_driver_api;                              \
-   //return galliumdrm_driver_extensions;                                   \
-   printf("STUB: __driDriverGetExtensions\n");
+   printf("STUB: __driDriverGetExtensions\n"); \
    return NULL; \
 }
 
