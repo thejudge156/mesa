@@ -37,7 +37,6 @@ if with_ld_dynamic_list
   gallium_dri_link_depends += files('../dri-vdpau.dyn')
 endif
 
-# libdricommon
 libgallium_dri = shared_library(
   'gallium_dri',
   files('target.c'),
@@ -49,7 +48,7 @@ libgallium_dri = shared_library(
   link_args : [ld_args_build_id, ld_args_gc_sections, gallium_dri_ld_args],
   link_depends : gallium_dri_link_depends,
   link_whole : [
-    libdri, libmesa_gallium, libmegadriver_stub, libgalliumvl,
+    libdri, libmesa_gallium, libdricommon, libmegadriver_stub, libgalliumvl,
     libgallium, libglapi, libpipe_loader_static, libws_null, libwsw, libswdri,
     libswkmsdri,
   ],
