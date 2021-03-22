@@ -1,4 +1,0 @@
-Name: libdrm
-Description: Fake libdrm library
-Version: 2.4.81
-Libs: 
