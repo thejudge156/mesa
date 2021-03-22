@@ -380,6 +380,9 @@ if with_glx == 'dri'
    endif
 endif
 
+# mobile: disable DRI anyways
+with_dri = false
+
 if not (with_dri or with_gallium or with_glx != 'disabled')
   with_gles1 = false
   with_gles2 = false
