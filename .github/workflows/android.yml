@@ -42,7 +42,7 @@ jobs:
             -Dglx=dri \
             -Dglx-direct=true \
             -Dopengl=true \
-            -Dosmesa=gallium \
+            -Dosmesa=true \
             -Dvulkan-drivers= \
             -Dgallium-drivers=swrast,zink
           ninja -C "build-android-${{matrix.arch}}" install
