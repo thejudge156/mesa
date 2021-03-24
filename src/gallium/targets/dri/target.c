@@ -23,8 +23,10 @@ const __DRIextension **__driDriverGetExtensions_swrast(void);
 
 PUBLIC const __DRIextension **__driDriverGetExtensions_swrast(void)
 {
-   globalDriverAPI = &galliumsw_driver_api;
-   return galliumsw_driver_extensions;
+   // globalDriverAPI = &galliumsw_driver_api;
+   // return galliumsw_driver_extensions;
+   printf("STUB: __driDriverGetExtensions_swrast\n");
+   return NULL;
 }
 
 #if defined(HAVE_LIBDRM)
