@@ -750,7 +750,7 @@ libmesa_gallium = static_library(
   files_libmesa_gallium,
   c_args : [c_msvc_compat_args, _mesa_windows_args],
   cpp_args : [cpp_msvc_compat_args, _mesa_windows_args],
-  gnu_symbol_visibility : 'hidden',
+  gnu_symbol_visibility : 'default',
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_libmesa_asm, include_directories('main')],
   link_with : [libmesa_common, libglsl, libmesa_sse41],
   dependencies : [idep_nir_headers, dep_vdpau, idep_mesautil],
