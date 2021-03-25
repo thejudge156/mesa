@@ -912,9 +912,9 @@ if cc.get_define('ETIME', prefix : '#include <errno.h>') == ''
 endif
 
 # Define DEBUG for debug builds only (debugoptimized is not included on this one)
-# if get_option('buildtype') == 'debug'
+if get_option('buildtype') == 'debug'
   pre_args += '-DDEBUG'
-# endif
+endif
 
 with_shader_cache = false
 _shader_cache = get_option('shader-cache')
