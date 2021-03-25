@@ -25,7 +25,6 @@ jobs:
           meson build-ios-aarch64 \
             --prefix="/tmp/zink" \
             --cross-file ios-aarch64 \
-            --buildtype debug \
             -Db_lundef=false \
             -Dllvm=disabled \
             -Dxlib-lease=disabled \
