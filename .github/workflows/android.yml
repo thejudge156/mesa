@@ -32,7 +32,6 @@ jobs:
           meson "build-android-${{matrix.arch}}" \
             --prefix=/tmp/zink \
             --cross-file "android-${{matrix.arch}}" \
-            --buildtype debug \
             -Dplatforms=android \
             -Dplatform-sdk-version=26 \
             -Dandroid-stub=true \
