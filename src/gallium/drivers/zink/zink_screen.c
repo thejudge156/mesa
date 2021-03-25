@@ -892,6 +892,7 @@ load_device_extensions(struct zink_screen *screen)
       // Android patch: don't fail if GET_PROC_ADDR fails, just skip this instead
       if (!load_attempt_KHR_draw_indirect_count(screen)) {
          screen->info.have_KHR_draw_indirect_count = false;
+         debug_printf("ZINK: can't load KHR_draw_indirect_count, extv=%i",screen->info.have_KHR_draw_indirect_count);
       }
    }
 
