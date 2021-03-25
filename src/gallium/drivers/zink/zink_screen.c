@@ -1185,7 +1185,7 @@ zink_create_screen(struct sw_winsys *winsys)
    if (ret)
       ret->winsys = winsys;
 
-   debug_printf("ZINK: screen_base=%p\n",ret->base);
+   debug_printf("ZINK: screen_base=%p\n",&ret->base);
    return &ret->base;
 }
 
