@@ -863,7 +863,7 @@ load_instance_extensions(struct zink_screen *screen)
    return true;
 }
 
-static bool load_attempt_KHR_draw_indirect_count(){
+static bool load_attempt_KHR_draw_indirect_count(struct zink_screen *screen) {
    GET_PROC_ADDR(CmdDrawIndexedIndirectCount);
    GET_PROC_ADDR(CmdDrawIndirectCount);
    return true;
@@ -890,7 +890,7 @@ load_device_extensions(struct zink_screen *screen)
 
    if (screen->info.have_KHR_draw_indirect_count) {
       // Android patch: don't fail if GET_PROC_ADDR fails, just skip this instead
-      if (!load_attempt_KHR_draw_indirect_count()) {
+      if (!load_attempt_KHR_draw_indirect_count(screen)) {
          screen->info.have_KHR_draw_indirect_count = false;
       }
    }
