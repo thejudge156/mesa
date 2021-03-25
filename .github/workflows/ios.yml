@@ -30,6 +30,8 @@ jobs:
             -Dxlib-lease=disabled \
             -Degl=disabled \
             -Dgbm=disabled \
+            -Dgles1=disabled \
+            -Dgles2=disabled \
             -Dglx=dri \
             -Dglx-direct=true \
             -Dopengl=true \
