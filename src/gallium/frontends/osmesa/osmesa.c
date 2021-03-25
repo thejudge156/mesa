@@ -162,6 +162,7 @@ create_st_manager(void)
    }
 
    stapi = st_gl_api_create();
+   debug_printf("OSMESA: stmgr=%p; stapi=%p\n",stmgr,stapi);
 }
 
 /**
@@ -700,6 +701,7 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
    osmesa->stctx = stapi->create_context(stapi, get_st_manager(),
                                          &attribs, &st_error, st_shared);
    if (!osmesa->stctx) {
+      debug_printf("OSMESA: error: unable to create st context, st_error=%#010x",st_error);
       FREE(osmesa);
       return NULL;
    }
