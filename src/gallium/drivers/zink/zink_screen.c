@@ -1109,11 +1109,11 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    screen->loader_version = zink_get_loader_version();
    screen->instance = zink_create_instance(screen);
    if (!screen->instance){
-      debug_printf("ZINK: failed to init: screen->instance=0x0");
+      debug_printf("ZINK: failed to init: screen->instance=0x0\n");
       goto fail;
    }
    if (!load_instance_extensions(screen)) {
-      debug_printf("ZINK: failed to init: unable to load instance extensions");
+      debug_printf("ZINK: failed to init: unable to load instance extensions\n");
       goto fail;
    }
    if (screen->instance_info.have_EXT_debug_utils && !create_debug(screen))
@@ -1144,11 +1144,11 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
 
    screen->dev = zink_create_logical_device(screen);
    if (!screen->dev) {
-      debug_printf("ZINK: failed to init: no logical device");
+      debug_printf("ZINK: failed to init: no logical device\n");
       goto fail;
    }
    if (!load_device_extensions(screen)) {
-      debug_printf("ZINK: failed to init: unable to load extensions");
+      debug_printf("ZINK: failed to init: unable to load extensions\n");
       goto fail;
    }
    screen->base.get_name = zink_get_name;
@@ -1169,7 +1169,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    zink_screen_init_compiler(screen);
 
    slab_create_parent(&screen->transfer_pool, sizeof(struct zink_transfer), 16);
-   debug_printf("ZINK: final screen=%p",screen);
+   debug_printf("ZINK: final screen=%p\n",screen);
    return screen;
 
 fail:
@@ -1185,6 +1185,7 @@ zink_create_screen(struct sw_winsys *winsys)
    if (ret)
       ret->winsys = winsys;
 
+   debug_printf("ZINK: screen_base=%p\n",ret->base);
    return &ret->base;
 }
 
