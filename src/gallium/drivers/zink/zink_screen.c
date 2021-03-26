@@ -70,8 +70,8 @@ static bool zink_create_swapchain(struct zink_screen *screen) {
    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(devscreen->pdev, screen->m_surface, &surfaceCapabilities);
 
    uint32_t formatCount = 0;
-   vkGetPhysicalDeviceSurfaceFormatsKHR(screen->pdev, screen->m_surface, &formatCount, nullptr);
-   VkSurfaceFormatKHR* formats = new VkSurfaceFormatKHR[formatCount];
+   vkGetPhysicalDeviceSurfaceFormatsKHR(screen->pdev, screen->m_surface, &formatCount, NULL);
+   VkSurfaceFormatKHR* formats = (VkSurfaceFormatKHR*)calloc(formatCount, sizeof(VkSurfaceFormatKHR));
    vkGetPhysicalDeviceSurfaceFormatsKHR(screen->pdev, screen->m_surface, &formatCount, formats);
    debug_printf("ZINK: Got %d formats\n", formatCount);
 
@@ -80,7 +80,7 @@ static bool zink_create_swapchain(struct zink_screen *screen) {
       if (formats[chosenFormat].format == VK_FORMAT_R8G8B8A8_UNORM) break;
    }
    if (chosenFormat >= formatCount) {
-      debug_printf("ZINK: failed to init swapchain: chosenFormat >= formatCount"\n);
+      debug_printf("ZINK: failed to init swapchain: chosenFormat >= formatCount\n");
       return false;
    }
 
@@ -97,7 +97,7 @@ static bool zink_create_swapchain(struct zink_screen *screen) {
    // FIXME: maybe oldSwapchain points to swapchain for multithread?
    VkSwapchainCreateInfoKHR swapchainCreateInfo{
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-      .pNext = nullptr,
+      .pNext = NULL,
       .surface = screen->m_surface,
       .minImageCount = surfaceCapabilities.minImageCount,
       .imageFormat = formats[chosenFormat].format,
@@ -114,10 +114,10 @@ static bool zink_create_swapchain(struct zink_screen *screen) {
       .oldSwapchain = VK_NULL_HANDLE,
       .clipped = VK_FALSE,
    };
-   vkCreateSwapchainKHR(screen->dev, &swapchainCreateInfo, nullptr, &screen->m_swapchain));
+   vkCreateSwapchainKHR(screen->dev, &swapchainCreateInfo, NULL, &screen->m_swapchain));
 
-   vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, &screen->m_swapchainLength, nullptr));
-   delete[] formats;
+   vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, &screen->m_swapchainLength, NULL));
+   free(formats);
    return true;
 }
 
@@ -1227,7 +1227,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
 #ifdef __ANDROID__
       VkAndroidSurfaceCreateInfoKHR createInfo{
          .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
-         .pNext = nullptr,
+         .pNext = NULL,
          .flags = 0,
          .window = zink_swapchain_window(screen->instance, &createInfo, NULL, &screen->m_surface);
       };
@@ -1236,7 +1236,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
 #elif defined (__APPLE__)
       VkIOSSurfaceCreateInfoMVK createInfo{
          .sType = VK_STRUCTURE_TYPE_IOS_SURFACE_CREATE_INFO_MVK,
-         .pNext = nullptr,
+         .pNext = NULL,
          .flags = 0,
          .pView = zink_swapchain_window
       };
