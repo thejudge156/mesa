@@ -248,8 +248,8 @@ resource_create(struct pipe_screen *pscreen,
          // swapchain todo: supports multiple images
          uint32_t swapchainImagesCount = 0;
          VkImage* swapchainImages = malloc(sizeof(VkImage) * 1);
-         vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, swapchainImagesCount, NULL);
-         vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, swapchainImagesCount, swapchainImages);
+         vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, &swapchainImagesCount, NULL);
+         vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, &swapchainImagesCount, swapchainImages);
          res->image = swapchainImages[0];
       } else {
          VkResult result = vkCreateImage(screen->dev, &ici, NULL, &res->image);
