@@ -30,14 +30,13 @@ jobs:
             -Dxlib-lease=disabled \
             -Degl=disabled \
             -Dgbm=disabled \
-            -Dgles1=disabled \
-            -Dgles2=disabled \
             -Dglx=dri \
             -Dglx-direct=true \
             -Dopengl=true \
             -Dosmesa=true \
             -Dvulkan-drivers= \
-            -Dgallium-drivers=swrast,zink
+            -Dgallium-drivers=swrast,zink \
+            -Dshared-glapi=false
           ninja -C build-ios-aarch64 install
           cp build-ios-aarch64/src/gallium/drivers/zink/libzink.a /tmp/zink/lib/
       - name: Upload libraries
