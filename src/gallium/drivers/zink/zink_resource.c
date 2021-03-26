@@ -251,7 +251,7 @@ resource_create(struct pipe_screen *pscreen,
          VkImage* swapchainImages = malloc(sizeof(VkImage) * 1);
          vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, swapchainImagesCount, NULL);
          vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, swapchainImagesCount, swapchainImages);
-         result = swapChainImages[0];
+         result = swapchainImages[0];
       } else {
          result = vkCreateImage(screen->dev, &ici, NULL, &res->image);
          if (result != VK_SUCCESS) {
