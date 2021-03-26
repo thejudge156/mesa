@@ -1232,7 +1232,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
          .window = zink_swapchain_window
       };
       
-      vkCreateAndroidSurfaceKHR
+      vkCreateAndroidSurfaceKHR(screen->instance, &createInfo, NULL, &screen->m_surface);
 #elif defined (__APPLE__)
       VkIOSSurfaceCreateInfoMVK createInfo = {
          .sType = VK_STRUCTURE_TYPE_IOS_SURFACE_CREATE_INFO_MVK,
