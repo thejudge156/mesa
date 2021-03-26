@@ -67,7 +67,7 @@ static void zink_set_swapchain_window(void* window)
 
 static bool zink_create_swapchain(struct zink_screen *screen) {
    VkSurfaceCapabilitiesKHR surfaceCapabilities;
-   vkGetPhysicalDeviceSurfaceCapabilitiesKHR(devscreen->pdev, screen->m_surface, &surfaceCapabilities);
+   vkGetPhysicalDeviceSurfaceCapabilitiesKHR(screen->pdev, screen->m_surface, &surfaceCapabilities);
 
    uint32_t formatCount = 0;
    vkGetPhysicalDeviceSurfaceFormatsKHR(screen->pdev, screen->m_surface, &formatCount, NULL);
@@ -88,14 +88,14 @@ static bool zink_create_swapchain(struct zink_screen *screen) {
    screen->m_displayFormat = formats[chosenFormat].format;
 
    VkSurfaceCapabilitiesKHR surfaceCap;
-   vkGetPhysicalDeviceSurfaceCapabilitiesKHR(screen->pdev, screen->m_surface, &surfaceCap));
+   vkGetPhysicalDeviceSurfaceCapabilitiesKHR(screen->pdev, screen->m_surface, &surfaceCap);
    if (!(surfaceCap.supportedCompositeAlpha | VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR)) {
       debug_printf("ZINK: failed to init swapchain: surfaceCap.supportedCompositeAlpha did not contains VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR\n");
       return false;
    }
 
    // FIXME: maybe oldSwapchain points to swapchain for multithread?
-   VkSwapchainCreateInfoKHR swapchainCreateInfo{
+   VkSwapchainCreateInfoKHR swapchainCreateInfo = {
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
       .pNext = NULL,
       .surface = screen->m_surface,
@@ -114,9 +114,9 @@ static bool zink_create_swapchain(struct zink_screen *screen) {
       .oldSwapchain = VK_NULL_HANDLE,
       .clipped = VK_FALSE,
    };
-   vkCreateSwapchainKHR(screen->dev, &swapchainCreateInfo, NULL, &screen->m_swapchain));
+   vkCreateSwapchainKHR(screen->dev, &swapchainCreateInfo, NULL, &screen->m_swapchain);
 
-   vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, &screen->m_swapchainLength, NULL));
+   vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, &screen->m_swapchainLength, NULL);
    free(formats);
    return true;
 }
@@ -1225,7 +1225,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
 
    if (zink_swapchain_window) {
 #ifdef __ANDROID__
-      VkAndroidSurfaceCreateInfoKHR createInfo{
+      VkAndroidSurfaceCreateInfoKHR createInfo = {
          .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
          .pNext = NULL,
          .flags = 0,
@@ -1234,7 +1234,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
       
       vkCreateAndroidSurfaceKHR
 #elif defined (__APPLE__)
-      VkIOSSurfaceCreateInfoMVK createInfo{
+      VkIOSSurfaceCreateInfoMVK createInfo = {
          .sType = VK_STRUCTURE_TYPE_IOS_SURFACE_CREATE_INFO_MVK,
          .pNext = NULL,
          .flags = 0,
