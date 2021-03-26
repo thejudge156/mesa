@@ -95,6 +95,7 @@ static bool zink_create_swapchain(struct zink_screen *screen) {
    }
 
    // FIXME: maybe oldSwapchain points to swapchain for multithread?
+   // FIXME: VK_PRESENT_MODE_FIFO_KHR needs re-impl image parts
    VkSwapchainCreateInfoKHR swapchainCreateInfo = {
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
       .pNext = NULL,
@@ -110,7 +111,7 @@ static bool zink_create_swapchain(struct zink_screen *screen) {
       .queueFamilyIndexCount = 1,
       .pQueueFamilyIndices = &screen->gfx_queue,
       .compositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
-      .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+      .presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR,
       .oldSwapchain = VK_NULL_HANDLE,
       .clipped = VK_FALSE,
    };
