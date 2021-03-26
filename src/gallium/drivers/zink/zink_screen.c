@@ -834,7 +834,7 @@ zink_flush_frontbuffer(struct pipe_screen *pscreen,
       int nextIndex = 0; // FIXME
 
       VkResult result;
-      VkPresentInfoKHR presentInfo{
+      VkPresentInfoKHR presentInfo = {
          .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
          .pNext = nullptr,
          .swapchainCount = 1,
