@@ -57,6 +57,70 @@ DEBUG_GET_ONCE_FLAGS_OPTION(zink_debug, "ZINK_DEBUG", zink_debug_options, 0)
 uint32_t
 zink_debug;
 
+// Mobile patch: supports swapchain output
+void *zink_swapchain_window;
+
+static void zink_set_swapchain_window(void* window)
+{
+   zink_swapchain_window = window;
+}
+
+static bool zink_create_swapchain(struct zink_screen *screen) {
+   VkSurfaceCapabilitiesKHR surfaceCapabilities;
+   vkGetPhysicalDeviceSurfaceCapabilitiesKHR(devscreen->pdev, screen->m_surface, &surfaceCapabilities);
+
+   uint32_t formatCount = 0;
+   vkGetPhysicalDeviceSurfaceFormatsKHR(screen->pdev, screen->m_surface, &formatCount, nullptr);
+   VkSurfaceFormatKHR* formats = new VkSurfaceFormatKHR[formatCount];
+   vkGetPhysicalDeviceSurfaceFormatsKHR(screen->pdev, screen->m_surface, &formatCount, formats);
+   debug_printf("ZINK: Got %d formats\n", formatCount);
+
+   uint32_t chosenFormat;
+   for (chosenFormat = 0; chosenFormat < formatCount; chosenFormat++) {
+      if (formats[chosenFormat].format == VK_FORMAT_R8G8B8A8_UNORM) break;
+   }
+   if (chosenFormat >= formatCount) {
+      debug_printf("ZINK: failed to init swapchain: chosenFormat >= formatCount"\n);
+      return false;
+   }
+
+   screen->m_displaySize = surfaceCapabilities.currentExtent;
+   screen->m_displayFormat = formats[chosenFormat].format;
+
+   VkSurfaceCapabilitiesKHR surfaceCap;
+   vkGetPhysicalDeviceSurfaceCapabilitiesKHR(screen->pdev, screen->m_surface, &surfaceCap));
+   if (!(surfaceCap.supportedCompositeAlpha | VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR)) {
+      debug_printf("ZINK: failed to init swapchain: surfaceCap.supportedCompositeAlpha did not contains VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR\n");
+      return false;
+   }
+
+   // FIXME: maybe oldSwapchain points to swapchain for multithread?
+   VkSwapchainCreateInfoKHR swapchainCreateInfo{
+      .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+      .pNext = nullptr,
+      .surface = screen->m_surface,
+      .minImageCount = surfaceCapabilities.minImageCount,
+      .imageFormat = formats[chosenFormat].format,
+      .imageColorSpace = formats[chosenFormat].colorSpace,
+      .imageExtent = surfaceCapabilities.currentExtent,
+      .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+      .imageArrayLayers = 1,
+      .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      .queueFamilyIndexCount = 1,
+      .pQueueFamilyIndices = &screen->gfx_queue,
+      .compositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+      .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+      .oldSwapchain = VK_NULL_HANDLE,
+      .clipped = VK_FALSE,
+   };
+   vkCreateSwapchainKHR(screen->dev, &swapchainCreateInfo, nullptr, &screen->m_swapchain));
+
+   vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, &screen->m_swapchainLength, nullptr));
+   delete[] formats;
+   return true;
+}
+
 static const char *
 zink_get_vendor(struct pipe_screen *pscreen)
 {
@@ -692,6 +756,10 @@ zink_destroy_screen(struct pipe_screen *pscreen)
    }
 
    u_transfer_helper_destroy(pscreen->transfer_helper);
+   
+   if (screen->m_swapchain) {
+      vkDestroySwapchainKHR(screen->dev, screen->m_swapchain, NULL);
+   }
 
    vkDestroyDevice(screen->dev, NULL);
    vkDestroyInstance(screen->instance, NULL);
@@ -892,7 +960,7 @@ load_device_extensions(struct zink_screen *screen)
       // Android patch: don't fail if GET_PROC_ADDR fails, just skip this instead
       if (!load_attempt_KHR_draw_indirect_count(screen)) {
          screen->info.have_KHR_draw_indirect_count = false;
-         debug_printf("ZINK: can't load KHR_draw_indirect_count, extv=%i",screen->info.have_KHR_draw_indirect_count);
+         debug_printf("ZINK: can't load KHR_draw_indirect_count, extv=%i\n", screen->info.have_KHR_draw_indirect_count);
       }
    }
 
@@ -1108,14 +1176,16 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
 
    screen->loader_version = zink_get_loader_version();
    screen->instance = zink_create_instance(screen);
-   if (!screen->instance){
-      debug_printf("ZINK: failed to init: screen->instance=0x0\n");
+   if (!screen->instance) {
+      debug_printf("ZINK: failed to init VkInstance: screen->instance=0x0\n");
       goto fail;
    }
+
    if (!load_instance_extensions(screen)) {
       debug_printf("ZINK: failed to init: unable to load instance extensions\n");
       goto fail;
    }
+
    if (screen->instance_info.have_EXT_debug_utils && !create_debug(screen))
       debug_printf("ZINK: failed to setup debug utils\n");
 
@@ -1147,10 +1217,38 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
       debug_printf("ZINK: failed to init: no logical device\n");
       goto fail;
    }
+
    if (!load_device_extensions(screen)) {
       debug_printf("ZINK: failed to init: unable to load extensions\n");
       goto fail;
    }
+
+   if (zink_swapchain_window) {
+#ifdef __ANDROID__
+      VkAndroidSurfaceCreateInfoKHR createInfo{
+         .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+         .pNext = nullptr,
+         .flags = 0,
+         .window = zink_swapchain_window(screen->instance, &createInfo, NULL, &screen->m_surface);
+      };
+      
+      vkCreateAndroidSurfaceKHR
+#elif defined (__APPLE__)
+      VkIOSSurfaceCreateInfoMVK createInfo{
+         .sType = VK_STRUCTURE_TYPE_IOS_SURFACE_CREATE_INFO_MVK,
+         .pNext = nullptr,
+         .flags = 0,
+         .pView = zink_swapchain_window
+      };
+      
+      vkCreateIOSSurfaceMVK(screen->instance, &createInfo, NULL, &screen->m_surface);
+#endif
+      if (!screen->m_surface) {
+         debug_printf("ZINK: failed to init: unable to init VKSurface on swapchain mode\n");
+         goto fail;
+      }
+   }
+
    screen->base.get_name = zink_get_name;
    screen->base.get_vendor = zink_get_vendor;
    screen->base.get_device_vendor = zink_get_device_vendor;
@@ -1169,7 +1267,8 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    zink_screen_init_compiler(screen);
 
    slab_create_parent(&screen->transfer_pool, sizeof(struct zink_transfer), 16);
-   debug_printf("ZINK: final screen=%p\n",screen);
+
+   debug_printf("ZINK: final screen=%p\n", screen);
    return screen;
 
 fail:
@@ -1181,11 +1280,15 @@ struct pipe_screen *
 zink_create_screen(struct sw_winsys *winsys)
 {
    struct zink_screen *ret = zink_internal_create_screen(NULL);
+   
+   if (zink_swapchain_window) {
+      zink_create_swapchain(ret);
+   }
 
    if (ret)
       ret->winsys = winsys;
 
-   debug_printf("ZINK: screen_base=%p\n",&ret->base);
+   debug_printf("ZINK: screen_base=%p\n", &ret->base);
    return &ret->base;
 }
 
