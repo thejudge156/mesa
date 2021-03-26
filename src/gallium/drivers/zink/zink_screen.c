@@ -1229,7 +1229,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
          .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
          .pNext = NULL,
          .flags = 0,
-         .window = zink_swapchain_window(screen->instance, &createInfo, NULL, &screen->m_surface);
+         .window = zink_swapchain_window
       };
       
       vkCreateAndroidSurfaceKHR
