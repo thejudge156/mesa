@@ -454,7 +454,7 @@ if not ['windows', 'freebsd', 'openbsd', 'haiku'].contains(host_machine.system()
   use_elf_tls = true
 endif
 
-if with_glx != 'disabled'
+if with_glx != 'disabled' and host_machine.system() != 'darwin'
   if not (with_platform_x11 and with_any_opengl)
     warning('Cannot build GLX support without X11 platform support and at least one OpenGL API')
   elif with_glx == 'gallium-xlib'
