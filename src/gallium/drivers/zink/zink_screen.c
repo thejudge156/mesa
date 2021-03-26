@@ -825,6 +825,29 @@ zink_flush_frontbuffer(struct pipe_screen *pscreen,
    struct sw_winsys *winsys = screen->winsys;
    struct zink_resource *res = zink_resource(pres);
 
+   if (screen->swapchain) {
+      struct zink_context *context = zink_context(pcontext);
+
+      // vkAcquireNextImageKHR(device.device_, swapchain.swapchain_, UINT64_MAX, render.semaphore_, VK_NULL_HANDLE, &nextIndex);
+      // vkResetFences(screen->dev, 1, &render.fence_);
+
+      int nextIndex = 0; // FIXME
+
+      VkResult result;
+      VkPresentInfoKHR presentInfo{
+         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+         .pNext = nullptr,
+         .swapchainCount = 1,
+         .pSwapchains = &screen->swapchain,
+         .pImageIndices = &nextIndex,
+         .waitSemaphoreCount = 0,
+         .pWaitSemaphores = nullptr,
+         .pResults = &result,
+      };
+      vkQueuePresentKHR(context->queue, &presentInfo);
+      return;
+   }
+
    if (!winsys)
      return;
    void *map = winsys->displaytarget_map(winsys, res->dt, 0);
