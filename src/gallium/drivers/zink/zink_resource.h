@@ -44,11 +44,12 @@ struct zink_resource {
       VkBuffer buffer;
       struct {
          VkFormat format;
-         VkImage* images;
+         VkImage image;
+         // VkImage* images;
          VkImageLayout layout;
          VkImageAspectFlags aspect;
          bool optimal_tiling;
-         uint32_t images_count;
+         // uint32_t images_count;
       };
    };
    VkDeviceMemory mem;
