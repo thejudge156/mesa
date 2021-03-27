@@ -44,7 +44,7 @@ struct zink_resource {
       VkBuffer buffer;
       struct {
          VkFormat format;
-         VkImage image;
+         VkImage* images;
          VkImageLayout layout;
          VkImageAspectFlags aspect;
          bool optimal_tiling;
