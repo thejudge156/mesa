@@ -9,6 +9,10 @@ EXTENSIONS = [
     Extension("VK_KHR_get_physical_device_properties2"),
     Extension("VK_KHR_external_memory_capabilities"),
     Extension("VK_MVK_moltenvk"),
+    Extension("VK_KHR_surface"),
+    Extension("VK_KHR_android_surface"),
+    Extension("VK_KHR_metal_surface"),
+    Extension("VK_KHR_swapchain"),
 ]
 
 LAYERS = [

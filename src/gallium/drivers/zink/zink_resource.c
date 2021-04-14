@@ -244,10 +244,19 @@ resource_create(struct pipe_screen *pscreen,
       if (screen->needs_mesa_wsi && (templ->bind & PIPE_BIND_SCANOUT))
          ici.pNext = &image_wsi_info;
 
-      VkResult result = vkCreateImage(screen->dev, &ici, NULL, &res->image);
-      if (result != VK_SUCCESS) {
-         FREE(res);
-         return NULL;
+      if (screen->m_swapchain) {
+         // swapchain todo: supports multiple images
+         uint32_t swapchainImagesCount = 0;
+         VkImage* swapchainImages = malloc(sizeof(VkImage) * 1);
+         vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, &swapchainImagesCount, NULL);
+         vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, &swapchainImagesCount, swapchainImages);
+         res->image = swapchainImages[0];
+      } else {
+         VkResult result = vkCreateImage(screen->dev, &ici, NULL, &res->image);
+         if (result != VK_SUCCESS) {
+            FREE(res);
+            return NULL;
+         }
       }
 
       res->optimal_tiling = ici.tiling != VK_IMAGE_TILING_LINEAR;
