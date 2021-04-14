@@ -76,6 +76,13 @@ struct zink_screen {
    uint32_t loader_version;
 
    bool needs_mesa_wsi;
+   
+   // Mobile patch: swapchain support
+   VkSurfaceKHR m_surface;
+   VkSwapchainKHR m_swapchain;
+   uint32_t m_swapchainLength;
+   VkExtent2D m_displaySize;
+   VkFormat m_displayFormat;
 
    PFN_vkGetPhysicalDeviceFeatures2 vk_GetPhysicalDeviceFeatures2;
    PFN_vkGetPhysicalDeviceProperties2 vk_GetPhysicalDeviceProperties2;
@@ -109,8 +116,10 @@ struct zink_screen {
 
    PFN_vkGetPhysicalDeviceMetalFeaturesMVK vk_GetPhysicalDeviceMetalFeaturesMVK;
    PFN_vkGetVersionStringsMVK vk_GetVersionStringsMVK;
+#if 0 // skip them
    PFN_vkUseIOSurfaceMVK vk_UseIOSurfaceMVK;
    PFN_vkGetIOSurfaceMVK vk_GetIOSurfaceMVK;
+#endif
 #endif
 };
 

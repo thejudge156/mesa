@@ -45,9 +45,11 @@ struct zink_resource {
       struct {
          VkFormat format;
          VkImage image;
+         // VkImage* images;
          VkImageLayout layout;
          VkImageAspectFlags aspect;
          bool optimal_tiling;
+         // uint32_t images_count;
       };
    };
    VkDeviceMemory mem;
