@@ -1135,6 +1135,12 @@ zink_get_format(struct zink_screen *screen, enum pipe_format format)
    return ret;
 }
 
+static bool load_attempt_KHR_draw_indirect_count(struct zink_screen *screen) {
+   GET_PROC_ADDR(CmdDrawIndexedIndirectCount);
+   GET_PROC_ADDR(CmdDrawIndirectCount);
+   return true;
+}
+
 static bool
 load_device_extensions(struct zink_screen *screen)
 {
@@ -1155,8 +1161,11 @@ load_device_extensions(struct zink_screen *screen)
    }
 
    if (screen->info.have_KHR_draw_indirect_count) {
-      GET_PROC_ADDR_KHR(CmdDrawIndexedIndirectCount);
-      GET_PROC_ADDR_KHR(CmdDrawIndirectCount);
+      // Android patch: don't fail if GET_PROC_ADDR fails, just skip this instead
+      if (!load_attempt_KHR_draw_indirect_count(screen)) {
+         screen->info.have_KHR_draw_indirect_count = false;
+         debug_printf("ZINK: can't load KHR_draw_indirect_count, extv=%i\n", screen->info.have_KHR_draw_indirect_count);
+      }
    }
 
    if (screen->info.have_EXT_calibrated_timestamps) {
@@ -1270,8 +1279,10 @@ zink_internal_setup_moltenvk(struct zink_screen *screen)
 
    GET_PROC_ADDR_INSTANCE(GetPhysicalDeviceMetalFeaturesMVK);
    GET_PROC_ADDR_INSTANCE(GetVersionStringsMVK);
+#if 0 // skip objc methods
    GET_PROC_ADDR_INSTANCE(UseIOSurfaceMVK);
    GET_PROC_ADDR_INSTANCE(GetIOSurfaceMVK);
+#endif
 
    if (screen->vk_GetVersionStringsMVK) {
       char molten_version[64] = {0};
@@ -1448,8 +1459,10 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    screen->instance_info.loader_version = zink_get_loader_version();
    screen->instance = zink_create_instance(&screen->instance_info);
 
-   if (!screen->instance)
+   if (!screen->instance) {
+      debug_printf("ZINK: failed to init VkInstance: screen->instance=0x0\n");
       goto fail;
+   }
 
    if (screen->instance_info.have_EXT_debug_utils && !create_debug(screen))
       debug_printf("ZINK: failed to setup debug utils\n");
@@ -1465,8 +1478,10 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    screen->have_D24_UNORM_S8_UINT = zink_is_depth_format_supported(screen,
                                               VK_FORMAT_D24_UNORM_S8_UINT);
 
-   if (!zink_load_instance_extensions(screen))
+   if (!zink_load_instance_extensions(screen)) {
+      debug_printf("ZINK: failed to init: unable to load instance extensions\n");
       goto fail;
+   }
 
    if (!zink_get_physical_device_info(screen)) {
       debug_printf("ZINK: failed to detect features\n");
@@ -1481,11 +1496,15 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    zink_internal_setup_moltenvk(screen);
 
    screen->dev = zink_create_logical_device(screen);
-   if (!screen->dev)
+   if (!screen->dev) {
+      debug_printf("ZINK: failed to init: no logical device\n");
       goto fail;
+   }
 
-   if (!load_device_extensions(screen))
+   if (!load_device_extensions(screen)) {
+      debug_printf("ZINK: failed to init: unable to load extensions\n");
       goto fail;
+   }
 
    check_base_requirements(screen);
 
@@ -1547,6 +1566,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    _mesa_hash_table_init(&screen->surface_cache, screen, NULL, equals_ivci);
    _mesa_hash_table_init(&screen->bufferview_cache, screen, NULL, equals_bvci);
 
+   debug_printf("ZINK: final screen=%p\n", screen);
    return screen;
 
 fail:
@@ -1586,6 +1606,7 @@ zink_create_screen(struct sw_winsys *winsys)
    }
 #endif
 
+   debug_printf("ZINK: screen_base=%p\n", &ret->base);
    return &ret->base;
 }
 

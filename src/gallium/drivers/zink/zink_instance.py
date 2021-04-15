@@ -47,16 +47,6 @@ EXTENSIONS = [
                    "GetPhysicalDeviceFormatProperties2", "GetPhysicalDeviceImageFormatProperties2"]),
     Extension("VK_MVK_moltenvk",
         nonstandard=True),
-    Extension("VK_KHR_surface",
-        functions=["GetPhysicalDeviceSurfaceCapabilitiesKHR", "GetPhysicalDeviceSurfaceFormatsKHR"]),
-    Extension("VK_KHR_android_surface",
-        functions=["CreateAndroidSurfaceKHR"]),
-        nonstandard=True),
-    Extension("VK_KHR_metal_surface",
-        functions=["CreateIOSSurfaceMVK"]),
-        nonstandard=True),
-    Extension("VK_KHR_swapchain",
-        functions=["CreateSwapchainKHR", "vkGetSwapchainImagesKHR"]),
 ]
 
 # constructor: Layer(name, conditions=[])
