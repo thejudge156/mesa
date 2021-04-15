@@ -115,7 +115,10 @@ st_get_external_sampler_key(struct st_context *st, struct gl_program *prog)
    return key;
 }
 
-/** Fragment program variant key */
+/** Fragment program variant key
+ *
+ * Please update st_get_fp_variant() perf_debug() when adding fields.
+ */
 struct st_fp_variant_key
 {
    struct st_context *st;         /**< variants are per-context */
@@ -189,7 +192,10 @@ struct st_fp_variant
 };
 
 
-/** Shader key shared by other shaders */
+/** Shader key shared by other shaders.
+ *
+ * Please update st_get_common_variant() perf_debug() when adding fields.
+ */
 struct st_common_variant_key
 {
    struct st_context *st;          /**< variants are per-context */
@@ -312,18 +318,13 @@ st_get_generic_varying_index(struct st_context *st, GLuint attr)
 extern void
 st_set_prog_affected_state_flags(struct gl_program *prog);
 
-extern struct st_common_variant *
-st_get_vp_variant(struct st_context *st,
-                  struct st_program *stvp,
-                  const struct st_common_variant_key *key);
-
 
 extern struct st_fp_variant *
 st_get_fp_variant(struct st_context *st,
                   struct st_program *stfp,
                   const struct st_fp_variant_key *key);
 
-extern struct st_variant *
+extern struct st_common_variant *
 st_get_common_variant(struct st_context *st,
                       struct st_program *p,
                       const struct st_common_variant_key *key);

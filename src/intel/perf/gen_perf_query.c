@@ -23,7 +23,7 @@
 
 #include <unistd.h>
 
-#include "common/gen_gem.h"
+#include "common/intel_gem.h"
 
 #include "dev/gen_debug.h"
 #include "dev/gen_device_info.h"
@@ -319,7 +319,7 @@ static bool
 inc_n_users(struct gen_perf_context *perf_ctx)
 {
    if (perf_ctx->n_oa_users == 0 &&
-       gen_ioctl(perf_ctx->oa_stream_fd, I915_PERF_IOCTL_ENABLE, 0) < 0)
+       intel_ioctl(perf_ctx->oa_stream_fd, I915_PERF_IOCTL_ENABLE, 0) < 0)
    {
       return false;
    }
@@ -338,7 +338,7 @@ dec_n_users(struct gen_perf_context *perf_ctx)
     */
    --perf_ctx->n_oa_users;
    if (perf_ctx->n_oa_users == 0 &&
-       gen_ioctl(perf_ctx->oa_stream_fd, I915_PERF_IOCTL_DISABLE, 0) < 0)
+       intel_ioctl(perf_ctx->oa_stream_fd, I915_PERF_IOCTL_DISABLE, 0) < 0)
    {
       DBG("WARNING: Error disabling gen perf stream: %m\n");
    }
@@ -403,7 +403,7 @@ gen_perf_open(struct gen_perf_context *perf_ctx,
       .num_properties = p / 2,
       .properties_ptr = (uintptr_t) properties,
    };
-   int fd = gen_ioctl(drm_fd, DRM_IOCTL_I915_PERF_OPEN, &param);
+   int fd = intel_ioctl(drm_fd, DRM_IOCTL_I915_PERF_OPEN, &param);
    if (fd == -1) {
       DBG("Error opening gen perf OA stream: %m\n");
       return false;
@@ -763,8 +763,8 @@ gen_perf_begin_query(struct gen_perf_context *perf_ctx,
          /* The period_exponent gives a sampling period as follows:
           *   sample_period = timestamp_period * 2^(period_exponent + 1)
           *
-          * The timestamps increments every 80ns (HSW), ~52ns (GEN9LP) or
-          * ~83ns (GEN8/9).
+          * The timestamps increments every 80ns (HSW), ~52ns (GFX9LP) or
+          * ~83ns (GFX8/9).
           *
           * The counter overflow period is derived from the EuActive counter
           * which reads a counter that increments by the number of clock
@@ -780,7 +780,7 @@ gen_perf_begin_query(struct gen_perf_context *perf_ctx,
           */
 
          int a_counter_in_bits = 32;
-         if (devinfo->gen >= 8)
+         if (devinfo->ver >= 8)
             a_counter_in_bits = 40;
 
          uint64_t overflow_period = pow(2, a_counter_in_bits) / (perf_cfg->sys_vars.n_eus *
@@ -1194,8 +1194,8 @@ static bool
 oa_report_ctx_id_valid(const struct gen_device_info *devinfo,
                        const uint32_t *report)
 {
-   assert(devinfo->gen >= 8);
-   if (devinfo->gen == 8)
+   assert(devinfo->ver >= 8);
+   if (devinfo->ver == 8)
       return (report[0] & (1 << 25)) != 0;
    return (report[0] & (1 << 16)) != 0;
 }
@@ -1213,7 +1213,7 @@ oa_report_ctx_id_valid(const struct gen_device_info *devinfo,
  *
  * These periodic snapshots help to ensure we handle counter overflow
  * correctly by being frequent enough to ensure we don't miss multiple
- * overflows of a counter between snapshots. For Gen8+ the i915 perf
+ * overflows of a counter between snapshots. For Gfx8+ the i915 perf
  * snapshots provide the extra context-switch reports that let us
  * subtract out the progress of counters associated with other
  * contexts running on the system.
@@ -1244,10 +1244,10 @@ accumulate_oa_reports(struct gen_perf_context *perf_ctx,
       goto error;
    }
 
-   /* On Gen12+ OA reports are sourced from per context counters, so we don't
+   /* On Gfx12+ OA reports are sourced from per context counters, so we don't
     * ever have to look at the global OA buffer. Yey \o/
     */
-   if (perf_ctx->devinfo->gen >= 12) {
+   if (perf_ctx->devinfo->ver >= 12) {
       last = start;
       goto end;
    }
@@ -1300,7 +1300,7 @@ accumulate_oa_reports(struct gen_perf_context *perf_ctx,
                goto end;
             }
 
-            /* For Gen8+ since the counters continue while other
+            /* For Gfx8+ since the counters continue while other
              * contexts are running we need to discount any unrelated
              * deltas. The hardware automatically generates a report
              * on context switch which gives us a new reference point
@@ -1309,7 +1309,7 @@ accumulate_oa_reports(struct gen_perf_context *perf_ctx,
              * For Haswell we can rely on the HW to stop the progress
              * of OA counters while any other context is acctive.
              */
-            if (devinfo->gen >= 8) {
+            if (devinfo->ver >= 8) {
                /* Consider that the current report matches our context only if
                 * the report says the report ID is valid.
                 */

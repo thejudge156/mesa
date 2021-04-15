@@ -59,7 +59,7 @@ public:
                                struct brw_wm_prog_data *prog_data,
                                nir_shader *shader)
       : fs_visitor(compiler, NULL, mem_ctx, NULL,
-                   &prog_data->base, shader, 8, -1) {}
+                   &prog_data->base, shader, 8, -1, false) {}
 };
 
 
@@ -76,8 +76,8 @@ void cmod_propagation_test::SetUp()
 
    v = new cmod_propagation_fs_visitor(compiler, ctx, prog_data, shader);
 
-   devinfo->gen = 7;
-   devinfo->genx10 = devinfo->gen * 10;
+   devinfo->ver = 7;
+   devinfo->verx10 = devinfo->ver * 10;
 }
 
 void cmod_propagation_test::TearDown()

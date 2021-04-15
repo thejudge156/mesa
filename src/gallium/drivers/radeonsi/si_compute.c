@@ -132,8 +132,11 @@ static void si_create_compute_state_async(void *job, int thread_index)
 
    program->shader.is_monolithic = true;
 
+   /* Variable block sizes need 10 bits (1 + log2(SI_MAX_VARIABLE_THREADS_PER_BLOCK)) per dim.
+    * We pack them into a single user SGPR.
+    */
    unsigned user_sgprs = SI_NUM_RESOURCE_SGPRS + (sel->info.uses_grid_size ? 3 : 0) +
-                         (sel->info.uses_variable_block_size ? 3 : 0) +
+                         (sel->info.uses_variable_block_size ? 1 : 0) +
                          sel->info.base.cs.user_data_components_amd;
 
    /* Fast path for compute shaders - some descriptors passed via user SGPRs. */
@@ -190,7 +193,8 @@ static void si_create_compute_state_async(void *job, int thread_index)
       bool scratch_enabled = shader->config.scratch_bytes_per_wave > 0;
 
       shader->config.rsrc1 = S_00B848_VGPRS((shader->config.num_vgprs - 1) /
-                                            (sscreen->compute_wave_size == 32 ? 8 : 4)) |
+                                            ((sscreen->compute_wave_size == 32 ||
+                                              sscreen->info.wave64_vgpr_alloc_granularity == 8) ? 8 : 4)) |
                              S_00B848_DX10_CLAMP(1) |
                              S_00B848_MEM_ORDERED(si_shader_mem_ordered(shader)) |
                              S_00B848_WGP_MODE(sscreen->info.chip_class >= GFX10) |
@@ -233,7 +237,7 @@ static void *si_create_compute_state(struct pipe_context *ctx, const struct pipe
       si_const_and_shader_buffer_descriptors_idx(PIPE_SHADER_COMPUTE);
    sel->sampler_and_images_descriptors_index =
       si_sampler_and_image_descriptors_idx(PIPE_SHADER_COMPUTE);
-   sel->info.base.cs.shared_size = cso->req_local_mem;
+   sel->info.base.shared_size = cso->req_local_mem;
    program->shader.selector = &program->sel;
    program->ir_type = cso->ir_type;
    program->private_size = cso->req_private_mem;
@@ -303,6 +307,21 @@ static void si_bind_compute_state(struct pipe_context *ctx, void *state)
 
    sctx->compute_shaderbuf_sgprs_dirty = true;
    sctx->compute_image_sgprs_dirty = true;
+
+   if (unlikely((sctx->screen->debug_flags & DBG(SQTT)) && sctx->thread_trace)) {
+      uint32_t pipeline_code_hash = _mesa_hash_data_with_seed(
+         program->shader.binary.elf_buffer,
+         program->shader.binary.elf_size,
+         0);
+      uint64_t base_address = program->shader.bo->gpu_address;
+
+      struct ac_thread_trace_data *thread_trace_data = sctx->thread_trace;
+      if (!si_sqtt_pipeline_is_registered(thread_trace_data, pipeline_code_hash)) {
+         si_sqtt_register_pipeline(sctx, pipeline_code_hash, base_address, true);
+      }
+
+      si_sqtt_describe_pipeline_bind(sctx, pipeline_code_hash, 1);
+   }
 }
 
 static void si_set_global_binding(struct pipe_context *ctx, unsigned first, unsigned n,
@@ -347,8 +366,6 @@ static void si_set_global_binding(struct pipe_context *ctx, unsigned first, unsi
 
 void si_emit_initial_compute_regs(struct si_context *sctx, struct radeon_cmdbuf *cs)
 {
-   uint64_t bc_va = sctx->border_color_buffer->gpu_address;
-
    radeon_begin(cs);
    radeon_set_sh_reg_seq(cs, R_00B858_COMPUTE_STATIC_THREAD_MGMT_SE0, 2);
    /* R_00B858_COMPUTE_STATIC_THREAD_MGMT_SE0 / SE1,
@@ -366,8 +383,11 @@ void si_emit_initial_compute_regs(struct si_context *sctx, struct radeon_cmdbuf 
        */
       radeon_set_sh_reg(cs, R_00B82C_COMPUTE_MAX_WAVE_ID, 0x190 /* Default value */);
 
-      if (sctx->screen->info.si_TA_CS_BC_BASE_ADDR_allowed)
+      if (sctx->screen->info.si_TA_CS_BC_BASE_ADDR_allowed) {
+         uint64_t bc_va = sctx->border_color_buffer->gpu_address;
+
          radeon_set_config_reg(cs, R_00950C_TA_CS_BC_BASE_ADDR, bc_va >> 8);
+      }
    }
 
    if (sctx->chip_class >= GFX7) {
@@ -383,9 +403,14 @@ void si_emit_initial_compute_regs(struct si_context *sctx, struct radeon_cmdbuf 
       }
 
       /* Set the pointer to border colors. */
-      radeon_set_uconfig_reg_seq(cs, R_030E00_TA_CS_BC_BASE_ADDR, 2, false);
-      radeon_emit(cs, bc_va >> 8);                    /* R_030E00_TA_CS_BC_BASE_ADDR */
-      radeon_emit(cs, S_030E04_ADDRESS(bc_va >> 40)); /* R_030E04_TA_CS_BC_BASE_ADDR_HI */
+      /* Aldebaran doesn't support border colors. */
+      if (sctx->border_color_buffer) {
+         uint64_t bc_va = sctx->border_color_buffer->gpu_address;
+
+         radeon_set_uconfig_reg_seq(cs, R_030E00_TA_CS_BC_BASE_ADDR, 2, false);
+         radeon_emit(cs, bc_va >> 8);                    /* R_030E00_TA_CS_BC_BASE_ADDR */
+         radeon_emit(cs, S_030E04_ADDRESS(bc_va >> 40)); /* R_030E04_TA_CS_BC_BASE_ADDR_HI */
+      }
    }
 
    /* cs_preamble_state initializes this for the gfx queue, so only do this
@@ -471,9 +496,9 @@ static bool si_switch_compute_shader(struct si_context *sctx, struct si_compute 
        * tracker, then we will set LDS_SIZE to 512 bytes rather than 256.
        */
       if (sctx->chip_class <= GFX6) {
-         lds_blocks += align(program->sel.info.base.cs.shared_size, 256) >> 8;
+         lds_blocks += align(program->sel.info.base.shared_size, 256) >> 8;
       } else {
-         lds_blocks += align(program->sel.info.base.cs.shared_size, 512) >> 9;
+         lds_blocks += align(program->sel.info.base.shared_size, 512) >> 9;
       }
 
       /* TODO: use si_multiwave_lds_size_workaround */
@@ -615,7 +640,7 @@ static void si_setup_user_sgprs_co_v2(struct si_context *sctx, const amd_kernel_
       dispatch.grid_size_z = util_cpu_to_le32(info->grid[2] * info->block[2]);
 
       dispatch.private_segment_size = util_cpu_to_le32(program->private_size);
-      dispatch.group_segment_size = util_cpu_to_le32(program->sel.info.base.cs.shared_size);
+      dispatch.group_segment_size = util_cpu_to_le32(program->sel.info.base.shared_size);
 
       dispatch.kernarg_address = util_cpu_to_le64(kernel_args_va);
 
@@ -700,7 +725,7 @@ static void si_setup_nir_user_data(struct si_context *sctx, const struct pipe_gr
    unsigned block_size_reg = grid_size_reg +
                              /* 12 bytes = 3 dwords. */
                              12 * sel->info.uses_grid_size;
-   unsigned cs_user_data_reg = block_size_reg + 12 * program->sel.info.uses_variable_block_size;
+   unsigned cs_user_data_reg = block_size_reg + 4 * program->sel.info.uses_variable_block_size;
 
    radeon_begin(cs);
 
@@ -723,10 +748,8 @@ static void si_setup_nir_user_data(struct si_context *sctx, const struct pipe_gr
    }
 
    if (sel->info.uses_variable_block_size) {
-      radeon_set_sh_reg_seq(cs, block_size_reg, 3);
-      radeon_emit(cs, info->block[0]);
-      radeon_emit(cs, info->block[1]);
-      radeon_emit(cs, info->block[2]);
+      radeon_set_sh_reg(cs, block_size_reg,
+                        info->block[0] | (info->block[1] << 10) | (info->block[2] << 20));
    }
 
    if (sel->info.base.cs.user_data_components_amd) {
@@ -837,7 +860,7 @@ static bool si_check_needs_implicit_sync(struct si_context *sctx)
     */
    struct si_shader_info *info = &sctx->cs_shader_state.program->sel.info;
    struct si_samplers *samplers = &sctx->samplers[PIPE_SHADER_COMPUTE];
-   unsigned mask = samplers->enabled_mask & info->base.textures_used;
+   unsigned mask = samplers->enabled_mask & info->base.textures_used[0];
 
    while (mask) {
       int i = u_bit_scan(&mask);

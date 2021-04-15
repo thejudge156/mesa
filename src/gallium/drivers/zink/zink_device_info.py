@@ -66,11 +66,17 @@ EXTENSIONS = [
     Extension("VK_KHR_external_memory_fd"),
     Extension("VK_KHR_vulkan_memory_model"),
     Extension("VK_EXT_shader_viewport_index_layer"),
+    Extension("VK_EXT_post_depth_coverage"),
     Extension("VK_KHR_driver_properties",
         alias="driver",
         properties=True),
     Extension("VK_KHR_draw_indirect_count"),
+    Extension("VK_EXT_fragment_shader_interlock",
+       alias="interlock",
+       features=True,
+       conditions=["$feats.fragmentShaderSampleInterlock", "$feats.fragmentShaderPixelInterlock"]),
     Extension("VK_KHR_shader_draw_parameters"),
+    Extension("VK_KHR_sampler_mirror_clamp_to_edge"),
     Extension("VK_EXT_conditional_rendering",
         alias="cond_render", 
         features=True, 
@@ -121,9 +127,14 @@ EXTENSIONS = [
         properties=True,
         features=True,
         guard=True),
+    Extension("VK_KHR_timeline_semaphore"),
     Extension("VK_EXT_4444_formats",
         alias="format_4444",
         features=True),
+    Extension("VK_EXT_scalar_block_layout",
+        alias="scalar_block_layout",
+        features=True,
+        conditions=["$feats.scalarBlockLayout"]),
 ]
 
 # constructor: Versions(device_version(major, minor, patch), struct_version(major, minor))
@@ -247,10 +258,6 @@ zink_get_physical_device_info(struct zink_screen *screen)
 %endfor
    uint32_t num_extensions = 0;
 
-   // get device API support
-   vkGetPhysicalDeviceProperties(screen->pdev, &info->props);
-   info->device_version = info->props.apiVersion;
-
    // get device memory properties
    vkGetPhysicalDeviceMemoryProperties(screen->pdev, &info->mem_props);
 
@@ -268,7 +275,7 @@ zink_get_physical_device_info(struct zink_screen *screen)
          %if ext.core_since:
          %for version in versions:
          %if ext.core_since.struct_version == version.struct_version:
-               if (${version.version()} >= info->device_version) {
+               if (${version.version()} >= screen->vk_version) {
          %if not (ext.has_features or ext.has_properties):
                   info->have_${ext.name_with_vendor()} = true;
          %else:
@@ -305,7 +312,7 @@ zink_get_physical_device_info(struct zink_screen *screen)
       info->feats.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 
 %for version in versions:
-      if (${version.version()} <= info->device_version) {
+      if (${version.version()} <= screen->vk_version) {
          info->feats${version.struct()}.sType = ${version.stype("FEATURES")};
          info->feats${version.struct()}.pNext = info->feats.pNext;
          info->feats.pNext = &info->feats${version.struct()};
@@ -336,7 +343,7 @@ zink_get_physical_device_info(struct zink_screen *screen)
       props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
 
 %for version in versions:
-      if (${version.version()} <= info->device_version) {
+      if (${version.version()} <= screen->vk_version) {
          info->props${version.struct()}.sType = ${version.stype("PROPERTIES")};
          info->props${version.struct()}.pNext = props.pNext;
          props.pNext = &info->props${version.struct()};

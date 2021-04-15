@@ -134,7 +134,7 @@ update_array_sizes(struct gl_shader_program *prog, nir_variable *var,
          _mesa_hash_table_search(referenced_uniforms[stage], var->name);
       if (entry) {
          ainfo = (struct uniform_array_info *)  entry->data;
-         max_array_size = MAX2(BITSET_LAST_BIT(ainfo->indices, words),
+         max_array_size = MAX2(BITSET_LAST_BIT_SIZED(ainfo->indices, words),
                                max_array_size);
       }
 
@@ -671,6 +671,10 @@ add_parameter(struct gl_uniform_storage *uniform,
             else
                comps = 4;
          }
+
+         /* TODO: This will waste space with 1 and 3 16-bit components. */
+         if (glsl_type_is_16bit(glsl_without_array(type)))
+            comps = DIV_ROUND_UP(comps, 2);
 
          _mesa_add_parameter(params, PROGRAM_UNIFORM, uniform->name, comps,
                              glsl_get_gl_type(type), NULL, NULL, false);

@@ -272,7 +272,7 @@ clc_lower_input_image_deref(nir_builder *b, struct clc_image_lower_context *cont
                }
 
                /* No actual intrinsic needed here, just reference the loaded variable */
-               nir_ssa_def_rewrite_uses(&intrinsic->dest.ssa, nir_src_for_ssa(*cached_deref));
+               nir_ssa_def_rewrite_uses(&intrinsic->dest.ssa, *cached_deref);
                nir_instr_remove(&intrinsic->instr);
                break;
             }
@@ -369,7 +369,7 @@ clc_lower_64bit_semantics(nir_shader *nir)
                nir_ssa_def *i64 = nir_u2u64(&b, &intrinsic->dest.ssa);
                nir_ssa_def_rewrite_uses_after(
                   &intrinsic->dest.ssa,
-                  nir_src_for_ssa(i64),
+                  i64,
                   i64->parent_instr);
             }
          }
@@ -826,7 +826,7 @@ split_unaligned_load(nir_builder *b, nir_intrinsic_instr *intrin, unsigned align
    }
 
    nir_ssa_def *new_dest = nir_extract_bits(b, srcs, num_loads, 0, num_comps, intrin->dest.ssa.bit_size);
-   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, nir_src_for_ssa(new_dest));
+   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, new_dest);
    nir_instr_remove(&intrin->instr);
 }
 
@@ -1361,7 +1361,7 @@ clc_to_dxil(struct clc_context *ctx,
    NIR_PASS_V(nir, dxil_nir_lower_loads_stores_to_dxil);
    NIR_PASS_V(nir, dxil_nir_opt_alu_deref_srcs);
    NIR_PASS_V(nir, dxil_nir_lower_atomics_to_dxil);
-   NIR_PASS_V(nir, dxil_nir_lower_fp16_casts);
+   NIR_PASS_V(nir, nir_lower_fp16_casts);
    NIR_PASS_V(nir, nir_lower_convert_alu_types, NULL);
 
    // Convert pack to pack_split
@@ -1401,12 +1401,12 @@ clc_to_dxil(struct clc_context *ctx,
        */
       unsigned alignment = size < 128 ? (1 << (ffs(size) - 1)) : 128;
 
-      nir->info.cs.shared_size = align(nir->info.cs.shared_size, alignment);
-      metadata->args[i].localptr.sharedmem_offset = nir->info.cs.shared_size;
-      nir->info.cs.shared_size += size;
+      nir->info.shared_size = align(nir->info.shared_size, alignment);
+      metadata->args[i].localptr.sharedmem_offset = nir->info.shared_size;
+      nir->info.shared_size += size;
    }
 
-   metadata->local_mem_size = nir->info.cs.shared_size;
+   metadata->local_mem_size = nir->info.shared_size;
    metadata->priv_mem_size = nir->scratch_size;
 
    /* DXIL double math is too limited compared to what NIR expects. Let's refuse

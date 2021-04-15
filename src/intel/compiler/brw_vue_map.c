@@ -67,7 +67,7 @@ brw_compute_vue_map(const struct gen_device_info *devinfo,
     * the SSO layout when using geometry/tessellation shaders or 32 FS input
     * varyings, which only exist on Gen >= 6.  It's also a bit more efficient.
     */
-   if (devinfo->gen < 6)
+   if (devinfo->ver < 6)
       separate = false;
 
    if (separate) {
@@ -112,14 +112,14 @@ brw_compute_vue_map(const struct gen_device_info *devinfo,
     * See the Sandybridge PRM, Volume 2 Part 1, section 1.5.1 (page 30),
     * "Vertex URB Entry (VUE) Formats" which describes the VUE header layout.
     */
-   if (devinfo->gen < 6) {
+   if (devinfo->ver < 6) {
       /* There are 8 dwords in VUE header pre-Ironlake:
        * dword 0-3 is indices, point width, clip flags.
        * dword 4-7 is ndc position
        * dword 8-11 is the first vertex data.
        *
        * On Ironlake the VUE header is nominally 20 dwords, but the hardware
-       * will accept the same header layout as Gen4 [and should be a bit faster]
+       * will accept the same header layout as Gfx4 [and should be a bit faster]
        */
       assign_vue_slot(vue_map, VARYING_SLOT_PSIZ, slot++);
       assign_vue_slot(vue_map, BRW_VARYING_SLOT_NDC, slot++);

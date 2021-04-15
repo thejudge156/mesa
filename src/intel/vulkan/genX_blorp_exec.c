@@ -31,7 +31,7 @@
 #undef __gen_user_data
 #undef __gen_combine_address
 
-#include "common/gen_l3_config.h"
+#include "common/intel_l3_config.h"
 #include "blorp/blorp_genX_exec.h"
 
 static void blorp_measure_start(struct blorp_batch *_batch,
@@ -87,7 +87,7 @@ blorp_get_surface_address(struct blorp_batch *blorp_batch,
    return 0ull;
 }
 
-#if GEN_GEN >= 7 && GEN_GEN < 10
+#if GFX_VER >= 7 && GFX_VER < 10
 static struct blorp_address
 blorp_get_surface_base_address(struct blorp_batch *batch)
 {
@@ -174,7 +174,7 @@ blorp_vf_invalidate_for_vb_48b_transitions(struct blorp_batch *batch,
          .bo = addrs[i].buffer,
          .offset = addrs[i].offset,
       };
-      genX(cmd_buffer_set_binding_for_gen8_vb_flush)(cmd_buffer,
+      genX(cmd_buffer_set_binding_for_gfx8_vb_flush)(cmd_buffer,
                                                      i, anv_addr, sizes[i]);
    }
 
@@ -184,7 +184,7 @@ blorp_vf_invalidate_for_vb_48b_transitions(struct blorp_batch *batch,
     * really matter for blorp because we never call apply_pipe_flushes after
     * this point.
     */
-   genX(cmd_buffer_update_dirty_vbs_for_gen8_vb_flush)(cmd_buffer, SEQUENTIAL,
+   genX(cmd_buffer_update_dirty_vbs_for_gfx8_vb_flush)(cmd_buffer, SEQUENTIAL,
                                                        (1 << num_vbs) - 1);
 }
 
@@ -206,7 +206,7 @@ blorp_flush_range(struct blorp_batch *batch, void *start, size_t size)
     */
 }
 
-static const struct gen_l3_config *
+static const struct intel_l3_config *
 blorp_get_l3_config(struct blorp_batch *batch)
 {
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
@@ -220,8 +220,8 @@ genX(blorp_exec)(struct blorp_batch *batch,
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
 
    if (!cmd_buffer->state.current_l3_config) {
-      const struct gen_l3_config *cfg =
-         gen_get_default_l3_config(&cmd_buffer->device->info);
+      const struct intel_l3_config *cfg =
+         intel_get_default_l3_config(&cmd_buffer->device->info);
       genX(cmd_buffer_config_l3)(cmd_buffer, cfg);
    }
 
@@ -229,7 +229,7 @@ genX(blorp_exec)(struct blorp_batch *batch,
    genX(cmd_buffer_emit_hashing_mode)(cmd_buffer, params->x1 - params->x0,
                                       params->y1 - params->y0, scale);
 
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
    /* The PIPE_CONTROL command description says:
     *
     *    "Whenever a Binding Table Index (BTI) used by a Render Taget Message
@@ -243,7 +243,7 @@ genX(blorp_exec)(struct blorp_batch *batch,
       ANV_PIPE_STALL_AT_SCOREBOARD_BIT;
 #endif
 
-#if GEN_GEN == 7
+#if GFX_VER == 7
    /* The MI_LOAD/STORE_REGISTER_MEM commands which BLORP uses to implement
     * indirect fast-clear colors can cause GPU hangs if we don't stall first.
     * See genX(cmd_buffer_mi_memcpy) for more details.
@@ -257,7 +257,7 @@ genX(blorp_exec)(struct blorp_batch *batch,
 
    genX(flush_pipeline_select_3d)(cmd_buffer);
 
-   genX(cmd_buffer_emit_gen7_depth_flush)(cmd_buffer);
+   genX(cmd_buffer_emit_gfx7_depth_flush)(cmd_buffer);
 
    /* BLORP doesn't do anything fancy with depth such as discards, so we want
     * the PMA fix off.  Also, off is always the safe option.
@@ -266,7 +266,7 @@ genX(blorp_exec)(struct blorp_batch *batch,
 
    blorp_exec(batch, params);
 
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
    /* The PIPE_CONTROL command description says:
     *
     *    "Whenever a Binding Table Index (BTI) used by a Render Taget Message

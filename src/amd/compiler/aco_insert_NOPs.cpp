@@ -25,6 +25,7 @@
 #include <algorithm>
 
 #include "aco_ir.h"
+#include "aco_builder.h"
 #include <stack>
 #include <functional>
 
@@ -149,6 +150,8 @@ struct NOP_ctx_gfx10 {
    bool has_branch_after_VMEM = false;
    bool has_DS = false;
    bool has_branch_after_DS = false;
+   bool has_NSA_MIMG = false;
+   bool has_writelane = false;
    std::bitset<128> sgprs_read_by_VMEM;
    std::bitset<128> sgprs_read_by_SMEM;
 
@@ -159,6 +162,8 @@ struct NOP_ctx_gfx10 {
       has_branch_after_VMEM |= other.has_branch_after_VMEM;
       has_DS |= other.has_DS;
       has_branch_after_DS |= other.has_branch_after_DS;
+      has_NSA_MIMG |= other.has_NSA_MIMG;
+      has_writelane |= other.has_writelane;
       sgprs_read_by_VMEM |= other.sgprs_read_by_VMEM;
       sgprs_read_by_SMEM |= other.sgprs_read_by_SMEM;
    }
@@ -172,6 +177,8 @@ struct NOP_ctx_gfx10 {
          has_branch_after_VMEM == other.has_branch_after_VMEM &&
          has_DS == other.has_DS &&
          has_branch_after_DS == other.has_branch_after_DS &&
+         has_NSA_MIMG == other.has_NSA_MIMG &&
+         has_writelane == other.has_writelane &&
          sgprs_read_by_VMEM == other.sgprs_read_by_VMEM &&
          sgprs_read_by_SMEM == other.sgprs_read_by_SMEM;
    }
@@ -737,6 +744,32 @@ void handle_instruction_gfx10(Program *program, Block *cur_block, NOP_ctx_gfx10 
       wait->imm = 0;
       new_instructions.emplace_back(std::move(wait));
    }
+
+   /* NSAToVMEMBug
+    * Handles NSA MIMG (4 or more dwords) immediately followed by MUBUF/MTBUF (with offset[2:1] != 0).
+    */
+   if (instr->isMIMG() && get_mimg_nsa_dwords(instr.get()) > 1) {
+      ctx.has_NSA_MIMG = true;
+   } else if (ctx.has_NSA_MIMG) {
+      ctx.has_NSA_MIMG = false;
+
+      if (instr->isMUBUF() || instr->isMTBUF()) {
+         uint32_t offset = instr->isMUBUF() ? instr->mubuf().offset : instr->mtbuf().offset;
+         if (offset & 6)
+            Builder(program, &new_instructions).sopp(aco_opcode::s_nop, -1, 0);
+      }
+   }
+
+   /* waNsaCannotFollowWritelane
+    * Handles NSA MIMG immediately following a v_writelane_b32.
+    */
+   if (instr->opcode == aco_opcode::v_writelane_b32_e64) {
+      ctx.has_writelane = true;
+   } else if (ctx.has_writelane) {
+      ctx.has_writelane = false;
+      if (instr->isMIMG() && get_mimg_nsa_dwords(instr.get()) > 0)
+         Builder(program, &new_instructions).sopp(aco_opcode::s_nop, -1, 0);
+   }
 }
 
 template <typename Ctx>
@@ -751,7 +784,8 @@ void handle_block(Program *program, Ctx& ctx, Block& block)
 
    std::vector<aco_ptr<Instruction>> old_instructions = std::move(block.instructions);
 
-   block.instructions.reserve(block.instructions.size());
+   block.instructions.clear(); // Silence clang-analyzer-cplusplus.Move warning
+   block.instructions.reserve(old_instructions.size());
 
    for (aco_ptr<Instruction>& instr : old_instructions) {
       Handle(program, &block, ctx, instr, block.instructions);

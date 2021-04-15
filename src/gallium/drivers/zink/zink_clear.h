@@ -51,7 +51,6 @@ struct zink_framebuffer_clear_data {
 
 struct zink_framebuffer_clear {
    struct util_dynarray clears;
-   bool enabled;
 };
 
 void
@@ -85,15 +84,11 @@ zink_fb_clear_element(struct zink_framebuffer_clear *fb_clear, int idx)
 static inline unsigned
 zink_fb_clear_count(struct zink_framebuffer_clear *fb_clear)
 {
-   return util_dynarray_num_elements(&fb_clear->clears, struct zink_framebuffer_clear_data);
+   return fb_clear ? util_dynarray_num_elements(&fb_clear->clears, struct zink_framebuffer_clear_data) : 0;
 }
 
-static inline void
-zink_fb_clear_reset(struct zink_framebuffer_clear *fb_clear)
-{
-   util_dynarray_fini(&fb_clear->clears);
-   fb_clear->enabled = false;
-}
+void
+zink_fb_clear_reset(struct zink_context *ctx, unsigned idx);
 
 static inline bool
 zink_fb_clear_element_needs_explicit(struct zink_framebuffer_clear_data *clear)
@@ -115,3 +110,6 @@ zink_fb_clears_apply_or_discard(struct zink_context *ctx, struct pipe_resource *
 
 void
 zink_fb_clears_apply_region(struct zink_context *ctx, struct pipe_resource *pres, struct u_rect region);
+
+void
+zink_fb_clear_util_unpack_clear_color(struct zink_framebuffer_clear_data *clear, enum pipe_format format, union pipe_color_union *color);

@@ -398,8 +398,6 @@ standalone_compile_shader(const struct standalone_options *_options,
    int status = EXIT_SUCCESS;
    bool glsl_es = false;
 
-   util_cpu_detect();
-
    options = _options;
 
    switch (options->glsl_version) {
@@ -441,6 +439,7 @@ standalone_compile_shader(const struct standalone_options *_options,
          options->LowerPrecisionInt16 = true;
          options->LowerPrecisionDerivatives = true;
          options->LowerPrecisionConstants = true;
+         options->LowerPrecisionFloat16Uniforms = true;
       }
    }
 

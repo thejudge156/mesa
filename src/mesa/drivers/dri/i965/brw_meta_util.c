@@ -23,7 +23,7 @@
 
 #include "brw_context.h"
 #include "brw_defines.h"
-#include "intel_fbo.h"
+#include "brw_fbo.h"
 #include "brw_meta_util.h"
 #include "brw_state.h"
 #include "main/blend.h"
@@ -294,16 +294,16 @@ brw_is_color_fast_clear_compatible(struct brw_context *brw,
     * render using a renderable format, without the override workaround it
     * wouldn't be possible to have a non-renderable surface in a fast clear
     * state so the hardware probably legitimately doesn't need to support
-    * this case. At least on Gen9 this really does seem to cause problems.
+    * this case. At least on Gfx9 this really does seem to cause problems.
     */
-   if (devinfo->gen >= 9 &&
+   if (devinfo->ver >= 9 &&
        brw_isl_format_for_mesa_format(mt->format) !=
        brw->mesa_to_isl_render_format[mt->format])
       return false;
 
    const mesa_format format = _mesa_get_render_format(ctx, mt->format);
    if (_mesa_is_format_integer_color(format)) {
-      if (devinfo->gen >= 8) {
+      if (devinfo->ver >= 8) {
          perf_debug("Integer fast clear not enabled for (%s)",
                     _mesa_get_format_name(format));
       }
@@ -315,7 +315,7 @@ brw_is_color_fast_clear_compatible(struct brw_context *brw,
          continue;
       }
 
-      if (devinfo->gen < 9 &&
+      if (devinfo->ver < 9 &&
           color->f[i] != 0.0f && color->f[i] != 1.0f) {
          return false;
       }

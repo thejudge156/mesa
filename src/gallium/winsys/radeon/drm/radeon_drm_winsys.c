@@ -607,6 +607,7 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    ws->info.num_physical_wave64_vgprs_per_simd = 256;
    /* Potential hang on Kabini: */
    ws->info.use_late_alloc = ws->info.family != CHIP_KABINI;
+   ws->info.has_3d_cube_border_color_mipmap = true;
 
    ws->check_vm = strstr(debug_get_option("R600_DEBUG", ""), "check_vm") != NULL ||
                                                                             strstr(debug_get_option("AMD_DEBUG", ""), "check_vm") != NULL;
@@ -850,7 +851,7 @@ radeon_drm_winsys_create(int fd, const struct pipe_screen_config *config,
 
    pb_cache_init(&ws->bo_cache, RADEON_MAX_CACHED_HEAPS,
                  500000, ws->check_vm ? 1.0f : 2.0f, 0,
-                 MIN2(ws->info.vram_size, ws->info.gart_size),
+                 MIN2(ws->info.vram_size, ws->info.gart_size), NULL,
                  radeon_bo_destroy,
                  radeon_bo_can_reclaim);
 

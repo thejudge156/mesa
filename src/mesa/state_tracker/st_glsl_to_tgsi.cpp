@@ -4868,7 +4868,7 @@ count_resources(glsl_to_tgsi_visitor *v, gl_program *prog)
 {
    v->samplers_used = 0;
    v->images_used = 0;
-   prog->info.textures_used_by_txf = 0;
+   BITSET_ZERO(prog->info.textures_used_by_txf);
 
    foreach_in_list(glsl_to_tgsi_instruction, inst, &v->instructions) {
       if (inst->info->is_tex) {
@@ -4882,7 +4882,7 @@ count_resources(glsl_to_tgsi_visitor *v, gl_program *prog)
                st_translate_texture_target(inst->tex_target, inst->tex_shadow);
 
             if (inst->op == TGSI_OPCODE_TXF || inst->op == TGSI_OPCODE_TXF_LZ) {
-               prog->info.textures_used_by_txf |= 1u << idx;
+               BITSET_SET(prog->info.textures_used_by_txf, idx);
             }
          }
       }
@@ -6662,8 +6662,8 @@ st_translate_program(
    struct pipe_screen *screen = st_context(ctx)->screen;
    struct st_translate *t;
    unsigned i;
-   struct gl_program_constants *frag_const =
-      &ctx->Const.Program[MESA_SHADER_FRAGMENT];
+   struct gl_program_constants *prog_const =
+      &ctx->Const.Program[program->shader->Stage];
    enum pipe_error ret = PIPE_OK;
 
    assert(numInputs <= ARRAY_SIZE(t->inputs));
@@ -6999,7 +6999,7 @@ st_translate_program(
    assert(i == program->num_immediates);
 
    /* texture samplers */
-   for (i = 0; i < frag_const->MaxTextureImageUnits; i++) {
+   for (i = 0; i < prog_const->MaxTextureImageUnits; i++) {
       if (program->samplers_used & (1u << i)) {
          enum tgsi_return_type type =
             st_translate_texture_type(program->sampler_types[i]);
@@ -7020,7 +7020,7 @@ st_translate_program(
             unsigned index = (prog->info.num_ssbos +
                               prog->sh.AtomicBuffers[i]->Binding);
             assert(prog->sh.AtomicBuffers[i]->Binding <
-                   frag_const->MaxAtomicBuffers);
+                   prog_const->MaxAtomicBuffers);
             t->buffers[index] = ureg_DECL_buffer(ureg, index, true);
          }
       } else {
@@ -7033,7 +7033,7 @@ st_translate_program(
          }
       }
 
-      assert(prog->info.num_ssbos <= frag_const->MaxShaderStorageBlocks);
+      assert(prog->info.num_ssbos <= prog_const->MaxShaderStorageBlocks);
       for (i = 0; i < prog->info.num_ssbos; i++) {
          t->buffers[i] = ureg_DECL_buffer(ureg, i, false);
       }

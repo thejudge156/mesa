@@ -24,6 +24,7 @@
 #ifndef MI_BUILDER_H
 #define MI_BUILDER_H
 
+#include "dev/gen_device_info.h"
 #include "genxml/genX_bits.h"
 #include "util/bitscan.h"
 #include "util/fast_idiv_by_const.h"
@@ -53,7 +54,7 @@
  * required. The following function must also be defined, it returns an
  * address in canonical form:
  *
- * uint64_t
+ * __gen_address_type
  * __gen_get_batch_address(__gen_user_data *user_data, void *location);
  *
  * Also, __gen_combine_address must accept a location value of NULL and return
@@ -95,14 +96,14 @@ struct mi_value {
       uint32_t reg;
    };
 
-#if GEN_GEN >= 7 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
    bool invert;
 #endif
 };
 
 struct mi_reg_num {
    uint32_t num;
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
    bool cs;
 #endif
 };
@@ -110,7 +111,7 @@ struct mi_reg_num {
 static inline struct mi_reg_num
 mi_adjust_reg_num(uint32_t reg)
 {
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
    bool cs = reg >= 0x2000 && reg < 0x4000;
    return (struct mi_reg_num) {
       .num = reg - (cs ? 0x2000 : 0),
@@ -121,16 +122,17 @@ mi_adjust_reg_num(uint32_t reg)
 #endif
 }
 
-#if GEN_GEN >= 9
+#if GFX_VER >= 9
 #define MI_BUILDER_MAX_MATH_DWORDS 256
 #else
 #define MI_BUILDER_MAX_MATH_DWORDS 64
 #endif
 
 struct mi_builder {
+   const struct gen_device_info *devinfo;
    __gen_user_data *user_data;
 
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
    uint32_t gprs;
    uint8_t gpr_refs[MI_BUILDER_NUM_ALLOC_GPRS];
 
@@ -140,12 +142,15 @@ struct mi_builder {
 };
 
 static inline void
-mi_builder_init(struct mi_builder *b, __gen_user_data *user_data)
+mi_builder_init(struct mi_builder *b,
+                const struct gen_device_info *devinfo,
+                __gen_user_data *user_data)
 {
    memset(b, 0, sizeof(*b));
+   b->devinfo = devinfo;
    b->user_data = user_data;
 
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
    b->gprs = 0;
    b->num_math_dwords = 0;
 #endif
@@ -154,7 +159,7 @@ mi_builder_init(struct mi_builder *b, __gen_user_data *user_data)
 static inline void
 mi_builder_flush_math(struct mi_builder *b)
 {
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
    if (b->num_math_dwords == 0)
       return;
 
@@ -172,13 +177,19 @@ mi_builder_flush_math(struct mi_builder *b)
 /* The actual hardware limit on GPRs */
 #define _MI_BUILDER_NUM_HW_GPRS 16
 
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
+
+static inline bool
+mi_value_is_reg(struct mi_value val)
+{
+   return val.type == MI_VALUE_TYPE_REG32 ||
+          val.type == MI_VALUE_TYPE_REG64;
+}
 
 static inline bool
 mi_value_is_gpr(struct mi_value val)
 {
-   return (val.type == MI_VALUE_TYPE_REG32 ||
-           val.type == MI_VALUE_TYPE_REG64) &&
+   return mi_value_is_reg(val) &&
           val.reg >= _MI_BUILDER_GPR_BASE &&
           val.reg < _MI_BUILDER_GPR_BASE +
                     _MI_BUILDER_NUM_HW_GPRS * 8;
@@ -187,8 +198,7 @@ mi_value_is_gpr(struct mi_value val)
 static inline bool
 _mi_value_is_allocated_gpr(struct mi_value val)
 {
-   return (val.type == MI_VALUE_TYPE_REG32 ||
-           val.type == MI_VALUE_TYPE_REG64) &&
+   return mi_value_is_reg(val) &&
           val.reg >= _MI_BUILDER_GPR_BASE &&
           val.reg < _MI_BUILDER_GPR_BASE +
                     MI_BUILDER_NUM_ALLOC_GPRS * 8;
@@ -216,7 +226,7 @@ mi_new_gpr(struct mi_builder *b)
       .reg = _MI_BUILDER_GPR_BASE + gpr * 8,
    };
 }
-#endif /* GEN_GEN >= 8 || GEN_IS_HASWELL */
+#endif /* GFX_VERx10 >= 75 */
 
 /** Take a reference to a mi_value
  *
@@ -231,7 +241,7 @@ mi_new_gpr(struct mi_builder *b)
 static inline struct mi_value
 mi_value_ref(struct mi_builder *b, struct mi_value val)
 {
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
    if (_mi_value_is_allocated_gpr(val)) {
       unsigned gpr = _mi_value_as_gpr(val);
       assert(gpr < MI_BUILDER_NUM_ALLOC_GPRS);
@@ -239,7 +249,7 @@ mi_value_ref(struct mi_builder *b, struct mi_value val)
       assert(b->gpr_refs[gpr] < UINT8_MAX);
       b->gpr_refs[gpr]++;
    }
-#endif /* GEN_GEN >= 8 || GEN_IS_HASWELL */
+#endif /* GFX_VERx10 >= 75 */
 
    return val;
 }
@@ -251,7 +261,7 @@ mi_value_ref(struct mi_builder *b, struct mi_value val)
 static inline void
 mi_value_unref(struct mi_builder *b, struct mi_value val)
 {
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
    if (_mi_value_is_allocated_gpr(val)) {
       unsigned gpr = _mi_value_as_gpr(val);
       assert(gpr < MI_BUILDER_NUM_ALLOC_GPRS);
@@ -260,7 +270,7 @@ mi_value_unref(struct mi_builder *b, struct mi_value val)
       if (--b->gpr_refs[gpr] == 0)
          b->gprs &= ~(1u << gpr);
    }
-#endif /* GEN_GEN >= 8 || GEN_IS_HASWELL */
+#endif /* GFX_VERx10 >= 75 */
 }
 
 static inline struct mi_value
@@ -279,7 +289,7 @@ mi_reg32(uint32_t reg)
       .type = MI_VALUE_TYPE_REG32,
       .reg = reg,
    };
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
    assert(!_mi_value_is_allocated_gpr(val));
 #endif
    return val;
@@ -292,7 +302,7 @@ mi_reg64(uint32_t reg)
       .type = MI_VALUE_TYPE_REG64,
       .reg = reg,
    };
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
    assert(!_mi_value_is_allocated_gpr(val));
 #endif
    return val;
@@ -355,7 +365,7 @@ static inline void
 _mi_copy_no_unref(struct mi_builder *b,
                   struct mi_value dst, struct mi_value src)
 {
-#if GEN_GEN >= 7 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
    /* TODO: We could handle src.invert by emitting a bit of math if we really
     * wanted to.
     */
@@ -374,16 +384,20 @@ _mi_copy_no_unref(struct mi_builder *b,
          if (dst.type == MI_VALUE_TYPE_REG64) {
             uint32_t *dw = (uint32_t *)__gen_get_batch_dwords(b->user_data,
                                                               GENX(MI_LOAD_REGISTER_IMM_length) + 2);
+            struct mi_reg_num reg = mi_adjust_reg_num(dst.reg);
             mi_builder_pack(b, GENX(MI_LOAD_REGISTER_IMM), dw, lri) {
                lri.DWordLength = GENX(MI_LOAD_REGISTER_IMM_length) + 2 -
                                  GENX(MI_LOAD_REGISTER_IMM_length_bias);
+#if GFX_VER >= 11
+               lri.AddCSMMIOStartOffset = reg.cs;
+#endif
             }
-            dw[1] = dst.reg;
+            dw[1] = reg.num;
             dw[2] = src.imm;
-            dw[3] = dst.reg + 4;
+            dw[3] = reg.num + 4;
             dw[4] = src.imm >> 32;
          } else {
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
             assert(dst.type == MI_VALUE_TYPE_MEM64);
             uint32_t *dw = (uint32_t *)__gen_get_batch_dwords(b->user_data,
                                                               GENX(MI_STORE_DATA_IMM_length) + 1);
@@ -427,7 +441,7 @@ _mi_copy_no_unref(struct mi_builder *b,
       case MI_VALUE_TYPE_IMM:
          mi_builder_emit(b, GENX(MI_STORE_DATA_IMM), sdi) {
             sdi.Address = dst.addr;
-#if GEN_GEN >= 12
+#if GFX_VER >= 12
             sdi.ForceWriteCompletionCheck = true;
 #endif
             sdi.ImmediateData = src.imm;
@@ -436,12 +450,12 @@ _mi_copy_no_unref(struct mi_builder *b,
 
       case MI_VALUE_TYPE_MEM32:
       case MI_VALUE_TYPE_MEM64:
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
          mi_builder_emit(b, GENX(MI_COPY_MEM_MEM), cmm) {
             cmm.DestinationMemoryAddress = dst.addr;
             cmm.SourceMemoryAddress = src.addr;
          }
-#elif GEN_IS_HASWELL
+#elif GFX_VERx10 == 75
          {
             struct mi_value tmp = mi_new_gpr(b);
             _mi_copy_no_unref(b, tmp, src);
@@ -458,7 +472,7 @@ _mi_copy_no_unref(struct mi_builder *b,
          mi_builder_emit(b, GENX(MI_STORE_REGISTER_MEM), srm) {
             struct mi_reg_num reg = mi_adjust_reg_num(src.reg);
             srm.RegisterAddress = reg.num;
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
             srm.AddCSMMIOStartOffset = reg.cs;
 #endif
             srm.MemoryAddress = dst.addr;
@@ -476,7 +490,7 @@ _mi_copy_no_unref(struct mi_builder *b,
          mi_builder_emit(b, GENX(MI_LOAD_REGISTER_IMM), lri) {
             struct mi_reg_num reg = mi_adjust_reg_num(dst.reg);
             lri.RegisterOffset = reg.num;
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
             lri.AddCSMMIOStartOffset = reg.cs;
 #endif
             lri.DataDWord = src.imm;
@@ -488,7 +502,7 @@ _mi_copy_no_unref(struct mi_builder *b,
          mi_builder_emit(b, GENX(MI_LOAD_REGISTER_MEM), lrm) {
             struct mi_reg_num reg = mi_adjust_reg_num(dst.reg);
             lrm.RegisterAddress = reg.num;
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
             lrm.AddCSMMIOStartOffset = reg.cs;
 #endif
             lrm.MemoryAddress = src.addr;
@@ -497,17 +511,17 @@ _mi_copy_no_unref(struct mi_builder *b,
 
       case MI_VALUE_TYPE_REG32:
       case MI_VALUE_TYPE_REG64:
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
          if (src.reg != dst.reg) {
             mi_builder_emit(b, GENX(MI_LOAD_REGISTER_REG), lrr) {
                struct mi_reg_num reg = mi_adjust_reg_num(src.reg);
                lrr.SourceRegisterAddress = reg.num;
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
                lrr.AddCSMMIOStartOffsetSource = reg.cs;
 #endif
                reg = mi_adjust_reg_num(dst.reg);
                lrr.DestinationRegisterAddress = reg.num;
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
                lrr.AddCSMMIOStartOffsetDestination = reg.cs;
 #endif
             }
@@ -527,6 +541,11 @@ _mi_copy_no_unref(struct mi_builder *b,
    }
 }
 
+#if GFX_VERx10 >= 75
+static inline struct mi_value
+mi_resolve_invert(struct mi_builder *b, struct mi_value src);
+#endif
+
 /** Store the value in src to the value represented by dst
  *
  * If the bit size of src and dst mismatch, this function does an unsigned
@@ -538,6 +557,9 @@ _mi_copy_no_unref(struct mi_builder *b,
 static inline void
 mi_store(struct mi_builder *b, struct mi_value dst, struct mi_value src)
 {
+#if GFX_VERx10 >= 75
+   src = mi_resolve_invert(b, src);
+#endif
    _mi_copy_no_unref(b, dst, src);
    mi_value_unref(b, src);
    mi_value_unref(b, dst);
@@ -547,7 +569,7 @@ static inline void
 mi_memset(struct mi_builder *b, __gen_address_type dst,
           uint32_t value, uint32_t size)
 {
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
    assert(b->num_math_dwords == 0);
 #endif
 
@@ -560,12 +582,12 @@ mi_memset(struct mi_builder *b, __gen_address_type dst,
    }
 }
 
-/* NOTE: On IVB, this function stomps GEN7_3DPRIM_BASE_VERTEX */
+/* NOTE: On IVB, this function stomps GFX7_3DPRIM_BASE_VERTEX */
 static inline void
 mi_memcpy(struct mi_builder *b, __gen_address_type dst,
           __gen_address_type src, uint32_t size)
 {
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
    assert(b->num_math_dwords == 0);
 #endif
 
@@ -575,13 +597,13 @@ mi_memcpy(struct mi_builder *b, __gen_address_type dst,
    for (uint32_t i = 0; i < size; i += 4) {
       struct mi_value dst_val = mi_mem32(__gen_address_offset(dst, i));
       struct mi_value src_val = mi_mem32(__gen_address_offset(src, i));
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
       mi_store(b, dst_val, src_val);
 #else
       /* IVB does not have a general purpose register for command streamer
        * commands. Therefore, we use an alternate temporary register.
        */
-      struct mi_value tmp_reg = mi_reg32(0x2440); /* GEN7_3DPRIM_BASE_VERTEX */
+      struct mi_value tmp_reg = mi_reg32(0x2440); /* GFX7_3DPRIM_BASE_VERTEX */
       mi_store(b, tmp_reg, src_val);
       mi_store(b, dst_val, tmp_reg);
 #endif
@@ -592,7 +614,7 @@ mi_memcpy(struct mi_builder *b, __gen_address_type dst,
  * MI_MATH Section.  Only available on Haswell+
  */
 
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
 
 /**
  * Perform a predicated store (assuming the condition is already loaded
@@ -626,7 +648,7 @@ mi_store_if(struct mi_builder *b, struct mi_value dst, struct mi_value src)
       mi_builder_emit(b, GENX(MI_STORE_REGISTER_MEM), srm) {
          struct mi_reg_num reg = mi_adjust_reg_num(src.reg);
          srm.RegisterAddress = reg.num;
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
          srm.AddCSMMIOStartOffset = reg.cs;
 #endif
          srm.MemoryAddress = dst.addr;
@@ -635,7 +657,7 @@ mi_store_if(struct mi_builder *b, struct mi_value dst, struct mi_value src)
       mi_builder_emit(b, GENX(MI_STORE_REGISTER_MEM), srm) {
          struct mi_reg_num reg = mi_adjust_reg_num(src.reg + 4);
          srm.RegisterAddress = reg.num;
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
          srm.AddCSMMIOStartOffset = reg.cs;
 #endif
          srm.MemoryAddress = __gen_address_offset(dst.addr, 4);
@@ -645,7 +667,7 @@ mi_store_if(struct mi_builder *b, struct mi_value dst, struct mi_value src)
       mi_builder_emit(b, GENX(MI_STORE_REGISTER_MEM), srm) {
          struct mi_reg_num reg = mi_adjust_reg_num(src.reg);
          srm.RegisterAddress = reg.num;
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
          srm.AddCSMMIOStartOffset = reg.cs;
 #endif
          srm.MemoryAddress = dst.addr;
@@ -750,9 +772,19 @@ mi_inot(struct mi_builder *b, struct mi_value val)
    if (val.type == MI_VALUE_TYPE_IMM)
       return mi_imm(~mi_value_to_u64(val));
 
-   /* TODO These currently can't be passed into mi_copy */
    val.invert = !val.invert;
    return val;
+}
+
+static inline struct mi_value
+mi_resolve_invert(struct mi_builder *b, struct mi_value src)
+{
+   if (!src.invert)
+      return src;
+
+   assert(src.type != MI_VALUE_TYPE_IMM);
+   return mi_math_binop(b, MI_ALU_ADD, src, mi_imm(0),
+                           MI_ALU_STORE, MI_ALU_ACCU);
 }
 
 static inline struct mi_value
@@ -783,6 +815,28 @@ mi_isub(struct mi_builder *b, struct mi_value src0, struct mi_value src1)
 
    return mi_math_binop(b, MI_ALU_SUB, src0, src1,
                            MI_ALU_STORE, MI_ALU_ACCU);
+}
+
+static inline struct mi_value
+mi_ieq(struct mi_builder *b, struct mi_value src0, struct mi_value src1)
+{
+   if (src0.type == MI_VALUE_TYPE_IMM && src1.type == MI_VALUE_TYPE_IMM)
+      return mi_imm(mi_value_to_u64(src0) == mi_value_to_u64(src1) ? ~0ull : 0);
+
+   /* Compute "equal" by subtracting and storing the zero bit */
+   return mi_math_binop(b, MI_ALU_SUB, src0, src1,
+                            MI_ALU_STORE, MI_ALU_ZF);
+}
+
+static inline struct mi_value
+mi_ine(struct mi_builder *b, struct mi_value src0, struct mi_value src1)
+{
+   if (src0.type == MI_VALUE_TYPE_IMM && src1.type == MI_VALUE_TYPE_IMM)
+      return mi_imm(mi_value_to_u64(src0) != mi_value_to_u64(src1) ? ~0ull : 0);
+
+   /* Compute "not equal" by subtracting and storing the inverse zero bit */
+   return mi_math_binop(b, MI_ALU_SUB, src0, src1,
+                            MI_ALU_STOREINV, MI_ALU_ZF);
 }
 
 static inline struct mi_value
@@ -848,6 +902,101 @@ mi_ior(struct mi_builder *b,
                            MI_ALU_STORE, MI_ALU_ACCU);
 }
 
+#if GFX_VERx10 >= 125
+static inline struct mi_value
+mi_ishl(struct mi_builder *b, struct mi_value src0, struct mi_value src1)
+{
+   if (src1.type == MI_VALUE_TYPE_IMM) {
+      assert(util_is_power_of_two_or_zero(mi_value_to_u64(src1)));
+      assert(mi_value_to_u64(src1) <= 32);
+   }
+
+   if (src0.type == MI_VALUE_TYPE_IMM && src1.type == MI_VALUE_TYPE_IMM)
+      return mi_imm(mi_value_to_u64(src0) << mi_value_to_u64(src1));
+
+   return mi_math_binop(b, MI_ALU_SHL, src0, src1,
+                           MI_ALU_STORE, MI_ALU_ACCU);
+}
+
+static inline struct mi_value
+mi_ushr(struct mi_builder *b, struct mi_value src0, struct mi_value src1)
+{
+   if (src1.type == MI_VALUE_TYPE_IMM) {
+      assert(util_is_power_of_two_or_zero(mi_value_to_u64(src1)));
+      assert(mi_value_to_u64(src1) <= 32);
+   }
+
+   if (src0.type == MI_VALUE_TYPE_IMM && src1.type == MI_VALUE_TYPE_IMM)
+      return mi_imm(mi_value_to_u64(src0) >> mi_value_to_u64(src1));
+
+   return mi_math_binop(b, MI_ALU_SHR, src0, src1,
+                           MI_ALU_STORE, MI_ALU_ACCU);
+}
+
+static inline struct mi_value
+mi_ushr_imm(struct mi_builder *b, struct mi_value src, uint32_t shift)
+{
+   if (shift == 0)
+      return src;
+
+   if (shift >= 64)
+      return mi_imm(0);
+
+   if (src.type == MI_VALUE_TYPE_IMM)
+      return mi_imm(mi_value_to_u64(src) >> shift);
+
+   struct mi_value res = mi_value_to_gpr(b, src);
+
+   /* Annoyingly, we only have power-of-two shifts */
+   while (shift) {
+      int bit = u_bit_scan(&shift);
+      assert(bit <= 5);
+      res = mi_ushr(b, res, mi_imm(1 << bit));
+   }
+
+   return res;
+}
+
+static inline struct mi_value
+mi_ishr(struct mi_builder *b, struct mi_value src0, struct mi_value src1)
+{
+   if (src1.type == MI_VALUE_TYPE_IMM) {
+      assert(util_is_power_of_two_or_zero(mi_value_to_u64(src1)));
+      assert(mi_value_to_u64(src1) <= 32);
+   }
+
+   if (src0.type == MI_VALUE_TYPE_IMM && src1.type == MI_VALUE_TYPE_IMM)
+      return mi_imm((int64_t)mi_value_to_u64(src0) >> mi_value_to_u64(src1));
+
+   return mi_math_binop(b, MI_ALU_SAR, src0, src1,
+                            MI_ALU_STORE, MI_ALU_ACCU);
+}
+
+static inline struct mi_value
+mi_ishr_imm(struct mi_builder *b, struct mi_value src, uint32_t shift)
+{
+   if (shift == 0)
+      return src;
+
+   if (shift >= 64)
+      return mi_imm(0);
+
+   if (src.type == MI_VALUE_TYPE_IMM)
+      return mi_imm((int64_t)mi_value_to_u64(src) >> shift);
+
+   struct mi_value res = mi_value_to_gpr(b, src);
+
+   /* Annoyingly, we only have power-of-two shifts */
+   while (shift) {
+      int bit = u_bit_scan(&shift);
+      assert(bit <= 5);
+      res = mi_ishr(b, res, mi_imm(1 << bit));
+   }
+
+   return res;
+}
+#endif /* if GFX_VERx10 >= 125 */
+
 static inline struct mi_value
 mi_imul_imm(struct mi_builder *b, struct mi_value src, uint32_t N)
 {
@@ -892,8 +1041,17 @@ mi_ishl_imm(struct mi_builder *b, struct mi_value src, uint32_t shift)
 
    struct mi_value res = mi_value_to_gpr(b, src);
 
+#if GFX_VERx10 >= 125
+   /* Annoyingly, we only have power-of-two shifts */
+   while (shift) {
+      int bit = u_bit_scan(&shift);
+      assert(bit <= 5);
+      res = mi_ishl(b, res, mi_imm(1 << bit));
+   }
+#else
    for (unsigned i = 0; i < shift; i++)
       res = mi_iadd(b, res, mi_value_ref(b, res));
+#endif
 
    return res;
 }
@@ -970,7 +1128,7 @@ mi_udiv32_imm(struct mi_builder *b, struct mi_value N, uint32_t D)
 
 #endif /* MI_MATH section */
 
-/* This assumes addresses of strictly more than 32bits (aka. Gen8+). */
+/* This assumes addresses of strictly more than 32bits (aka. Gfx8+). */
 #if MI_BUILDER_CAN_WRITE_BATCH
 
 struct mi_address_token {
@@ -1011,11 +1169,11 @@ mi_self_mod_barrier(struct mi_builder *b)
    mi_builder_emit(b, GENX(PIPE_CONTROL), pc) {
       pc.CommandStreamerStallEnable = true;
    }
-   /* Documentation says Gen11+ should be able to invalidate the command cache
+   /* Documentation says Gfx11+ should be able to invalidate the command cache
     * but experiment show it doesn't work properly, so for now just get over
     * the CS prefetch.
     */
-   for (uint32_t i = 0; i < 128; i++)
+   for (uint32_t i = 0; i < (b->devinfo->cs_prefetch_size / 4); i++)
       mi_builder_emit(b, GENX(MI_NOOP), noop);
 }
 
@@ -1024,12 +1182,190 @@ _mi_resolve_address_token(struct mi_builder *b,
                           struct mi_address_token token,
                           void *batch_location)
 {
-   uint64_t addr_addr_u64 = __gen_get_batch_address(b->user_data,
+   __gen_address_type addr = __gen_get_batch_address(b->user_data,
                                                     batch_location);
+   uint64_t addr_addr_u64 = __gen_combine_address(b->user_data, NULL, addr, 0);
    *(token.ptrs[0]) = addr_addr_u64;
    *(token.ptrs[1]) = addr_addr_u64 + 4;
 }
 
 #endif /* MI_BUILDER_CAN_WRITE_BATCH */
+
+#if GFX_VERx10 >= 125
+
+/*
+ * Indirect load/store.  Only available on GFX 12.5+
+ */
+
+MUST_CHECK static inline struct mi_value
+mi_load_mem64_offset(struct mi_builder *b,
+                     __gen_address_type addr, struct mi_value offset)
+{
+   uint64_t addr_u64 = __gen_combine_address(b->user_data, NULL, addr, 0);
+   struct mi_value addr_val = mi_imm(addr_u64);
+
+   struct mi_value dst = mi_new_gpr(b);
+
+   uint32_t dw[5];
+   dw[0] = _mi_math_load_src(b, MI_ALU_SRCA, &addr_val);
+   dw[1] = _mi_math_load_src(b, MI_ALU_SRCB, &offset);
+   dw[2] = _mi_pack_alu(MI_ALU_ADD, 0, 0);
+   dw[3] = _mi_pack_alu(MI_ALU_LOADIND, _mi_value_as_gpr(dst), MI_ALU_ACCU);
+   dw[4] = _mi_pack_alu(MI_ALU_FENCE_RD, 0, 0);
+   _mi_builder_push_math(b, dw, 5);
+
+   mi_value_unref(b, addr_val);
+   mi_value_unref(b, offset);
+
+   return dst;
+}
+
+static inline void
+mi_store_mem64_offset(struct mi_builder *b,
+                          __gen_address_type addr, struct mi_value offset,
+                          struct mi_value data)
+{
+   uint64_t addr_u64 = __gen_combine_address(b->user_data, NULL, addr, 0);
+   struct mi_value addr_val = mi_imm(addr_u64);
+
+   data = mi_value_to_gpr(b, mi_resolve_invert(b, data));
+
+   uint32_t dw[5];
+   dw[0] = _mi_math_load_src(b, MI_ALU_SRCA, &addr_val);
+   dw[1] = _mi_math_load_src(b, MI_ALU_SRCB, &offset);
+   dw[2] = _mi_pack_alu(MI_ALU_ADD, 0, 0);
+   dw[3] = _mi_pack_alu(MI_ALU_STOREIND, MI_ALU_ACCU, _mi_value_as_gpr(data));
+   dw[4] = _mi_pack_alu(MI_ALU_FENCE_WR, 0, 0);
+   _mi_builder_push_math(b, dw, 5);
+
+   mi_value_unref(b, addr_val);
+   mi_value_unref(b, offset);
+   mi_value_unref(b, data);
+
+   /* This is the only math case which has side-effects outside of regular
+    * registers to flush math afterwards so we don't confuse anyone.
+    */
+   mi_builder_flush_math(b);
+}
+
+/*
+ * Control-flow Section.  Only available on GFX 12.5+
+ */
+
+struct _mi_goto {
+   bool predicated;
+   void *mi_bbs;
+};
+
+struct mi_goto_target {
+   bool placed;
+   unsigned num_gotos;
+   struct _mi_goto gotos[8];
+   __gen_address_type addr;
+};
+
+#define MI_GOTO_TARGET_INIT ((struct mi_goto_target) {})
+
+#define MI_BUILDER_MI_PREDICATE_RESULT_num  0x2418
+
+static inline void
+mi_goto_if(struct mi_builder *b, struct mi_value cond,
+           struct mi_goto_target *t)
+{
+   /* First, set up the predicate, if any */
+   bool predicated;
+   if (cond.type == MI_VALUE_TYPE_IMM) {
+      /* If it's an immediate, the goto either doesn't happen or happens
+       * unconditionally.
+       */
+      if (mi_value_to_u64(cond) == 0)
+         return;
+
+      assert(mi_value_to_u64(cond) == ~0ull);
+      predicated = false;
+   } else if (mi_value_is_reg(cond) &&
+              cond.reg == MI_BUILDER_MI_PREDICATE_RESULT_num) {
+      /* If it's MI_PREDICATE_RESULT, we use whatever predicate the client
+       * provided us with
+       */
+      assert(cond.type == MI_VALUE_TYPE_REG32);
+      predicated = true;
+   } else {
+      mi_store(b, mi_reg32(MI_BUILDER_MI_PREDICATE_RESULT_num), cond);
+      predicated = true;
+   }
+
+   if (predicated) {
+      mi_builder_emit(b, GENX(MI_SET_PREDICATE), sp) {
+         sp.PredicateEnable = NOOPOnResultClear;
+      }
+   }
+   if (t->placed) {
+      mi_builder_emit(b, GENX(MI_BATCH_BUFFER_START), bbs) {
+         bbs.PredicationEnable         = predicated;
+         bbs.AddressSpaceIndicator     = ASI_PPGTT;
+         bbs.BatchBufferStartAddress   = t->addr;
+      }
+   } else {
+      assert(t->num_gotos < ARRAY_SIZE(t->gotos));
+      struct _mi_goto g = {
+         .predicated = predicated,
+         .mi_bbs = __gen_get_batch_dwords(b->user_data,
+                                          GENX(MI_BATCH_BUFFER_START_length)),
+      };
+      memset(g.mi_bbs, 0, 4 * GENX(MI_BATCH_BUFFER_START_length));
+      t->gotos[t->num_gotos++] = g;
+   }
+   if (predicated) {
+      mi_builder_emit(b, GENX(MI_SET_PREDICATE), sp) {
+         sp.PredicateEnable = NOOPNever;
+      }
+   }
+}
+
+static inline void
+mi_goto(struct mi_builder *b, struct mi_goto_target *t)
+{
+   mi_goto_if(b, mi_imm(-1), t);
+}
+
+static inline void
+mi_goto_target(struct mi_builder *b, struct mi_goto_target *t)
+{
+   mi_builder_emit(b, GENX(MI_SET_PREDICATE), sp) {
+      sp.PredicateEnable = NOOPNever;
+      t->addr = __gen_get_batch_address(b->user_data, _dst);
+   }
+   t->placed = true;
+
+   struct GENX(MI_BATCH_BUFFER_START) bbs = { GENX(MI_BATCH_BUFFER_START_header) };
+   bbs.AddressSpaceIndicator     = ASI_PPGTT;
+   bbs.BatchBufferStartAddress   = t->addr;
+
+   for (unsigned i = 0; i < t->num_gotos; i++) {
+      bbs.PredicationEnable = t->gotos[i].predicated;
+      GENX(MI_BATCH_BUFFER_START_pack)(b->user_data, t->gotos[i].mi_bbs, &bbs);
+   }
+}
+
+static inline struct mi_goto_target
+mi_goto_target_init_and_place(struct mi_builder *b)
+{
+   struct mi_goto_target t = MI_GOTO_TARGET_INIT;
+   mi_goto_target(b, &t);
+   return t;
+}
+
+#define mi_loop(b) \
+   for (struct mi_goto_target __break = MI_GOTO_TARGET_INIT, \
+        __continue = mi_goto_target_init_and_place(b); !__break.placed; \
+        mi_goto(b, &__continue), mi_goto_target(b, &__break))
+
+#define mi_break(b) mi_goto(b, &__break)
+#define mi_break_if(b, cond) mi_goto_if(b, cond, &__break)
+#define mi_continue(b) mi_goto(b, &__continue)
+#define mi_continue_if(b, cond) mi_goto_if(b, cond, &__continue)
+
+#endif /* GFX_VERx10 >= 125 */
 
 #endif /* MI_BUILDER_H */

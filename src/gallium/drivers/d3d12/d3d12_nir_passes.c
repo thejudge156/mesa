@@ -129,7 +129,7 @@ lower_load_face(nir_builder *b, struct nir_instr *instr, nir_variable *var)
 
    nir_ssa_def *load = nir_load_var(b, var);
 
-   nir_ssa_def_rewrite_uses(&intr->dest.ssa, nir_src_for_ssa(load));
+   nir_ssa_def_rewrite_uses(&intr->dest.ssa, load);
    nir_instr_remove(instr);
 }
 
@@ -194,7 +194,7 @@ lower_pos_read(nir_builder *b, struct nir_instr *instr,
    pos = nir_vector_insert_imm(b, pos, depth, 2);
 
    assert(intr->dest.is_ssa);
-   nir_ssa_def_rewrite_uses_after(&intr->dest.ssa, nir_src_for_ssa(pos),
+   nir_ssa_def_rewrite_uses_after(&intr->dest.ssa, pos,
                                   pos->parent_instr);
 }
 
@@ -295,7 +295,7 @@ lower_load_first_vertex(nir_builder *b, nir_instr *instr, nir_variable **first_v
 
    nir_ssa_def *load = get_state_var(b, D3D12_STATE_VAR_FIRST_VERTEX, "d3d12_FirstVertex",
                                      glsl_uint_type(), first_vertex);
-   nir_ssa_def_rewrite_uses(&intr->dest.ssa, nir_src_for_ssa(load));
+   nir_ssa_def_rewrite_uses(&intr->dest.ssa, load);
    nir_instr_remove(instr);
 
    return true;
@@ -447,7 +447,7 @@ lower_instr(nir_intrinsic_instr *instr, nir_builder *b,
                    .range = ~0,
                    );
 
-   nir_ssa_def_rewrite_uses(&instr->dest.ssa, nir_src_for_ssa(load));
+   nir_ssa_def_rewrite_uses(&instr->dest.ssa, load);
 
    /* Remove the old load_* instruction and any parent derefs */
    nir_instr_remove(&instr->instr);
@@ -977,51 +977,4 @@ d3d12_lower_triangle_strip(nir_shader *shader)
 
    nir_metadata_preserve(impl, 0);
    NIR_PASS_V(shader, nir_lower_var_copies);
-}
-
-void
-d3d12_fixup_clipdist_writes(nir_shader *shader)
-{
-   nir_builder b;
-   nir_function_impl *impl = nir_shader_get_entrypoint(shader);
-   nir_builder_init(&b, impl);
-
-   nir_foreach_block(block, impl) {
-      nir_foreach_instr_safe(instr, block) {
-         if (instr->type != nir_instr_type_intrinsic)
-            continue;
-
-         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-         if (intr->intrinsic != nir_intrinsic_store_deref)
-            continue;
-
-         nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
-         nir_variable *var = nir_deref_instr_get_variable(deref);
-         if (var->data.mode != nir_var_shader_out ||
-             (var->data.location != VARYING_SLOT_CLIP_DIST0 &&
-              var->data.location != VARYING_SLOT_CLIP_DIST1))
-            continue;
-
-         uint32_t writemask = nir_intrinsic_write_mask(intr);
-         if (writemask == 0xf)
-            continue;
-
-         b.cursor = nir_before_instr(instr);
-
-         nir_ssa_def *defs[4];
-         nir_ssa_def *prev = nir_ssa_for_src(&b, intr->src[1],
-                                             nir_src_num_components(intr->src[1]));
-         for (int i = 0; i < 4; ++i) {
-            if (writemask & (1 << i))
-               defs[i] = nir_channel(&b, prev, i);
-            else
-               defs[i] = nir_imm_zero(&b, 1, nir_src_bit_size(intr->src[1]));
-         }
-         nir_ssa_def *def = nir_vec4(&b, defs[0], defs[1], defs[2], defs[3]);
-         nir_instr_rewrite_src(&intr->instr, intr->src + 1, nir_src_for_ssa(def));
-         nir_intrinsic_set_write_mask(intr, 0xf);
-      }
-   }
-
-   nir_metadata_preserve(impl, nir_metadata_all);
 }

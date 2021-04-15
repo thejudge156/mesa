@@ -107,12 +107,8 @@ lower_dynamic_bo_access_instr(nir_intrinsic_instr *instr, nir_builder *b)
    bool ssbo_mode = instr->intrinsic != nir_intrinsic_load_ubo && instr->intrinsic != nir_intrinsic_load_ubo_vec4;
    unsigned first_idx = UINT_MAX, last_idx;
    if (ssbo_mode) {
-      /* ssbo bindings don't always start at 0 */
-      nir_foreach_variable_with_modes(var, b->shader, nir_var_mem_ssbo) {
-         first_idx = var->data.binding;
-         break;
-      }
-      assert(first_idx != UINT_MAX);
+      nir_foreach_variable_with_modes(var, b->shader, nir_var_mem_ssbo)
+         first_idx = MIN2(first_idx, var->data.driver_location);
       last_idx = first_idx + b->shader->info.num_ssbos;
    } else {
       /* skip 0 index if uniform_0 is one we created previously */
@@ -129,7 +125,8 @@ lower_dynamic_bo_access_instr(nir_intrinsic_instr *instr, nir_builder *b)
       /* now use the composite dest in all cases where the original dest (from the dynamic index)
        * was used and remove the dynamically-indexed load_*bo instruction
        */
-      nir_ssa_def_rewrite_uses_after(&instr->dest.ssa, nir_src_for_ssa(new_dest), &instr->instr);
+      nir_ssa_def_rewrite_uses_after(&instr->dest.ssa, new_dest,
+                                     &instr->instr);
    } else
       generate_store_ssbo_ssa_def(b, instr, instr->src[block_idx].ssa, first_idx, last_idx);
    nir_instr_remove(&instr->instr);

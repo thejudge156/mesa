@@ -45,6 +45,8 @@ struct address {
 uint64_t __gen_combine_address(mi_builder_test *test, void *location,
                                struct address addr, uint32_t delta);
 void * __gen_get_batch_dwords(mi_builder_test *test, unsigned num_dwords);
+struct address __gen_get_batch_address(mi_builder_test *test,
+                                       void *location);
 
 struct address
 __gen_address_offset(address addr, uint64_t offset)
@@ -53,10 +55,10 @@ __gen_address_offset(address addr, uint64_t offset)
    return addr;
 }
 
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
 #define RSVD_TEMP_REG 0x2678 /* MI_ALU_REG15 */
 #else
-#define RSVD_TEMP_REG 0x2430 /* GEN7_3DPRIM_START_VERTEX */
+#define RSVD_TEMP_REG 0x2430 /* GFX7_3DPRIM_START_VERTEX */
 #endif
 #define MI_BUILDER_NUM_ALLOC_GPRS 15
 #define INPUT_DATA_OFFSET 0
@@ -129,12 +131,20 @@ public:
    gen_device_info devinfo;
 
    uint32_t batch_bo_handle;
+#if GFX_VER >= 8
+   uint64_t batch_bo_addr;
+#endif
    uint32_t batch_offset;
    void *batch_map;
 
+#if GFX_VER < 8
    std::vector<drm_i915_gem_relocation_entry> relocs;
+#endif
 
    uint32_t data_bo_handle;
+#if GFX_VER >= 8
+   uint64_t data_bo_addr;
+#endif
    void *data_map;
    char *input;
    char *output;
@@ -184,7 +194,7 @@ mi_builder_test::SetUp()
                             (void *)&getparam), 0) << strerror(errno);
 
          ASSERT_TRUE(gen_get_device_info_from_pci_id(device_id, &devinfo));
-         if (devinfo.gen != GEN_GEN || devinfo.is_haswell != GEN_IS_HASWELL) {
+         if (devinfo.ver != GFX_VER || devinfo.is_haswell != (GFX_VERx10 == 75)) {
             close(fd);
             fd = -1;
             continue;
@@ -202,12 +212,26 @@ mi_builder_test::SetUp()
                       (void *)&ctx_create), 0) << strerror(errno);
    ctx_id = ctx_create.ctx_id;
 
+   if (GFX_VER >= 8) {
+      /* On gfx8+, we require softpin */
+      int has_softpin;
+      drm_i915_getparam getparam = drm_i915_getparam();
+      getparam.param = I915_PARAM_HAS_EXEC_SOFTPIN;
+      getparam.value = &has_softpin;
+      ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GETPARAM,
+                         (void *)&getparam), 0) << strerror(errno);
+      ASSERT_TRUE(has_softpin);
+   }
+
    // Create the batch buffer
    drm_i915_gem_create gem_create = drm_i915_gem_create();
    gem_create.size = BATCH_BO_SIZE;
    ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_CREATE,
                       (void *)&gem_create), 0) << strerror(errno);
    batch_bo_handle = gem_create.handle;
+#if GFX_VER >= 8
+   batch_bo_addr = 0xffffffffdff70000ULL;
+#endif
 
    drm_i915_gem_caching gem_caching = drm_i915_gem_caching();
    gem_caching.handle = batch_bo_handle;
@@ -233,6 +257,9 @@ mi_builder_test::SetUp()
    ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_CREATE,
                       (void *)&gem_create), 0) << strerror(errno);
    data_bo_handle = gem_create.handle;
+#if GFX_VER >= 8
+   data_bo_addr = 0xffffffffefff0000ULL;
+#endif
 
    gem_caching = drm_i915_gem_caching();
    gem_caching.handle = data_bo_handle;
@@ -255,7 +282,7 @@ mi_builder_test::SetUp()
    memset(data_map, 139, DATA_BO_SIZE);
    memset(&canary, 139, sizeof(canary));
 
-   mi_builder_init(&b, this);
+   mi_builder_init(&b, &devinfo, this);
 }
 
 void *
@@ -282,18 +309,29 @@ mi_builder_test::submit_batch()
    objects[0].handle = data_bo_handle;
    objects[0].relocation_count = 0;
    objects[0].relocs_ptr = 0;
+#if GFX_VER >= 8 /* On gfx8+, we pin everything */
+   objects[0].flags = EXEC_OBJECT_SUPPORTS_48B_ADDRESS |
+                      EXEC_OBJECT_PINNED |
+                      EXEC_OBJECT_WRITE;
+   objects[0].offset = data_bo_addr;
+#else
    objects[0].flags = EXEC_OBJECT_WRITE;
    objects[0].offset = -1;
-   if (GEN_GEN >= 8)
-      objects[0].flags |= EXEC_OBJECT_SUPPORTS_48B_ADDRESS;
+#endif
 
    objects[1].handle = batch_bo_handle;
+#if GFX_VER >= 8 /* On gfx8+, we don't use relocations */
+   objects[1].relocation_count = 0;
+   objects[1].relocs_ptr = 0;
+   objects[1].flags = EXEC_OBJECT_SUPPORTS_48B_ADDRESS |
+                      EXEC_OBJECT_PINNED;
+   objects[1].offset = batch_bo_addr;
+#else
    objects[1].relocation_count = relocs.size();
    objects[1].relocs_ptr = (uintptr_t)(void *)&relocs[0];
    objects[1].flags = 0;
    objects[1].offset = -1;
-   if (GEN_GEN >= 8)
-      objects[1].flags |= EXEC_OBJECT_SUPPORTS_48B_ADDRESS;
+#endif
 
    drm_i915_gem_execbuffer2 execbuf = drm_i915_gem_execbuffer2();
    execbuf.buffers_ptr = (uintptr_t)(void *)objects;
@@ -317,6 +355,11 @@ uint64_t
 __gen_combine_address(mi_builder_test *test, void *location,
                       address addr, uint32_t delta)
 {
+#if GFX_VER >= 8
+   uint64_t addr_u64 = addr.gem_handle == test->data_bo_handle ?
+                       test->data_bo_addr : test->batch_bo_addr;
+   return addr_u64 + addr.offset + delta;
+#else
    drm_i915_gem_relocation_entry reloc = drm_i915_gem_relocation_entry();
    reloc.target_handle = addr.gem_handle == test->data_bo_handle ? 0 : 1;
    reloc.delta = addr.offset + delta;
@@ -325,12 +368,27 @@ __gen_combine_address(mi_builder_test *test, void *location,
    test->relocs.push_back(reloc);
 
    return reloc.delta;
+#endif
 }
 
 void *
 __gen_get_batch_dwords(mi_builder_test *test, unsigned num_dwords)
 {
    return test->emit_dwords(num_dwords);
+}
+
+struct address
+__gen_get_batch_address(mi_builder_test *test, void *location)
+{
+   assert(location >= test->batch_map);
+   size_t offset = (char *)location - (char *)test->batch_map;
+   assert(offset < BATCH_BO_SIZE);
+   assert(offset <= UINT32_MAX);
+
+   return (struct address) {
+      .gem_handle = test->batch_bo_handle,
+      .offset = (uint32_t)offset,
+   };
 }
 
 #include "genxml/genX_pack.h"
@@ -354,7 +412,7 @@ TEST_F(mi_builder_test, imm_mem)
 }
 
 /* mem -> mem copies are only supported on HSW+ */
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
 TEST_F(mi_builder_test, mem_mem)
 {
    const uint64_t value = 0x0123456789abcdef;
@@ -474,9 +532,37 @@ TEST_F(mi_builder_test, memcpy)
 }
 
 /* Start of MI_MATH section */
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
 
 #define EXPECT_EQ_IMM(x, imm) EXPECT_EQ(x, mi_value_to_u64(imm))
+
+TEST_F(mi_builder_test, inot)
+{
+   const uint64_t value = 0x0123456789abcdef;
+   const uint32_t value_lo = (uint32_t)value;
+   const uint32_t value_hi = (uint32_t)(value >> 32);
+   memcpy(input, &value, sizeof(value));
+
+   mi_store(&b, out_mem64(0),  mi_inot(&b, in_mem64(0)));
+   mi_store(&b, out_mem64(8),  mi_inot(&b, mi_inot(&b, in_mem64(0))));
+   mi_store(&b, out_mem64(16), mi_inot(&b, in_mem32(0)));
+   mi_store(&b, out_mem64(24), mi_inot(&b, in_mem32(4)));
+   mi_store(&b, out_mem32(32), mi_inot(&b, in_mem64(0)));
+   mi_store(&b, out_mem32(36), mi_inot(&b, in_mem32(0)));
+   mi_store(&b, out_mem32(40), mi_inot(&b, mi_inot(&b, in_mem32(0))));
+   mi_store(&b, out_mem32(44), mi_inot(&b, in_mem32(4)));
+
+   submit_batch();
+
+   EXPECT_EQ(*(uint64_t *)(output + 0),  ~value);
+   EXPECT_EQ(*(uint64_t *)(output + 8),  value);
+   EXPECT_EQ(*(uint64_t *)(output + 16), ~(uint64_t)value_lo);
+   EXPECT_EQ(*(uint64_t *)(output + 24), ~(uint64_t)value_hi);
+   EXPECT_EQ(*(uint32_t *)(output + 32), (uint32_t)~value);
+   EXPECT_EQ(*(uint32_t *)(output + 36), (uint32_t)~value_lo);
+   EXPECT_EQ(*(uint32_t *)(output + 40), (uint32_t)value_lo);
+   EXPECT_EQ(*(uint32_t *)(output + 44), (uint32_t)~value_hi);
+}
 
 /* Test adding of immediates of all kinds including
  *
@@ -537,7 +623,7 @@ TEST_F(mi_builder_test, add_imm)
    EXPECT_EQ(*(uint64_t *)(output + 104), value + add);
 }
 
-TEST_F(mi_builder_test, ilt_uge)
+TEST_F(mi_builder_test, ult_uge_ieq_ine)
 {
    uint64_t values[8] = {
       0x0123456789abcdef,
@@ -553,10 +639,14 @@ TEST_F(mi_builder_test, ilt_uge)
 
    for (unsigned i = 0; i < ARRAY_SIZE(values); i++) {
       for (unsigned j = 0; j < ARRAY_SIZE(values); j++) {
-         mi_store(&b, out_mem64(i * 128 + j * 16 + 0),
+         mi_store(&b, out_mem64(i * 256 + j * 32 + 0),
                       mi_ult(&b, in_mem64(i * 8), in_mem64(j * 8)));
-         mi_store(&b, out_mem64(i * 128 + j * 16 + 8),
+         mi_store(&b, out_mem64(i * 256 + j * 32 + 8),
                       mi_uge(&b, in_mem64(i * 8), in_mem64(j * 8)));
+         mi_store(&b, out_mem64(i * 256 + j * 32 + 16),
+                      mi_ieq(&b, in_mem64(i * 8), in_mem64(j * 8)));
+         mi_store(&b, out_mem64(i * 256 + j * 32 + 24),
+                      mi_ine(&b, in_mem64(i * 8), in_mem64(j * 8)));
       }
    }
 
@@ -564,10 +654,14 @@ TEST_F(mi_builder_test, ilt_uge)
 
    for (unsigned i = 0; i < ARRAY_SIZE(values); i++) {
       for (unsigned j = 0; j < ARRAY_SIZE(values); j++) {
-         uint64_t *out_u64 = (uint64_t *)(output + i * 128 + j * 16);
+         uint64_t *out_u64 = (uint64_t *)(output + i * 256 + j * 32);
          EXPECT_EQ_IMM(out_u64[0], mi_ult(&b, mi_imm(values[i]),
                                               mi_imm(values[j])));
          EXPECT_EQ_IMM(out_u64[1], mi_uge(&b, mi_imm(values[i]),
+                                              mi_imm(values[j])));
+         EXPECT_EQ_IMM(out_u64[2], mi_ieq(&b, mi_imm(values[i]),
+                                              mi_imm(values[j])));
+         EXPECT_EQ_IMM(out_u64[3], mi_ine(&b, mi_imm(values[i]),
                                               mi_imm(values[j])));
       }
    }
@@ -613,6 +707,114 @@ TEST_F(mi_builder_test, iand)
    EXPECT_EQ_IMM(*(uint64_t *)output, mi_iand(&b, mi_imm(values[0]),
                                                   mi_imm(values[1])));
 }
+
+#if GFX_VERx10 >= 125
+TEST_F(mi_builder_test, ishl)
+{
+   const uint64_t value = 0x0123456789abcdef;
+   memcpy(input, &value, sizeof(value));
+
+   uint32_t shifts[] = { 0, 1, 2, 4, 8, 16, 32 };
+   memcpy(input + 8, shifts, sizeof(shifts));
+
+   for (unsigned i = 0; i < ARRAY_SIZE(shifts); i++) {
+      mi_store(&b, out_mem64(i * 8),
+                   mi_ishl(&b, in_mem64(0), in_mem32(8 + i * 4)));
+   }
+
+   submit_batch();
+
+   for (unsigned i = 0; i < ARRAY_SIZE(shifts); i++) {
+      EXPECT_EQ_IMM(*(uint64_t *)(output + i * 8),
+                    mi_ishl(&b, mi_imm(value), mi_imm(shifts[i])));
+   }
+}
+
+TEST_F(mi_builder_test, ushr)
+{
+   const uint64_t value = 0x0123456789abcdef;
+   memcpy(input, &value, sizeof(value));
+
+   uint32_t shifts[] = { 0, 1, 2, 4, 8, 16, 32 };
+   memcpy(input + 8, shifts, sizeof(shifts));
+
+   for (unsigned i = 0; i < ARRAY_SIZE(shifts); i++) {
+      mi_store(&b, out_mem64(i * 8),
+                   mi_ushr(&b, in_mem64(0), in_mem32(8 + i * 4)));
+   }
+
+   submit_batch();
+
+   for (unsigned i = 0; i < ARRAY_SIZE(shifts); i++) {
+      EXPECT_EQ_IMM(*(uint64_t *)(output + i * 8),
+                    mi_ushr(&b, mi_imm(value), mi_imm(shifts[i])));
+   }
+}
+
+TEST_F(mi_builder_test, ushr_imm)
+{
+   const uint64_t value = 0x0123456789abcdef;
+   memcpy(input, &value, sizeof(value));
+
+   const unsigned max_shift = 64;
+
+   for (unsigned i = 0; i <= max_shift; i++)
+      mi_store(&b, out_mem64(i * 8), mi_ushr_imm(&b, in_mem64(0), i));
+
+   submit_batch();
+
+   for (unsigned i = 0; i <= max_shift; i++) {
+      EXPECT_EQ_IMM(*(uint64_t *)(output + i * 8),
+                    mi_ushr_imm(&b, mi_imm(value), i));
+   }
+}
+
+TEST_F(mi_builder_test, ishr)
+{
+   const uint64_t values[] = {
+      0x0123456789abcdef,
+      0xfedcba9876543210,
+   };
+   memcpy(input, values, sizeof(values));
+
+   uint32_t shifts[] = { 0, 1, 2, 4, 8, 16, 32 };
+   memcpy(input + 16, shifts, sizeof(shifts));
+
+   for (unsigned i = 0; i < ARRAY_SIZE(values); i++) {
+      for (unsigned j = 0; j < ARRAY_SIZE(shifts); j++) {
+         mi_store(&b, out_mem64(i * 8 + j * 16),
+                      mi_ishr(&b, in_mem64(i * 8), in_mem32(16 + j * 4)));
+      }
+   }
+
+   submit_batch();
+
+   for (unsigned i = 0; i < ARRAY_SIZE(values); i++) {
+      for (unsigned j = 0; j < ARRAY_SIZE(shifts); j++) {
+         EXPECT_EQ_IMM(*(uint64_t *)(output + i * 8 + j * 16),
+                       mi_ishr(&b, mi_imm(values[i]), mi_imm(shifts[j])));
+      }
+   }
+}
+
+TEST_F(mi_builder_test, ishr_imm)
+{
+   const uint64_t value = 0x0123456789abcdef;
+   memcpy(input, &value, sizeof(value));
+
+   const unsigned max_shift = 64;
+
+   for (unsigned i = 0; i <= max_shift; i++)
+      mi_store(&b, out_mem64(i * 8), mi_ishr_imm(&b, in_mem64(0), i));
+
+   submit_batch();
+
+   for (unsigned i = 0; i <= max_shift; i++) {
+      EXPECT_EQ_IMM(*(uint64_t *)(output + i * 8),
+                    mi_ishr_imm(&b, mi_imm(value), i));
+   }
+}
+#endif /* if GFX_VERx10 >= 125 */
 
 TEST_F(mi_builder_test, imul_imm)
 {
@@ -751,4 +953,231 @@ TEST_F(mi_builder_test, store_if)
    EXPECT_EQ(*(uint32_t *)(output + 12), (uint32_t)canary);
 }
 
-#endif /* GEN_GEN >= 8 || GEN_IS_HASWELL */
+#endif /* GFX_VERx10 >= 75 */
+
+#if GFX_VERx10 >= 125
+
+/*
+ * Indirect load/store tests.  Only available on GFX 12.5+
+ */
+
+TEST_F(mi_builder_test, load_mem64_offset)
+{
+   uint64_t values[8] = {
+      0x0123456789abcdef,
+      0xdeadbeefac0ffee2,
+      (uint64_t)-1,
+      1,
+      0,
+      1049571,
+      (uint64_t)-240058,
+      20204184,
+   };
+   memcpy(input, values, sizeof(values));
+
+   uint32_t offsets[8] = { 0, 40, 24, 48, 56, 8, 32, 16 };
+   memcpy(input + 64, offsets, sizeof(offsets));
+
+   for (unsigned i = 0; i < ARRAY_SIZE(offsets); i++) {
+      mi_store(&b, out_mem64(i * 8),
+               mi_load_mem64_offset(&b, in_addr(0), in_mem32(i * 4 + 64)));
+   }
+
+   submit_batch();
+
+   for (unsigned i = 0; i < ARRAY_SIZE(offsets); i++)
+      EXPECT_EQ(*(uint64_t *)(output + i * 8), values[offsets[i] / 8]);
+}
+
+TEST_F(mi_builder_test, store_mem64_offset)
+{
+   uint64_t values[8] = {
+      0x0123456789abcdef,
+      0xdeadbeefac0ffee2,
+      (uint64_t)-1,
+      1,
+      0,
+      1049571,
+      (uint64_t)-240058,
+      20204184,
+   };
+   memcpy(input, values, sizeof(values));
+
+   uint32_t offsets[8] = { 0, 40, 24, 48, 56, 8, 32, 16 };
+   memcpy(input + 64, offsets, sizeof(offsets));
+
+   for (unsigned i = 0; i < ARRAY_SIZE(offsets); i++) {
+      mi_store_mem64_offset(&b, out_addr(0), in_mem32(i * 4 + 64),
+                                in_mem64(i * 8));
+   }
+
+   submit_batch();
+
+   for (unsigned i = 0; i < ARRAY_SIZE(offsets); i++)
+      EXPECT_EQ(*(uint64_t *)(output + offsets[i]), values[i]);
+}
+
+/*
+ * Control-flow tests.  Only available on GFX 12.5+
+ */
+
+TEST_F(mi_builder_test, goto)
+{
+   const uint64_t value = 0xb453b411deadc0deull;
+
+   mi_store(&b, out_mem64(0), mi_imm(value));
+
+   struct mi_goto_target t = MI_GOTO_TARGET_INIT;
+   mi_goto(&b, &t);
+
+   /* This one should be skipped */
+   mi_store(&b, out_mem64(0), mi_imm(0));
+
+   mi_goto_target(&b, &t);
+
+   submit_batch();
+
+   EXPECT_EQ(*(uint64_t *)(output + 0), value);
+}
+
+#define MI_PREDICATE_RESULT  0x2418
+
+TEST_F(mi_builder_test, goto_if)
+{
+   const uint64_t values[] = {
+      0xb453b411deadc0deull,
+      0x0123456789abcdefull,
+      0,
+   };
+
+   mi_store(&b, out_mem64(0), mi_imm(values[0]));
+
+   emit_cmd(GENX(MI_PREDICATE), mip) {
+      mip.LoadOperation    = LOAD_LOAD;
+      mip.CombineOperation = COMBINE_SET;
+      mip.CompareOperation = COMPARE_FALSE;
+   }
+
+   struct mi_goto_target t = MI_GOTO_TARGET_INIT;
+   mi_goto_if(&b, mi_reg32(MI_PREDICATE_RESULT), &t);
+
+   mi_store(&b, out_mem64(0), mi_imm(values[1]));
+
+   emit_cmd(GENX(MI_PREDICATE), mip) {
+      mip.LoadOperation    = LOAD_LOAD;
+      mip.CombineOperation = COMBINE_SET;
+      mip.CompareOperation = COMPARE_TRUE;
+   }
+
+   mi_goto_if(&b, mi_reg32(MI_PREDICATE_RESULT), &t);
+
+   /* This one should be skipped */
+   mi_store(&b, out_mem64(0), mi_imm(values[2]));
+
+   mi_goto_target(&b, &t);
+
+   submit_batch();
+
+   EXPECT_EQ(*(uint64_t *)(output + 0), values[1]);
+}
+
+TEST_F(mi_builder_test, loop_simple)
+{
+   const uint64_t loop_count = 8;
+
+   mi_store(&b, out_mem64(0), mi_imm(0));
+
+   mi_loop(&b) {
+      mi_break_if(&b, mi_uge(&b, out_mem64(0), mi_imm(loop_count)));
+
+      mi_store(&b, out_mem64(0), mi_iadd_imm(&b, out_mem64(0), 1));
+   }
+
+   submit_batch();
+
+   EXPECT_EQ(*(uint64_t *)(output + 0), loop_count);
+}
+
+TEST_F(mi_builder_test, loop_break)
+{
+   mi_loop(&b) {
+      mi_store(&b, out_mem64(0), mi_imm(1));
+
+      mi_break_if(&b, mi_imm(0));
+
+      mi_store(&b, out_mem64(0), mi_imm(2));
+
+      mi_break(&b);
+
+      mi_store(&b, out_mem64(0), mi_imm(3));
+   }
+
+   submit_batch();
+
+   EXPECT_EQ(*(uint64_t *)(output + 0), 2);
+}
+
+TEST_F(mi_builder_test, loop_continue)
+{
+   const uint64_t loop_count = 8;
+
+   mi_store(&b, out_mem64(0), mi_imm(0));
+   mi_store(&b, out_mem64(8), mi_imm(0));
+
+   mi_loop(&b) {
+      mi_break_if(&b, mi_uge(&b, out_mem64(0), mi_imm(loop_count)));
+
+      mi_store(&b, out_mem64(0), mi_iadd_imm(&b, out_mem64(0), 1));
+      mi_store(&b, out_mem64(8), mi_imm(5));
+
+      mi_continue(&b);
+
+      mi_store(&b, out_mem64(8), mi_imm(10));
+   }
+
+   submit_batch();
+
+   EXPECT_EQ(*(uint64_t *)(output + 0), loop_count);
+   EXPECT_EQ(*(uint64_t *)(output + 8), 5);
+}
+
+TEST_F(mi_builder_test, loop_continue_if)
+{
+   const uint64_t loop_count = 8;
+
+   mi_store(&b, out_mem64(0), mi_imm(0));
+   mi_store(&b, out_mem64(8), mi_imm(0));
+
+   mi_loop(&b) {
+      mi_break_if(&b, mi_uge(&b, out_mem64(0), mi_imm(loop_count)));
+
+      mi_store(&b, out_mem64(0), mi_iadd_imm(&b, out_mem64(0), 1));
+      mi_store(&b, out_mem64(8), mi_imm(5));
+
+      emit_cmd(GENX(MI_PREDICATE), mip) {
+         mip.LoadOperation    = LOAD_LOAD;
+         mip.CombineOperation = COMBINE_SET;
+         mip.CompareOperation = COMPARE_FALSE;
+      }
+
+      mi_continue_if(&b, mi_reg32(MI_PREDICATE_RESULT));
+
+      mi_store(&b, out_mem64(8), mi_imm(10));
+
+      emit_cmd(GENX(MI_PREDICATE), mip) {
+         mip.LoadOperation    = LOAD_LOAD;
+         mip.CombineOperation = COMBINE_SET;
+         mip.CompareOperation = COMPARE_TRUE;
+      }
+
+      mi_continue_if(&b, mi_reg32(MI_PREDICATE_RESULT));
+
+      mi_store(&b, out_mem64(8), mi_imm(15));
+   }
+
+   submit_batch();
+
+   EXPECT_EQ(*(uint64_t *)(output + 0), loop_count);
+   EXPECT_EQ(*(uint64_t *)(output + 8), 10);
+}
+#endif /* GFX_VERx10 >= 125 */

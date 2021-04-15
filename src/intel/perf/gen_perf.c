@@ -35,7 +35,7 @@
 
 #include <drm-uapi/i915_drm.h>
 
-#include "common/gen_gem.h"
+#include "common/intel_gem.h"
 
 #include "dev/gen_debug.h"
 #include "dev/gen_device_info.h"
@@ -182,7 +182,7 @@ register_oa_config(struct gen_perf_config *perf,
       gen_perf_append_query_info(perf, 0);
 
    *registered_query = *query;
-   registered_query->oa_format = devinfo->gen >= 8 ?
+   registered_query->oa_format = devinfo->ver >= 8 ?
       I915_OA_FORMAT_A32u40_A4u32_B8_C8 : I915_OA_FORMAT_A45_B8_C8;
    registered_query->oa_metrics_set_id = config_id;
    DBG("metric set registered: id = %" PRIu64", guid = %s\n",
@@ -250,7 +250,7 @@ kernel_has_dynamic_config_support(struct gen_perf_config *perf, int fd)
 {
    uint64_t invalid_config_id = UINT64_MAX;
 
-   return gen_ioctl(fd, DRM_IOCTL_I915_PERF_REMOVE_CONFIG,
+   return intel_ioctl(fd, DRM_IOCTL_I915_PERF_REMOVE_CONFIG,
                     &invalid_config_id) < 0 && errno == ENOENT;
 }
 
@@ -262,7 +262,7 @@ i915_query_items(struct gen_perf_config *perf, int fd,
       .num_items = n_items,
       .items_ptr = to_user_pointer(items),
    };
-   return gen_ioctl(fd, DRM_IOCTL_I915_QUERY, &q);
+   return intel_ioctl(fd, DRM_IOCTL_I915_QUERY, &q);
 }
 
 static bool
@@ -336,7 +336,7 @@ i915_add_config(struct gen_perf_config *perf, int fd,
    i915_config.n_flex_regs = config->n_flex_regs;
    i915_config.flex_regs_ptr = to_const_user_pointer(config->flex_regs);
 
-   int ret = gen_ioctl(fd, DRM_IOCTL_I915_PERF_ADD_CONFIG, &i915_config);
+   int ret = intel_ioctl(fd, DRM_IOCTL_I915_PERF_ADD_CONFIG, &i915_config);
    return ret > 0 ? ret : 0;
 }
 
@@ -383,8 +383,8 @@ compute_topology_builtins(struct gen_perf_config *perf,
 
    perf->sys_vars.eu_threads_count = devinfo->num_thread_per_eu;
 
-   /* The subslice mask builtin contains bits for all slices. Prior to Gen11
-    * it had groups of 3bits for each slice, on Gen11 it's 8bits for each
+   /* The subslice mask builtin contains bits for all slices. Prior to Gfx11
+    * it had groups of 3bits for each slice, on Gfx11 it's 8bits for each
     * slice.
     *
     * Ideally equations would be updated to have a slice/subslice query
@@ -392,7 +392,7 @@ compute_topology_builtins(struct gen_perf_config *perf,
     */
    perf->sys_vars.subslice_mask = 0;
 
-   int bits_per_subslice = devinfo->gen == 11 ? 8 : 3;
+   int bits_per_subslice = devinfo->ver == 11 ? 8 : 3;
 
    for (int s = 0; s < util_last_bit(devinfo->slice_masks); s++) {
       for (int ss = 0; ss < (devinfo->subslice_slice_stride * 8); ss++) {
@@ -464,7 +464,7 @@ get_register_queries_function(const struct gen_device_info *devinfo)
       if (devinfo->gt == 3)
          return gen_oa_register_queries_cflgt3;
    }
-   if (devinfo->gen == 11) {
+   if (devinfo->ver == 11) {
       if (devinfo->is_elkhartlake)
          return gen_oa_register_queries_ehl;
       return gen_oa_register_queries_icl;
@@ -518,36 +518,36 @@ load_pipeline_statistic_metrics(struct gen_perf_config *perf_cfg,
    gen_perf_query_add_basic_stat_reg(query, VS_INVOCATION_COUNT,
                                      "N vertex shader invocations");
 
-   if (devinfo->gen == 6) {
-      gen_perf_query_add_stat_reg(query, GEN6_SO_PRIM_STORAGE_NEEDED, 1, 1,
+   if (devinfo->ver == 6) {
+      gen_perf_query_add_stat_reg(query, GFX6_SO_PRIM_STORAGE_NEEDED, 1, 1,
                                   "SO_PRIM_STORAGE_NEEDED",
                                   "N geometry shader stream-out primitives (total)");
-      gen_perf_query_add_stat_reg(query, GEN6_SO_NUM_PRIMS_WRITTEN, 1, 1,
+      gen_perf_query_add_stat_reg(query, GFX6_SO_NUM_PRIMS_WRITTEN, 1, 1,
                                   "SO_NUM_PRIMS_WRITTEN",
                                   "N geometry shader stream-out primitives (written)");
    } else {
-      gen_perf_query_add_stat_reg(query, GEN7_SO_PRIM_STORAGE_NEEDED(0), 1, 1,
+      gen_perf_query_add_stat_reg(query, GFX7_SO_PRIM_STORAGE_NEEDED(0), 1, 1,
                                   "SO_PRIM_STORAGE_NEEDED (Stream 0)",
                                   "N stream-out (stream 0) primitives (total)");
-      gen_perf_query_add_stat_reg(query, GEN7_SO_PRIM_STORAGE_NEEDED(1), 1, 1,
+      gen_perf_query_add_stat_reg(query, GFX7_SO_PRIM_STORAGE_NEEDED(1), 1, 1,
                                   "SO_PRIM_STORAGE_NEEDED (Stream 1)",
                                   "N stream-out (stream 1) primitives (total)");
-      gen_perf_query_add_stat_reg(query, GEN7_SO_PRIM_STORAGE_NEEDED(2), 1, 1,
+      gen_perf_query_add_stat_reg(query, GFX7_SO_PRIM_STORAGE_NEEDED(2), 1, 1,
                                   "SO_PRIM_STORAGE_NEEDED (Stream 2)",
                                   "N stream-out (stream 2) primitives (total)");
-      gen_perf_query_add_stat_reg(query, GEN7_SO_PRIM_STORAGE_NEEDED(3), 1, 1,
+      gen_perf_query_add_stat_reg(query, GFX7_SO_PRIM_STORAGE_NEEDED(3), 1, 1,
                                   "SO_PRIM_STORAGE_NEEDED (Stream 3)",
                                   "N stream-out (stream 3) primitives (total)");
-      gen_perf_query_add_stat_reg(query, GEN7_SO_NUM_PRIMS_WRITTEN(0), 1, 1,
+      gen_perf_query_add_stat_reg(query, GFX7_SO_NUM_PRIMS_WRITTEN(0), 1, 1,
                                   "SO_NUM_PRIMS_WRITTEN (Stream 0)",
                                   "N stream-out (stream 0) primitives (written)");
-      gen_perf_query_add_stat_reg(query, GEN7_SO_NUM_PRIMS_WRITTEN(1), 1, 1,
+      gen_perf_query_add_stat_reg(query, GFX7_SO_NUM_PRIMS_WRITTEN(1), 1, 1,
                                   "SO_NUM_PRIMS_WRITTEN (Stream 1)",
                                   "N stream-out (stream 1) primitives (written)");
-      gen_perf_query_add_stat_reg(query, GEN7_SO_NUM_PRIMS_WRITTEN(2), 1, 1,
+      gen_perf_query_add_stat_reg(query, GFX7_SO_NUM_PRIMS_WRITTEN(2), 1, 1,
                                   "SO_NUM_PRIMS_WRITTEN (Stream 2)",
                                   "N stream-out (stream 2) primitives (written)");
-      gen_perf_query_add_stat_reg(query, GEN7_SO_NUM_PRIMS_WRITTEN(3), 1, 1,
+      gen_perf_query_add_stat_reg(query, GFX7_SO_NUM_PRIMS_WRITTEN(3), 1, 1,
                                   "SO_NUM_PRIMS_WRITTEN (Stream 3)",
                                   "N stream-out (stream 3) primitives (written)");
    }
@@ -567,7 +567,7 @@ load_pipeline_statistic_metrics(struct gen_perf_config *perf_cfg,
    gen_perf_query_add_basic_stat_reg(query, CL_PRIMITIVES_COUNT,
                                      "N primitives leaving clipping");
 
-   if (devinfo->is_haswell || devinfo->gen == 8) {
+   if (devinfo->is_haswell || devinfo->ver == 8) {
       gen_perf_query_add_stat_reg(query, PS_INVOCATION_COUNT, 1, 4,
                                   "N fragment shader invocations",
                                   "N fragment shader invocations");
@@ -579,7 +579,7 @@ load_pipeline_statistic_metrics(struct gen_perf_config *perf_cfg,
    gen_perf_query_add_basic_stat_reg(query, PS_DEPTH_COUNT,
                                      "N z-pass fragments");
 
-   if (devinfo->gen >= 7) {
+   if (devinfo->ver >= 7) {
       gen_perf_query_add_basic_stat_reg(query, CS_INVOCATION_COUNT,
                                         "N compute shader invocations");
    }
@@ -598,7 +598,7 @@ i915_perf_version(int drm_fd)
       .value = &tmp,
    };
 
-   int ret = gen_ioctl(drm_fd, DRM_IOCTL_I915_GETPARAM, &gp);
+   int ret = intel_ioctl(drm_fd, DRM_IOCTL_I915_GETPARAM, &gp);
 
    /* Return 0 if this getparam is not supported, the first version supported
     * is 1.
@@ -615,7 +615,7 @@ i915_get_sseu(int drm_fd, struct drm_i915_gem_context_param_sseu *sseu)
       .value = to_user_pointer(sseu)
    };
 
-   gen_ioctl(drm_fd, DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM, &arg);
+   intel_ioctl(drm_fd, DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM, &arg);
 }
 
 static inline int
@@ -727,7 +727,7 @@ oa_metrics_available(struct gen_perf_config *perf, int fd,
     */
    if (stat("/proc/sys/dev/i915/perf_stream_paranoid", &sb) == 0) {
 
-      /* If _paranoid == 1 then on Gen8+ we won't be able to access OA
+      /* If _paranoid == 1 then on Gfx8+ we won't be able to access OA
        * metrics unless running as root.
        */
       if (devinfo->is_haswell)
@@ -984,7 +984,7 @@ accumulate_uint40(int a_index,
 }
 
 static void
-gen8_read_report_clock_ratios(const uint32_t *report,
+gfx8_read_report_clock_ratios(const uint32_t *report,
                               uint64_t *slice_freq_hz,
                               uint64_t *unslice_freq_hz)
 {
@@ -1023,16 +1023,16 @@ gen_perf_query_result_read_frequencies(struct gen_perf_query_result *result,
     * OA_DEBUG_REGISTER is set to 1. This is how the kernel programs this
     * global register (see drivers/gpu/drm/i915/i915_perf.c)
     *
-    * Documentation says this should be available on Gen9+ but experimentation
-    * shows that Gen8 reports similar values, so we enable it there too.
+    * Documentation says this should be available on Gfx9+ but experimentation
+    * shows that Gfx8 reports similar values, so we enable it there too.
     */
-   if (devinfo->gen < 8)
+   if (devinfo->ver < 8)
       return;
 
-   gen8_read_report_clock_ratios(start,
+   gfx8_read_report_clock_ratios(start,
                                  &result->slice_frequency[0],
                                  &result->unslice_frequency[0]);
-   gen8_read_report_clock_ratios(end,
+   gfx8_read_report_clock_ratios(end,
                                  &result->slice_frequency[1],
                                  &result->unslice_frequency[1]);
 }
@@ -1040,7 +1040,7 @@ gen_perf_query_result_read_frequencies(struct gen_perf_query_result *result,
 static inline bool
 can_use_mi_rpc_bc_counters(const struct gen_device_info *devinfo)
 {
-   return devinfo->gen <= 11;
+   return devinfo->ver <= 11;
 }
 
 void
@@ -1116,17 +1116,17 @@ gen_perf_query_result_read_gt_frequency(struct gen_perf_query_result *result,
                                         const uint32_t start,
                                         const uint32_t end)
 {
-   switch (devinfo->gen) {
+   switch (devinfo->ver) {
    case 7:
    case 8:
-      result->gt_frequency[0] = GET_FIELD(start, GEN7_RPSTAT1_CURR_GT_FREQ) * 50ULL;
-      result->gt_frequency[1] = GET_FIELD(end, GEN7_RPSTAT1_CURR_GT_FREQ) * 50ULL;
+      result->gt_frequency[0] = GET_FIELD(start, GFX7_RPSTAT1_CURR_GT_FREQ) * 50ULL;
+      result->gt_frequency[1] = GET_FIELD(end, GFX7_RPSTAT1_CURR_GT_FREQ) * 50ULL;
       break;
    case 9:
    case 11:
    case 12:
-      result->gt_frequency[0] = GET_FIELD(start, GEN9_RPSTAT0_CURR_GT_FREQ) * 50ULL / 3ULL;
-      result->gt_frequency[1] = GET_FIELD(end, GEN9_RPSTAT0_CURR_GT_FREQ) * 50ULL / 3ULL;
+      result->gt_frequency[0] = GET_FIELD(start, GFX9_RPSTAT0_CURR_GT_FREQ) * 50ULL / 3ULL;
+      result->gt_frequency[1] = GET_FIELD(end, GFX9_RPSTAT0_CURR_GT_FREQ) * 50ULL / 3ULL;
       break;
    default:
       unreachable("unexpected gen");
@@ -1313,7 +1313,7 @@ gen_perf_init_query_fields(struct gen_perf_config *perf_cfg,
    add_query_register(layout, GEN_PERF_QUERY_FIELD_TYPE_MI_RPC,
                       0, 256, 0);
 
-   if (devinfo->gen <= 11) {
+   if (devinfo->ver <= 11) {
       struct gen_perf_query_field *field =
          add_query_register(layout,
                             GEN_PERF_QUERY_FIELD_TYPE_SRM_PERFCNT,
@@ -1326,36 +1326,36 @@ gen_perf_init_query_fields(struct gen_perf_config *perf_cfg,
       field->mask = PERF_CNT_VALUE_MASK;
    }
 
-   if (devinfo->gen == 8 && !devinfo->is_cherryview) {
+   if (devinfo->ver == 8 && !devinfo->is_cherryview) {
       add_query_register(layout,
                          GEN_PERF_QUERY_FIELD_TYPE_SRM_RPSTAT,
-                         GEN7_RPSTAT1, 4, 0);
+                         GFX7_RPSTAT1, 4, 0);
    }
 
-   if (devinfo->gen >= 9) {
+   if (devinfo->ver >= 9) {
       add_query_register(layout,
                          GEN_PERF_QUERY_FIELD_TYPE_SRM_RPSTAT,
-                         GEN9_RPSTAT0, 4, 0);
+                         GFX9_RPSTAT0, 4, 0);
    }
 
    if (!can_use_mi_rpc_bc_counters(devinfo)) {
-      if (devinfo->gen >= 8 && devinfo->gen <= 11) {
-         for (uint32_t i = 0; i < GEN8_N_OA_PERF_B32; i++) {
+      if (devinfo->ver >= 8 && devinfo->ver <= 11) {
+         for (uint32_t i = 0; i < GFX8_N_OA_PERF_B32; i++) {
             add_query_register(layout, GEN_PERF_QUERY_FIELD_TYPE_SRM_OA_B,
-                               GEN8_OA_PERF_B32(i), 4, i);
+                               GFX8_OA_PERF_B32(i), 4, i);
          }
-         for (uint32_t i = 0; i < GEN8_N_OA_PERF_C32; i++) {
+         for (uint32_t i = 0; i < GFX8_N_OA_PERF_C32; i++) {
             add_query_register(layout, GEN_PERF_QUERY_FIELD_TYPE_SRM_OA_C,
-                               GEN8_OA_PERF_C32(i), 4, i);
+                               GFX8_OA_PERF_C32(i), 4, i);
          }
-      } else if (devinfo->gen == 12) {
-         for (uint32_t i = 0; i < GEN12_N_OAG_PERF_B32; i++) {
+      } else if (devinfo->ver == 12) {
+         for (uint32_t i = 0; i < GFX12_N_OAG_PERF_B32; i++) {
             add_query_register(layout, GEN_PERF_QUERY_FIELD_TYPE_SRM_OA_B,
-                               GEN12_OAG_PERF_B32(i), 4, i);
+                               GFX12_OAG_PERF_B32(i), 4, i);
          }
-         for (uint32_t i = 0; i < GEN12_N_OAG_PERF_C32; i++) {
+         for (uint32_t i = 0; i < GFX12_N_OAG_PERF_C32; i++) {
             add_query_register(layout, GEN_PERF_QUERY_FIELD_TYPE_SRM_OA_C,
-                               GEN12_OAG_PERF_C32(i), 4, i);
+                               GFX12_OAG_PERF_C32(i), 4, i);
          }
       }
    }

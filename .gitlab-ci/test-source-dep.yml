@@ -48,6 +48,14 @@
       - src/mesa/x86-64/**/*
       - src/util/**/*
 
+.vulkan-rules:
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes: &vulkan_file_list
+      - src/vulkan/**/*
+      when: on_success
+    - when: never
+
 # Gallium core source file dependencies
 # -------------------------------------
 .gallium-rules:
@@ -91,6 +99,22 @@
       when: on_success
     - changes: &llvmpipe_file_list
       - src/gallium/drivers/llvmpipe/**/*
+      - src/gallium/winsys/sw/**/*
+      when: on_success
+    - when: never
+
+.lavapipe-rules:
+  stage: software-renderer
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes: &lavapipe_file_list
+      - src/gallium/drivers/llvmpipe/**/*
       - src/gallium/frontends/lavapipe/**/*
       - src/gallium/winsys/sw/**/*
       when: on_success
@@ -133,17 +157,8 @@
     - changes:
       # Note: when https://gitlab.com/gitlab-org/gitlab/-/issues/198688
       # is supported, we can change the src/freedreno/ rule to explicitly
-      # exclude tools, rather than having to explicitly list everything
-      # else
-      - src/freedreno/ci/**/*
-      - src/freedreno/common/**/*
-      - src/freedreno/drm/**/*
-      - src/freedreno/fdl/**/*
-      - src/freedreno/ir2/**/*
-      - src/freedreno/ir3/**/*
-      - src/freedreno/perfcntrs/**/*
-      - src/freedreno/registers/**/*
-      - src/freedreno/vulkan/**/*
+      # exclude tools
+      - src/freedreno/**/*
       - src/gallium/drivers/freedreno/**/*
       - src/gallium/winsys/freedreno/**/*
       when: on_success
@@ -311,6 +326,12 @@
     - changes:
         *gallium_core_file_list
       when: on_success
+    - changes:
+        *lavapipe_file_list
+      when: on_success
+    - changes:
+        *vulkan_file_list
+      when: on_success
     - changes: &d3d12_file_list
       - src/gallium/drivers/d3d12/**/*
       - src/microsoft/**/*
@@ -330,6 +351,12 @@
     - changes:
         *gallium_core_file_list
       when: on_success
+    - changes:
+        *lavapipe_file_list
+      when: on_success
+    - changes:
+        *vulkan_file_list
+      when: on_success
     - changes: *d3d12_file_list
       when: on_success
     - when: never
@@ -345,7 +372,7 @@
         *gallium_core_file_list
       when: on_success
     - changes:
-        *llvmpipe_file_list
+        *lavapipe_file_list
       when: on_success
     - changes:
       - src/gallium/drivers/zink/**/*

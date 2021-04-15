@@ -454,6 +454,16 @@ for (int bit = bit_size - 1; bit >= 0; bit--) {
 }
 """)
 
+unop_convert("ufind_msb_rev", tint32, tuint, """
+dst = -1;
+for (int bit = 0; bit < bit_size; bit++) {
+   if ((src0 << bit) & 0x80000000) {
+      dst = bit;
+      break;
+   }
+}
+""")
+
 unop("uclz", tuint32, """
 int bit;
 for (bit = bit_size - 1; bit >= 0; bit--) {
@@ -473,6 +483,22 @@ for (int bit = 31; bit >= 0; bit--) {
       (!((src0 >> bit) & 1) && (src0 < 0))) {
       dst = bit;
       break;
+   }
+}
+""")
+
+unop_convert("ifind_msb_rev", tint32, tuint, """
+dst = -1;
+if (src0 != 0 || src0 != -1) {
+   for (int bit = 0; bit < 31; bit++) {
+      /* If src0 < 0, we're looking for the first 0 bit.
+       * if src0 >= 0, we're looking for the first 1 bit.
+       */
+      if ((((src0 << bit) & 0x40000000) && (src0 >= 0)) ||
+          ((!((src0 << bit) & 0x40000000)) && (src0 < 0))) {
+         dst = bit;
+         break;
+      }
    }
 }
 """)
@@ -989,6 +1015,12 @@ opcode("b16csel", 0, tuint, [0, 0, 0],
 opcode("b32csel", 0, tuint, [0, 0, 0],
        [tbool32, tuint, tuint], False, "", "src0 ? src1 : src2")
 
+triop("i32csel_gt", tint32, "", "(src0 > 0.0f) ? src1 : src2")
+triop("i32csel_ge", tint32, "", "(src0 >= 0.0f) ? src1 : src2")
+
+triop("fcsel_gt", tfloat32, "", "(src0 > 0.0f) ? src1 : src2")
+triop("fcsel_ge", tfloat32, "", "(src0 >= 0.0f) ? src1 : src2")
+
 # SM5 bfi assembly
 triop("bfi", tuint32, "", """
 unsigned mask = src0, insert = src1, base = src2;
@@ -1201,6 +1233,12 @@ unop_horiz("cube_r600", 4, tfloat32, 3, tfloat32, """
    }
 """)
 
+# r600 specific sin and cos
+# these trigeometric functions need some lowering because the supported
+# input values are expected to be normalized by dividing by (2 * pi)
+unop("fsin_r600", tfloat32, "sinf(6.2831853 * src0)")
+unop("fcos_r600", tfloat32, "cosf(6.2831853 * src0)")
+
 # 24b multiply into 32b result (with sign extension)
 binop("imul24", tint32, _2src_commutative + associative,
       "(((int32_t)src0 << 8) >> 8) * (((int32_t)src1 << 8) >> 8)")
@@ -1215,3 +1253,15 @@ binop("umul24", tint32, _2src_commutative + associative,
 
 unop_convert("fisnormal", tbool1, tfloat, "isnormal(src0)")
 unop_convert("fisfinite", tbool1, tfloat, "isfinite(src0)")
+
+# DXIL specific double [un]pack
+# DXIL doesn't support generic [un]pack instructions, so we want those
+# lowered to bit ops. HLSL doesn't support 64bit bitcasts to/from
+# double, only [un]pack. Technically DXIL does, but considering they
+# can't be generated from HLSL, we want to match what would be coming from DXC.
+# This is essentially just the standard [un]pack, except that it doesn't get
+# lowered so we can handle it in the backend and turn it into MakeDouble/SplitDouble
+unop_horiz("pack_double_2x32_dxil", 1, tuint64, 2, tuint32,
+           "dst.x = src0.x | ((uint64_t)src0.y << 32);")
+unop_horiz("unpack_double_2x32_dxil", 2, tuint32, 1, tuint64,
+           "dst.x = src0.x; dst.y = src0.x >> 32;")

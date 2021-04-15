@@ -44,11 +44,11 @@
 
 #include "isl/isl.h"
 
-#include "intel_mipmap_tree.h"
-#include "intel_batchbuffer.h"
-#include "intel_tex.h"
-#include "intel_fbo.h"
-#include "intel_buffer_objects.h"
+#include "brw_mipmap_tree.h"
+#include "brw_batch.h"
+#include "brw_tex.h"
+#include "brw_fbo.h"
+#include "brw_buffer_objects.h"
 
 #include "brw_context.h"
 #include "brw_state.h"
@@ -56,7 +56,7 @@
 #include "brw_wm.h"
 
 static const uint32_t wb_mocs[] = {
-   [7] = GEN7_MOCS_L3,
+   [7] = GFX7_MOCS_L3,
    [8] = BDW_MOCS_WB,
    [9] = SKL_MOCS_WB,
    [10] = CNL_MOCS_WB,
@@ -64,7 +64,7 @@ static const uint32_t wb_mocs[] = {
 };
 
 static const uint32_t pte_mocs[] = {
-   [7] = GEN7_MOCS_L3,
+   [7] = GFX7_MOCS_L3,
    [8] = BDW_MOCS_PTE,
    [9] = SKL_MOCS_PTE,
    [10] = CNL_MOCS_PTE,
@@ -74,7 +74,7 @@ static const uint32_t pte_mocs[] = {
 uint32_t
 brw_get_bo_mocs(const struct gen_device_info *devinfo, struct brw_bo *bo)
 {
-   return (bo && bo->external ? pte_mocs : wb_mocs)[devinfo->gen];
+   return (bo && bo->external ? pte_mocs : wb_mocs)[devinfo->ver];
 }
 
 static void
@@ -186,7 +186,7 @@ brw_emit_surface_state(struct brw_context *brw,
                        .clear_address = clear_offset,
                        .x_offset_sa = tile_x, .y_offset_sa = tile_y);
    if (aux_surf) {
-      /* On gen7 and prior, the upper 20 bits of surface state DWORD 6 are the
+      /* On gfx7 and prior, the upper 20 bits of surface state DWORD 6 are the
        * upper 20 bits of the GPU address of the MCS buffer; the lower 12 bits
        * contain other control information.  Since buffer addresses are always
        * on 4k boundaries (and thus have their lower 12 bits zero), we can use
@@ -196,7 +196,7 @@ brw_emit_surface_state(struct brw_context *brw,
        */
       assert((aux_offset & 0xfff) == 0);
 
-      if (devinfo->gen >= 8) {
+      if (devinfo->ver >= 8) {
          uint64_t *aux_addr = state + brw->isl_dev.ss.aux_addr_offset;
          *aux_addr = brw_state_reloc(&brw->batch,
                                      *surf_offset +
@@ -227,7 +227,7 @@ brw_emit_surface_state(struct brw_context *brw,
 }
 
 static uint32_t
-gen6_update_renderbuffer_surface(struct brw_context *brw,
+gfx6_update_renderbuffer_surface(struct brw_context *brw,
                                  struct gl_renderbuffer *rb,
                                  unsigned unit,
                                  uint32_t surf_index)
@@ -441,7 +441,7 @@ brw_get_texture_swizzle(const struct gl_context *ctx,
 }
 
 /**
- * Convert an swizzle enumeration (i.e. SWIZZLE_X) to one of the Gen7.5+
+ * Convert an swizzle enumeration (i.e. SWIZZLE_X) to one of the Gfx7.5+
  * "Shader Channel Select" enumerations (i.e. HSW_SCS_RED).  The mappings are
  *
  * SWIZZLE_X, SWIZZLE_Y, SWIZZLE_Z, SWIZZLE_W, SWIZZLE_ZERO, SWIZZLE_ONE
@@ -528,15 +528,15 @@ static void brw_update_texture_surface(struct gl_context *ctx,
                                                     for_txf ? GL_DECODE_EXT :
                                                     sampler->Attrib.sRGBDecode);
 
-      /* Implement gen6 and gen7 gather work-around */
+      /* Implement gfx6 and gfx7 gather work-around */
       bool need_green_to_blue = false;
       if (for_gather) {
-         if (devinfo->gen == 7 && (format == ISL_FORMAT_R32G32_FLOAT ||
+         if (devinfo->ver == 7 && (format == ISL_FORMAT_R32G32_FLOAT ||
                                    format == ISL_FORMAT_R32G32_SINT ||
                                    format == ISL_FORMAT_R32G32_UINT)) {
             format = ISL_FORMAT_R32G32_FLOAT_LD;
             need_green_to_blue = devinfo->is_haswell;
-         } else if (devinfo->gen == 6) {
+         } else if (devinfo->ver == 6) {
             /* Sandybridge's gather4 message is broken for integer formats.
              * To work around this, we pretend the surface is UNORM for
              * 8 or 16-bit formats, and emit shader instructions to recover
@@ -567,14 +567,14 @@ static void brw_update_texture_surface(struct gl_context *ctx,
       }
 
       if (obj->StencilSampling && firstImage->_BaseFormat == GL_DEPTH_STENCIL) {
-         if (devinfo->gen <= 7) {
+         if (devinfo->ver <= 7) {
             assert(mt->shadow_mt && !mt->stencil_mt->shadow_needs_update);
             mt = mt->shadow_mt;
          } else {
             mt = mt->stencil_mt;
          }
          format = ISL_FORMAT_R8_UINT;
-      } else if (devinfo->gen <= 7 && mt->format == MESA_FORMAT_S_UINT8) {
+      } else if (devinfo->ver <= 7 && mt->format == MESA_FORMAT_S_UINT8) {
          assert(mt->shadow_mt && !mt->shadow_needs_update);
          mt = mt->shadow_mt;
          format = ISL_FORMAT_R8_UINT;
@@ -603,7 +603,7 @@ static void brw_update_texture_surface(struct gl_context *ctx,
       /* On Ivy Bridge and earlier, we handle texture swizzle with shader
        * code.  The actual surface swizzle should be identity.
        */
-      if (devinfo->gen <= 7 && !devinfo->is_haswell)
+      if (devinfo->ver <= 7 && !devinfo->is_haswell)
          view.swizzle = ISL_SWIZZLE_IDENTITY;
 
       if (obj->Target == GL_TEXTURE_CUBE_MAP ||
@@ -612,7 +612,7 @@ static void brw_update_texture_surface(struct gl_context *ctx,
 
       enum isl_aux_usage aux_usage =
          brw_miptree_texture_aux_usage(brw, mt, format,
-                                       brw->gen9_astc5x5_wa_tex_mask);
+                                       brw->gfx9_astc5x5_wa_tex_mask);
 
       brw_emit_surface_state(brw, mt, mt->target, view, aux_usage,
                              surf_offset, surf_index,
@@ -849,13 +849,13 @@ emit_null_surface_state(struct brw_context *brw,
    const unsigned height  = fb ? _mesa_geometric_height(fb)  : 1;
    const unsigned samples = fb ? _mesa_geometric_samples(fb) : 1;
 
-   if (devinfo->gen != 6 || samples <= 1) {
+   if (devinfo->ver != 6 || samples <= 1) {
       isl_null_fill_state(&brw->isl_dev, surf,
                           isl_extent3d(width, height, 1));
       return;
    }
 
-   /* On Gen6, null render targets seem to cause GPU hangs when multisampling.
+   /* On Gfx6, null render targets seem to cause GPU hangs when multisampling.
     * So work around this problem by rendering into dummy color buffer.
     *
     * To decrease the amount of memory needed by the workaround buffer, we
@@ -901,7 +901,7 @@ emit_null_surface_state(struct brw_context *brw,
  * usable for further buffers when doing ARB_draw_buffer support.
  */
 static uint32_t
-gen4_update_renderbuffer_surface(struct brw_context *brw,
+gfx4_update_renderbuffer_surface(struct brw_context *brw,
                                  struct gl_renderbuffer *rb,
                                  unsigned unit,
                                  uint32_t surf_index)
@@ -922,7 +922,7 @@ gen4_update_renderbuffer_surface(struct brw_context *brw,
       brw_renderbuffer_get_tile_offsets(irb, &tile_x, &tile_y);
 
       if (tile_x != 0 || tile_y != 0) {
-         /* Original gen4 hardware couldn't draw to a non-tile-aligned
+         /* Original gfx4 hardware couldn't draw to a non-tile-aligned
           * destination in a miptree unless you actually setup your renderbuffer
           * as a miptree and used the fragile lod/array_index/etc. controls to
           * select the image.  So, instead, we just make a new single-level
@@ -973,7 +973,7 @@ gen4_update_renderbuffer_surface(struct brw_context *brw,
               (mt->surf.image_alignment_el.height == 4 ?
                   BRW_SURFACE_VERTICAL_ALIGN_ENABLE : 0));
 
-   if (devinfo->gen < 6) {
+   if (devinfo->ver < 6) {
       /* _NEW_COLOR */
       if (!ctx->Color.ColorLogicOpEnabled &&
           ctx->Color._AdvancedBlendMode == BLEND_NONE &&
@@ -1019,9 +1019,9 @@ update_renderbuffer_surfaces(struct brw_context *brw)
          struct gl_renderbuffer *rb = fb->_ColorDrawBuffers[i];
 
          if (brw_renderbuffer(rb)) {
-            surf_offsets[rt_start + i] = devinfo->gen >= 6 ?
-               gen6_update_renderbuffer_surface(brw, rb, i, rt_start + i) :
-               gen4_update_renderbuffer_surface(brw, rb, i, rt_start + i);
+            surf_offsets[rt_start + i] = devinfo->ver >= 6 ?
+               gfx6_update_renderbuffer_surface(brw, rb, i, rt_start + i) :
+               gfx4_update_renderbuffer_surface(brw, rb, i, rt_start + i);
          } else {
             emit_null_surface_state(brw, fb, &surf_offsets[rt_start + i]);
          }
@@ -1038,7 +1038,7 @@ update_renderbuffer_surfaces(struct brw_context *brw)
     *  is set due to new association of BTI, PS Scoreboard Stall bit must
     *  be set in this packet."
    */
-   if (devinfo->gen >= 11) {
+   if (devinfo->ver >= 11) {
       brw_emit_pipe_control_flush(brw,
                                   PIPE_CONTROL_RENDER_TARGET_FLUSH |
                                   PIPE_CONTROL_STALL_AT_SCOREBOARD);
@@ -1056,7 +1056,7 @@ const struct brw_tracked_state brw_renderbuffer_surfaces = {
    .emit = update_renderbuffer_surfaces,
 };
 
-const struct brw_tracked_state gen6_renderbuffer_surfaces = {
+const struct brw_tracked_state gfx6_renderbuffer_surfaces = {
    .dirty = {
       .mesa = _NEW_BUFFERS,
       .brw = BRW_NEW_BATCH |
@@ -1119,7 +1119,7 @@ update_renderbuffer_read_surfaces(struct brw_context *brw)
 
             enum isl_aux_usage aux_usage =
                brw_miptree_texture_aux_usage(brw, irb->mt, format,
-                                             brw->gen9_astc5x5_wa_tex_mask);
+                                             brw->gfx9_astc5x5_wa_tex_mask);
             if (brw->draw_aux_usage[i] == ISL_AUX_USAGE_NONE)
                aux_usage = ISL_AUX_USAGE_NONE;
 
@@ -1173,13 +1173,13 @@ update_stage_texture_surfaces(struct brw_context *brw,
    else
       surf_offset += stage_state->prog_data->binding_table.plane_start[plane];
 
-   unsigned num_samplers = util_last_bit(prog->info.textures_used);
+   unsigned num_samplers = BITSET_LAST_BIT(prog->info.textures_used);
    for (unsigned s = 0; s < num_samplers; s++) {
       surf_offset[s] = 0;
 
-      if (prog->info.textures_used & (1 << s)) {
+      if (BITSET_TEST(prog->info.textures_used, s)) {
          const unsigned unit = prog->SamplerUnits[s];
-         const bool used_by_txf = prog->info.textures_used_by_txf & (1 << s);
+         const bool used_by_txf = BITSET_TEST(prog->info.textures_used_by_txf, s);
          struct gl_texture_object *obj = ctx->Texture.Unit[unit]._Current;
          struct brw_texture_object *iobj = brw_texture_object(obj);
 
@@ -1245,7 +1245,7 @@ brw_update_texture_surfaces(struct brw_context *brw)
    /* emit alternate set of surface state for gather. this
     * allows the surface format to be overriden for only the
     * gather4 messages. */
-   if (devinfo->gen < 8) {
+   if (devinfo->ver < 8) {
       if (vs && vs->info.uses_texture_gather)
          update_stage_texture_surfaces(brw, vs, &brw->vs.base, true, 0);
       if (tcs && tcs->info.uses_texture_gather)
@@ -1300,7 +1300,7 @@ brw_update_cs_texture_surfaces(struct brw_context *brw)
     * allows the surface format to be overriden for only the
     * gather4 messages.
     */
-   if (devinfo->gen < 8) {
+   if (devinfo->ver < 8) {
       if (cs && cs->info.uses_texture_gather)
          update_stage_texture_surfaces(brw, cs, &brw->cs.base, true, 0);
    }

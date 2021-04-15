@@ -28,6 +28,7 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
+#include "util/u_draw.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/format/u_format.h"
@@ -864,13 +865,7 @@ static void virgl_draw_vbo(struct pipe_context *ctx,
                            unsigned num_draws)
 {
    if (num_draws > 1) {
-      struct pipe_draw_info tmp_info = *dinfo;
-
-      for (unsigned i = 0; i < num_draws; i++) {
-         virgl_draw_vbo(ctx, &tmp_info, indirect, &draws[i], 1);
-         if (tmp_info.increment_draw_id)
-            tmp_info.drawid++;
-      }
+      util_draw_multi(ctx, dinfo, indirect, draws, num_draws);
       return;
    }
 
@@ -889,7 +884,7 @@ static void virgl_draw_vbo(struct pipe_context *ctx,
 
    if (!(rs->caps.caps.v1.prim_mask & (1 << dinfo->mode))) {
       util_primconvert_save_rasterizer_state(vctx->primconvert, &vctx->rs_state.rs);
-      util_primconvert_draw_vbo(vctx->primconvert, dinfo, &draws[0]);
+      util_primconvert_draw_vbo(vctx->primconvert, dinfo, indirect, draws, num_draws);
       return;
    }
    if (info.index_size) {
@@ -1417,6 +1412,13 @@ virgl_release_shader_binding(struct virgl_context *vctx,
 }
 
 static void
+virgl_emit_string_marker(struct pipe_context *ctx, const char *message,  int len)
+{
+    struct virgl_context *vctx = virgl_context(ctx);
+    virgl_encode_emit_string_marker(vctx, message, len);
+}
+
+static void
 virgl_context_destroy( struct pipe_context *ctx )
 {
    struct virgl_context *vctx = virgl_context(ctx);
@@ -1594,6 +1596,7 @@ struct pipe_context *virgl_context_create(struct pipe_screen *pscreen,
    vctx->base.set_hw_atomic_buffers = virgl_set_hw_atomic_buffers;
    vctx->base.set_shader_images = virgl_set_shader_images;
    vctx->base.memory_barrier = virgl_memory_barrier;
+   vctx->base.emit_string_marker = virgl_emit_string_marker;
 
    virgl_init_context_resource_functions(&vctx->base);
    virgl_init_query_functions(vctx);

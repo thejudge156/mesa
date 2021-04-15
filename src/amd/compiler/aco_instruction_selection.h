@@ -62,7 +62,6 @@ struct isel_context {
    Stage stage;
    struct {
       bool has_branch;
-      uint16_t loop_nest_depth = 0;
       struct {
          unsigned header_idx;
          Block* exit;
@@ -111,12 +110,7 @@ struct isel_context {
    unsigned num_cull_distances;
 
    /* tessellation information */
-   unsigned tcs_tess_lvl_out_loc;
-   unsigned tcs_tess_lvl_in_loc;
    uint64_t tcs_temp_only_inputs;
-   uint32_t tcs_num_inputs;
-   uint32_t tcs_num_outputs;
-   uint32_t tcs_num_patch_outputs;
    uint32_t tcs_num_patches;
    bool tcs_in_out_eq = false;
 

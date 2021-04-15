@@ -32,7 +32,7 @@
 #include <sys/resource.h>
 #include <sys/un.h>
 
-#include "common/gen_gem.h"
+#include "common/intel_gem.h"
 #include "dev/gen_device_info.h"
 #include "drm-uapi/i915_drm.h"
 #include "drm-shim/drm_shim.h"
@@ -124,7 +124,7 @@ i915_ioctl_gem_context_getparam(int fd, unsigned long request, void *arg)
    struct drm_i915_gem_context_param *param = arg;
 
    if (param->param ==  I915_CONTEXT_PARAM_GTT_SIZE) {
-      if (i915.devinfo.gen >= 8 && !i915.devinfo.is_cherryview)
+      if (i915.devinfo.ver >= 8 && !i915.devinfo.is_cherryview)
          param->value = 1ull << 48;
       else
          param->value = 1ull << 31;
@@ -151,26 +151,26 @@ i915_ioctl_get_param(int fd, unsigned long request, void *arg)
       *gp->value = i915.devinfo.timestamp_frequency;
       return 0;
    case I915_PARAM_HAS_ALIASING_PPGTT:
-      if (i915.devinfo.gen < 6)
+      if (i915.devinfo.ver < 6)
          *gp->value = I915_GEM_PPGTT_NONE;
-      else if (i915.devinfo.gen <= 7)
+      else if (i915.devinfo.ver <= 7)
          *gp->value = I915_GEM_PPGTT_ALIASING;
       else
          *gp->value = I915_GEM_PPGTT_FULL;
       return 0;
 
    case I915_PARAM_NUM_FENCES_AVAIL:
-      *gp->value = 8; /* gen2/3 value, unused in brw/iris */
+      *gp->value = 8; /* gfx2/3 value, unused in brw/iris */
       return 0;
 
    case I915_PARAM_HAS_BLT:
-      *gp->value = 1; /* gen2/3 value, unused in brw/iris */
+      *gp->value = 1; /* gfx2/3 value, unused in brw/iris */
       return 0;
 
    case I915_PARAM_HAS_BSD:
    case I915_PARAM_HAS_LLC:
    case I915_PARAM_HAS_VEBOX:
-      *gp->value = 0; /* gen2/3 value, unused in brw/iris */
+      *gp->value = 0; /* gfx2/3 value, unused in brw/iris */
       return 0;
 
    case I915_PARAM_HAS_GEM:
@@ -318,7 +318,7 @@ i915_gem_get_aperture(int fd, unsigned long request, void *arg)
 {
    struct drm_i915_gem_get_aperture *aperture = arg;
 
-   if (i915.devinfo.gen >= 8 &&
+   if (i915.devinfo.ver >= 8 &&
        !i915.devinfo.is_cherryview) {
       aperture->aper_size = 1ull << 48;
       aperture->aper_available_size = 1ull << 48;

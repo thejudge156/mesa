@@ -481,7 +481,7 @@ job_compute_frame_tiling(struct v3dv_job *job,
 
    tiling->internal_bpp = max_internal_bpp;
    tile_size_index += tiling->internal_bpp;
-   assert(tile_size_index < ARRAY_SIZE(tile_sizes));
+   assert(tile_size_index < ARRAY_SIZE(tile_sizes) / 2);
 
    tiling->tile_width = tile_sizes[tile_size_index * 2];
    tiling->tile_height = tile_sizes[tile_size_index * 2 + 1];
@@ -2680,7 +2680,7 @@ static struct v3dv_job *
 cmd_buffer_subpass_split_for_barrier(struct v3dv_cmd_buffer *cmd_buffer,
                                      bool is_bcl_barrier)
 {
-   assert(cmd_buffer->state.subpass_idx >= 0);
+   assert(cmd_buffer->state.subpass_idx != -1);
    v3dv_cmd_buffer_finish_job(cmd_buffer);
    struct v3dv_job *job =
       v3dv_cmd_buffer_subpass_resume(cmd_buffer,
@@ -3080,7 +3080,9 @@ job_update_ez_state(struct v3dv_job *job,
     */
 
    /* If the FS writes Z, then it may update against the chosen EZ direction */
-   if (pipeline->fs->current_variant->prog_data.fs->writes_z) {
+   struct v3dv_shader_variant *fs_variant =
+      pipeline->shared_data->variants[BROADCOM_SHADER_FRAGMENT];
+   if (fs_variant->prog_data.fs->writes_z) {
       job->ez_state = VC5_EZ_DISABLED;
       return;
    }
@@ -3673,7 +3675,7 @@ emit_varyings_state(struct v3dv_cmd_buffer *cmd_buffer)
    struct v3dv_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
 
    struct v3d_fs_prog_data *prog_data_fs =
-      pipeline->fs->current_variant->prog_data.fs;
+      pipeline->shared_data->variants[BROADCOM_SHADER_FRAGMENT]->prog_data.fs;
 
    const uint32_t num_flags =
       ARRAY_SIZE(prog_data_fs->flat_shade_flags);
@@ -3753,8 +3755,11 @@ update_gfx_uniform_state(struct v3dv_cmd_buffer *cmd_buffer,
       (pipeline->layout->shader_stages & VK_SHADER_STAGE_FRAGMENT_BIT);
 
    if (needs_fs_update) {
+      struct v3dv_shader_variant *fs_variant =
+         pipeline->shared_data->variants[BROADCOM_SHADER_FRAGMENT];
+
       cmd_buffer->state.uniforms.fs =
-         v3dv_write_uniforms(cmd_buffer, pipeline->fs);
+         v3dv_write_uniforms(cmd_buffer, pipeline, fs_variant);
    }
 
    const bool needs_vs_update =
@@ -3762,11 +3767,17 @@ update_gfx_uniform_state(struct v3dv_cmd_buffer *cmd_buffer,
       (pipeline->layout->shader_stages & VK_SHADER_STAGE_VERTEX_BIT);
 
    if (needs_vs_update) {
+      struct v3dv_shader_variant *vs_variant =
+         pipeline->shared_data->variants[BROADCOM_SHADER_VERTEX];
+
+       struct v3dv_shader_variant *vs_bin_variant =
+         pipeline->shared_data->variants[BROADCOM_SHADER_VERTEX_BIN];
+
       cmd_buffer->state.uniforms.vs =
-         v3dv_write_uniforms(cmd_buffer, pipeline->vs);
+         v3dv_write_uniforms(cmd_buffer, pipeline, vs_variant);
 
       cmd_buffer->state.uniforms.vs_bin =
-         v3dv_write_uniforms(cmd_buffer, pipeline->vs_bin);
+         v3dv_write_uniforms(cmd_buffer, pipeline, vs_bin_variant);
    }
 }
 
@@ -3780,10 +3791,17 @@ emit_gl_shader_state(struct v3dv_cmd_buffer *cmd_buffer)
    struct v3dv_pipeline *pipeline = state->gfx.pipeline;
    assert(pipeline);
 
+   struct v3d_vs_prog_data *prog_data_vs =
+      pipeline->shared_data->variants[BROADCOM_SHADER_VERTEX]->prog_data.vs;
+   struct v3d_vs_prog_data *prog_data_vs_bin =
+      pipeline->shared_data->variants[BROADCOM_SHADER_VERTEX_BIN]->prog_data.vs;
+   struct v3d_fs_prog_data *prog_data_fs =
+      pipeline->shared_data->variants[BROADCOM_SHADER_FRAGMENT]->prog_data.fs;
+
    /* Update the cache dirty flag based on the shader progs data */
-   job->tmu_dirty_rcl |= pipeline->vs_bin->current_variant->prog_data.vs->base.tmu_dirty_rcl;
-   job->tmu_dirty_rcl |= pipeline->vs->current_variant->prog_data.vs->base.tmu_dirty_rcl;
-   job->tmu_dirty_rcl |= pipeline->fs->current_variant->prog_data.fs->base.tmu_dirty_rcl;
+   job->tmu_dirty_rcl |= prog_data_vs_bin->base.tmu_dirty_rcl;
+   job->tmu_dirty_rcl |= prog_data_vs->base.tmu_dirty_rcl;
+   job->tmu_dirty_rcl |= prog_data_fs->base.tmu_dirty_rcl;
 
    /* See GFXH-930 workaround below */
    uint32_t num_elements_to_emit = MAX2(pipeline->va_count, 1);
@@ -3795,6 +3813,19 @@ emit_gl_shader_state(struct v3dv_cmd_buffer *cmd_buffer)
                            cl_packet_length(GL_SHADER_STATE_ATTRIBUTE_RECORD),
                            32);
    v3dv_return_if_oom(cmd_buffer, NULL);
+
+   struct v3dv_shader_variant *vs_variant =
+      pipeline->shared_data->variants[BROADCOM_SHADER_VERTEX];
+   struct v3dv_shader_variant *vs_bin_variant =
+      pipeline->shared_data->variants[BROADCOM_SHADER_VERTEX_BIN];
+   struct v3dv_shader_variant *fs_variant =
+      pipeline->shared_data->variants[BROADCOM_SHADER_FRAGMENT];
+   struct v3dv_bo *assembly_bo = pipeline->shared_data->assembly_bo;
+
+   struct v3dv_bo *default_attribute_values =
+      pipeline->default_attribute_values != NULL ?
+      pipeline->default_attribute_values :
+      pipeline->device->default_attribute_float;
 
    cl_emit_with_prepacked(&job->indirect, GL_SHADER_STATE_RECORD,
                           pipeline->shader_state_record, shader) {
@@ -3810,27 +3841,21 @@ emit_gl_shader_state(struct v3dv_cmd_buffer *cmd_buffer)
          pipeline->vpm_cfg.As;
 
       shader.coordinate_shader_code_address =
-         v3dv_cl_address(pipeline->vs_bin->current_variant->assembly_bo, 0);
+         v3dv_cl_address(assembly_bo, vs_bin_variant->assembly_offset);
       shader.vertex_shader_code_address =
-         v3dv_cl_address(pipeline->vs->current_variant->assembly_bo, 0);
+         v3dv_cl_address(assembly_bo, vs_variant->assembly_offset);
       shader.fragment_shader_code_address =
-         v3dv_cl_address(pipeline->fs->current_variant->assembly_bo, 0);
+         v3dv_cl_address(assembly_bo, fs_variant->assembly_offset);
 
       shader.coordinate_shader_uniforms_address = cmd_buffer->state.uniforms.vs_bin;
       shader.vertex_shader_uniforms_address = cmd_buffer->state.uniforms.vs;
       shader.fragment_shader_uniforms_address = cmd_buffer->state.uniforms.fs;
 
       shader.address_of_default_attribute_values =
-         v3dv_cl_address(pipeline->default_attribute_values, 0);
+         v3dv_cl_address(default_attribute_values, 0);
    }
 
    /* Upload vertex element attributes (SHADER_STATE_ATTRIBUTE_RECORD) */
-   struct v3d_vs_prog_data *prog_data_vs =
-      pipeline->vs->current_variant->prog_data.vs;
-
-   struct v3d_vs_prog_data *prog_data_vs_bin =
-      pipeline->vs_bin->current_variant->prog_data.vs;
-
    bool cs_loaded_any = false;
    const bool cs_uses_builtins = prog_data_vs_bin->uses_iid ||
                                  prog_data_vs_bin->uses_biid ||
@@ -4134,7 +4159,7 @@ cmd_buffer_emit_draw(struct v3dv_cmd_buffer *cmd_buffer,
 
    assert(pipeline);
 
-   uint32_t hw_prim_type = v3d_hw_prim_type(pipeline->vs->topology);
+   uint32_t hw_prim_type = v3d_hw_prim_type(pipeline->topology);
 
    if (info->first_instance > 0) {
       v3dv_cl_ensure_space_with_branch(
@@ -4280,6 +4305,33 @@ cmd_buffer_restart_job_for_msaa_if_needed(struct v3dv_cmd_buffer *cmd_buffer)
 }
 
 static void
+emit_index_buffer(struct v3dv_cmd_buffer *cmd_buffer)
+{
+   struct v3dv_job *job = cmd_buffer->state.job;
+   assert(job);
+
+   /* We flag all state as dirty when we create a new job so make sure we
+    * have a valid index buffer before attempting to emit state for it.
+    */
+   struct v3dv_buffer *ibuffer =
+      v3dv_buffer_from_handle(cmd_buffer->state.index_buffer.buffer);
+   if (ibuffer) {
+      v3dv_cl_ensure_space_with_branch(
+         &job->bcl, cl_packet_length(INDEX_BUFFER_SETUP));
+      v3dv_return_if_oom(cmd_buffer, NULL);
+
+      const uint32_t offset = cmd_buffer->state.index_buffer.offset;
+      cl_emit(&job->bcl, INDEX_BUFFER_SETUP, ib) {
+         ib.address = v3dv_cl_address(ibuffer->mem->bo,
+                                      ibuffer->mem_offset + offset);
+         ib.size = ibuffer->mem->bo->size;
+      }
+   }
+
+   cmd_buffer->state.dirty &= ~V3DV_CMD_DIRTY_INDEX_BUFFER;
+}
+
+static void
 cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer)
 {
    assert(cmd_buffer->state.gfx.pipeline);
@@ -4289,10 +4341,9 @@ cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer)
     * an active job. In that case, create a new job continuing the current
     * subpass.
     */
-   struct v3dv_job *job = cmd_buffer->state.job;
-   if (!job) {
-      job = v3dv_cmd_buffer_subpass_resume(cmd_buffer,
-                                           cmd_buffer->state.subpass_idx);
+   if (!cmd_buffer->state.job) {
+      v3dv_cmd_buffer_subpass_resume(cmd_buffer,
+                                     cmd_buffer->state.subpass_idx);
    }
 
    /* Restart single sample job for MSAA pipeline if needed */
@@ -4301,7 +4352,7 @@ cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer)
    /* If the job is configured to flush on every draw call we need to create
     * a new job now.
     */
-   job = cmd_buffer_pre_draw_split_job(cmd_buffer);
+   struct v3dv_job *job = cmd_buffer_pre_draw_split_job(cmd_buffer);
    job->draw_count++;
 
    /* GL shader state binds shaders, uniform and vertex attribute state. The
@@ -4337,6 +4388,9 @@ cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer)
    if (*dirty & V3DV_CMD_DIRTY_VIEWPORT) {
       emit_viewport(cmd_buffer);
    }
+
+   if (*dirty & V3DV_CMD_DIRTY_INDEX_BUFFER)
+      emit_index_buffer(cmd_buffer);
 
    const uint32_t dynamic_stencil_dirty_flags =
       V3DV_CMD_DIRTY_STENCIL_COMPARE_MASK |
@@ -4378,6 +4432,9 @@ v3dv_CmdDraw(VkCommandBuffer commandBuffer,
              uint32_t firstVertex,
              uint32_t firstInstance)
 {
+   if (vertexCount == 0 || instanceCount == 0)
+      return;
+
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
    struct v3dv_draw_info info = {};
    info.vertex_count = vertexCount;
@@ -4396,6 +4453,9 @@ v3dv_CmdDrawIndexed(VkCommandBuffer commandBuffer,
                     int32_t vertexOffset,
                     uint32_t firstInstance)
 {
+   if (indexCount == 0 || instanceCount == 0)
+      return;
+
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
 
    cmd_buffer_emit_pre_draw(cmd_buffer);
@@ -4404,7 +4464,7 @@ v3dv_CmdDrawIndexed(VkCommandBuffer commandBuffer,
    assert(job);
 
    const struct v3dv_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
-   uint32_t hw_prim_type = v3d_hw_prim_type(pipeline->vs->topology);
+   uint32_t hw_prim_type = v3d_hw_prim_type(pipeline->topology);
    uint8_t index_type = ffs(cmd_buffer->state.index_buffer.index_size) - 1;
    uint32_t index_offset = firstIndex * cmd_buffer->state.index_buffer.index_size;
 
@@ -4454,12 +4514,12 @@ v3dv_CmdDrawIndirect(VkCommandBuffer commandBuffer,
                      uint32_t drawCount,
                      uint32_t stride)
 {
-   V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
-   V3DV_FROM_HANDLE(v3dv_buffer, buffer, _buffer);
-
    /* drawCount is the number of draws to execute, and can be zero. */
    if (drawCount == 0)
       return;
+
+   V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
+   V3DV_FROM_HANDLE(v3dv_buffer, buffer, _buffer);
 
    cmd_buffer_emit_pre_draw(cmd_buffer);
 
@@ -4467,7 +4527,7 @@ v3dv_CmdDrawIndirect(VkCommandBuffer commandBuffer,
    assert(job);
 
    const struct v3dv_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
-   uint32_t hw_prim_type = v3d_hw_prim_type(pipeline->vs->topology);
+   uint32_t hw_prim_type = v3d_hw_prim_type(pipeline->topology);
 
    v3dv_cl_ensure_space_with_branch(
       &job->bcl, cl_packet_length(INDIRECT_VERTEX_ARRAY_INSTANCED_PRIMS));
@@ -4489,12 +4549,12 @@ v3dv_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
                             uint32_t drawCount,
                             uint32_t stride)
 {
-   V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
-   V3DV_FROM_HANDLE(v3dv_buffer, buffer, _buffer);
-
    /* drawCount is the number of draws to execute, and can be zero. */
    if (drawCount == 0)
       return;
+
+   V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
+   V3DV_FROM_HANDLE(v3dv_buffer, buffer, _buffer);
 
    cmd_buffer_emit_pre_draw(cmd_buffer);
 
@@ -4502,7 +4562,7 @@ v3dv_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
    assert(job);
 
    const struct v3dv_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
-   uint32_t hw_prim_type = v3d_hw_prim_type(pipeline->vs->topology);
+   uint32_t hw_prim_type = v3d_hw_prim_type(pipeline->topology);
    uint8_t index_type = ffs(cmd_buffer->state.index_buffer.index_size) - 1;
 
    v3dv_cl_ensure_space_with_branch(
@@ -4609,40 +4669,18 @@ v3dv_CmdBindIndexBuffer(VkCommandBuffer commandBuffer,
                         VkIndexType indexType)
 {
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
-   V3DV_FROM_HANDLE(v3dv_buffer, ibuffer, buffer);
-
-   struct v3dv_job *job = cmd_buffer->state.job;
-   assert(job);
-
-   v3dv_cl_ensure_space_with_branch(
-      &job->bcl, cl_packet_length(INDEX_BUFFER_SETUP));
-   v3dv_return_if_oom(cmd_buffer, NULL);
 
    const uint32_t index_size = get_index_size(indexType);
-
-   /* If we have started a new job we always need to emit index buffer state.
-    * We know we are in that scenario because that is the only case where we
-    * set the dirty bit.
-    */
-   if (!(cmd_buffer->state.dirty & V3DV_CMD_DIRTY_INDEX_BUFFER)) {
-      if (buffer == cmd_buffer->state.index_buffer.buffer &&
-          offset == cmd_buffer->state.index_buffer.offset &&
-          index_size == cmd_buffer->state.index_buffer.index_size) {
-         return;
-      }
-   }
-
-   cl_emit(&job->bcl, INDEX_BUFFER_SETUP, ib) {
-      ib.address = v3dv_cl_address(ibuffer->mem->bo,
-                                   ibuffer->mem_offset + offset);
-      ib.size = ibuffer->mem->bo->size;
+   if (buffer == cmd_buffer->state.index_buffer.buffer &&
+       offset == cmd_buffer->state.index_buffer.offset &&
+       index_size == cmd_buffer->state.index_buffer.index_size) {
+      return;
    }
 
    cmd_buffer->state.index_buffer.buffer = buffer;
    cmd_buffer->state.index_buffer.offset = offset;
    cmd_buffer->state.index_buffer.index_size = index_size;
-
-   cmd_buffer->state.dirty &= ~V3DV_CMD_DIRTY_INDEX_BUFFER;
+   cmd_buffer->state.dirty |= V3DV_CMD_DIRTY_INDEX_BUFFER;
 }
 
 void
@@ -5122,7 +5160,8 @@ static void
 cmd_buffer_emit_pre_dispatch(struct v3dv_cmd_buffer *cmd_buffer)
 {
    assert(cmd_buffer->state.compute.pipeline);
-   assert(cmd_buffer->state.compute.pipeline->active_stages == VK_SHADER_STAGE_COMPUTE_BIT);
+   assert(cmd_buffer->state.compute.pipeline->active_stages ==
+          VK_SHADER_STAGE_COMPUTE_BIT);
 
    uint32_t *dirty = &cmd_buffer->state.dirty;
    *dirty &= ~(V3DV_CMD_DIRTY_COMPUTE_PIPELINE |
@@ -5198,7 +5237,9 @@ cmd_buffer_create_csd_job(struct v3dv_cmd_buffer *cmd_buffer,
                           uint32_t *wg_size_out)
 {
    struct v3dv_pipeline *pipeline = cmd_buffer->state.compute.pipeline;
-   assert(pipeline && pipeline->cs && pipeline->cs->nir);
+   assert(pipeline && pipeline->shared_data->variants[BROADCOM_SHADER_COMPUTE]);
+   struct v3dv_shader_variant *cs_variant =
+      pipeline->shared_data->variants[BROADCOM_SHADER_COMPUTE];
 
    struct v3dv_job *job = vk_zalloc(&cmd_buffer->device->vk.alloc,
                                     sizeof(struct v3dv_job), 8,
@@ -5221,15 +5262,16 @@ cmd_buffer_create_csd_job(struct v3dv_cmd_buffer *cmd_buffer,
    submit->cfg[1] |= group_count_y << V3D_CSD_CFG012_WG_COUNT_SHIFT;
    submit->cfg[2] |= group_count_z << V3D_CSD_CFG012_WG_COUNT_SHIFT;
 
-   const struct nir_shader *cs =  pipeline->cs->nir;
+   const struct v3d_compute_prog_data *cpd =
+      cs_variant->prog_data.cs;
 
    const uint32_t wgs_per_sg = 1; /* FIXME */
-   const uint32_t wg_size = cs->info.cs.local_size[0] *
-                            cs->info.cs.local_size[1] *
-                            cs->info.cs.local_size[2];
+   const uint32_t wg_size = cpd->local_size[0] *
+                            cpd->local_size[1] *
+                            cpd->local_size[2];
    submit->cfg[3] |= wgs_per_sg << V3D_CSD_CFG3_WGS_PER_SG_SHIFT;
    submit->cfg[3] |= ((DIV_ROUND_UP(wgs_per_sg * wg_size, 16) - 1) <<
-                     V3D_CSD_CFG3_BATCHES_PER_SG_M1_SHIFT);
+                       V3D_CSD_CFG3_BATCHES_PER_SG_M1_SHIFT);
    submit->cfg[3] |= (wg_size & 0xff) << V3D_CSD_CFG3_WG_SIZE_SHIFT;
    if (wg_size_out)
       *wg_size_out = wg_size;
@@ -5239,20 +5281,20 @@ cmd_buffer_create_csd_job(struct v3dv_cmd_buffer *cmd_buffer,
                     (group_count_x * group_count_y * group_count_z) - 1;
    assert(submit->cfg[4] != ~0);
 
-   assert(pipeline->cs->current_variant &&
-          pipeline->cs->current_variant->assembly_bo);
-   const struct v3dv_shader_variant *variant = pipeline->cs->current_variant;
-   submit->cfg[5] = variant->assembly_bo->offset;
+   assert(pipeline->shared_data->assembly_bo);
+   struct v3dv_bo *cs_assembly_bo = pipeline->shared_data->assembly_bo;
+
+   submit->cfg[5] = cs_assembly_bo->offset + cs_variant->assembly_offset;
    submit->cfg[5] |= V3D_CSD_CFG5_PROPAGATE_NANS;
-   if (variant->prog_data.base->single_seg)
+   if (cs_variant->prog_data.base->single_seg)
       submit->cfg[5] |= V3D_CSD_CFG5_SINGLE_SEG;
-   if (variant->prog_data.base->threads == 4)
+   if (cs_variant->prog_data.base->threads == 4)
       submit->cfg[5] |= V3D_CSD_CFG5_THREADING;
 
-   if (variant->prog_data.cs->shared_size > 0) {
+   if (cs_variant->prog_data.cs->shared_size > 0) {
       job->csd.shared_memory =
          v3dv_bo_alloc(cmd_buffer->device,
-                       variant->prog_data.cs->shared_size * wgs_per_sg,
+                       cs_variant->prog_data.cs->shared_size * wgs_per_sg,
                        "shared_vars", true);
       if (!job->csd.shared_memory) {
          v3dv_flag_oom(cmd_buffer, NULL);
@@ -5260,10 +5302,10 @@ cmd_buffer_create_csd_job(struct v3dv_cmd_buffer *cmd_buffer,
       }
    }
 
-   v3dv_job_add_bo(job, variant->assembly_bo);
-
+   v3dv_job_add_bo(job, cs_assembly_bo);
    struct v3dv_cl_reloc uniforms =
-      v3dv_write_uniforms_wg_offsets(cmd_buffer, pipeline->cs,
+      v3dv_write_uniforms_wg_offsets(cmd_buffer, pipeline,
+                                     cs_variant,
                                      wg_uniform_offsets_out);
    submit->cfg[6] = uniforms.bo->offset + uniforms.offset;
 

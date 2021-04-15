@@ -65,7 +65,7 @@ iris_to_brw_vs_key(const struct gen_device_info *devinfo,
                    const struct iris_vs_prog_key *key)
 {
    return (struct brw_vs_prog_key) {
-      BRW_KEY_INIT(devinfo->gen, key->vue.base.program_string_id),
+      BRW_KEY_INIT(devinfo->ver, key->vue.base.program_string_id),
 
       /* Don't tell the backend about our clip plane constants, we've
        * already lowered them in NIR and don't want it doing it again.
@@ -79,7 +79,7 @@ iris_to_brw_tcs_key(const struct gen_device_info *devinfo,
                     const struct iris_tcs_prog_key *key)
 {
    return (struct brw_tcs_prog_key) {
-      BRW_KEY_INIT(devinfo->gen, key->vue.base.program_string_id),
+      BRW_KEY_INIT(devinfo->ver, key->vue.base.program_string_id),
       .tes_primitive_mode = key->tes_primitive_mode,
       .input_vertices = key->input_vertices,
       .patch_outputs_written = key->patch_outputs_written,
@@ -93,7 +93,7 @@ iris_to_brw_tes_key(const struct gen_device_info *devinfo,
                     const struct iris_tes_prog_key *key)
 {
    return (struct brw_tes_prog_key) {
-      BRW_KEY_INIT(devinfo->gen, key->vue.base.program_string_id),
+      BRW_KEY_INIT(devinfo->ver, key->vue.base.program_string_id),
       .patch_inputs_read = key->patch_inputs_read,
       .inputs_read = key->inputs_read,
    };
@@ -104,7 +104,7 @@ iris_to_brw_gs_key(const struct gen_device_info *devinfo,
                    const struct iris_gs_prog_key *key)
 {
    return (struct brw_gs_prog_key) {
-      BRW_KEY_INIT(devinfo->gen, key->vue.base.program_string_id),
+      BRW_KEY_INIT(devinfo->ver, key->vue.base.program_string_id),
    };
 }
 
@@ -113,7 +113,7 @@ iris_to_brw_fs_key(const struct gen_device_info *devinfo,
                    const struct iris_fs_prog_key *key)
 {
    return (struct brw_wm_prog_key) {
-      BRW_KEY_INIT(devinfo->gen, key->base.program_string_id),
+      BRW_KEY_INIT(devinfo->ver, key->base.program_string_id),
       .nr_color_regions = key->nr_color_regions,
       .flat_shade = key->flat_shade,
       .alpha_test_replicate_alpha = key->alpha_test_replicate_alpha,
@@ -134,7 +134,7 @@ iris_to_brw_cs_key(const struct gen_device_info *devinfo,
                    const struct iris_cs_prog_key *key)
 {
    return (struct brw_cs_prog_key) {
-      BRW_KEY_INIT(devinfo->gen, key->base.program_string_id),
+      BRW_KEY_INIT(devinfo->ver, key->base.program_string_id),
    };
 }
 
@@ -451,7 +451,7 @@ iris_setup_uniforms(const struct brw_compiler *compiler,
                                intrin->dest.ssa.bit_size);
 
             nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                     nir_src_for_ssa(data));
+                                     data);
             continue;
          }
          case nir_intrinsic_load_user_clip_plane: {
@@ -484,7 +484,7 @@ iris_setup_uniforms(const struct brw_compiler *compiler,
                                      patch_vert_idx * sizeof(uint32_t));
             break;
          case nir_intrinsic_image_deref_load_param_intel: {
-            assert(devinfo->gen < 9);
+            assert(devinfo->ver < 9);
             nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
             nir_variable *var = nir_deref_instr_get_variable(deref);
 
@@ -574,7 +574,7 @@ iris_setup_uniforms(const struct brw_compiler *compiler,
                          .range = ~0);
 
          nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                  nir_src_for_ssa(load));
+                                  load);
          nir_instr_remove(instr);
       }
    }
@@ -810,10 +810,10 @@ iris_setup_binding_table(const struct gen_device_info *devinfo,
       bt->used_mask[IRIS_SURFACE_GROUP_RENDER_TARGET] =
          BITFIELD64_MASK(num_render_targets);
 
-      /* Setup render target read surface group inorder to support non-coherent
-       * framebuffer fetch on Gen8
+      /* Setup render target read surface group in order to support non-coherent
+       * framebuffer fetch on Gfx8
        */
-      if (devinfo->gen == 8 && info->outputs_read) {
+      if (devinfo->ver == 8 && info->outputs_read) {
          bt->sizes[IRIS_SURFACE_GROUP_RENDER_TARGET_READ] = num_render_targets;
          bt->used_mask[IRIS_SURFACE_GROUP_RENDER_TARGET_READ] =
             BITFIELD64_MASK(num_render_targets);
@@ -822,8 +822,8 @@ iris_setup_binding_table(const struct gen_device_info *devinfo,
       bt->sizes[IRIS_SURFACE_GROUP_CS_WORK_GROUPS] = 1;
    }
 
-   bt->sizes[IRIS_SURFACE_GROUP_TEXTURE] = util_last_bit(info->textures_used);
-   bt->used_mask[IRIS_SURFACE_GROUP_TEXTURE] = info->textures_used;
+   bt->sizes[IRIS_SURFACE_GROUP_TEXTURE] = BITSET_LAST_BIT(info->textures_used);
+   bt->used_mask[IRIS_SURFACE_GROUP_TEXTURE] = info->textures_used[0];
 
    bt->sizes[IRIS_SURFACE_GROUP_IMAGE] = info->num_images;
 
@@ -857,7 +857,7 @@ iris_setup_binding_table(const struct gen_device_info *devinfo,
             break;
 
          case nir_intrinsic_load_output:
-            if (devinfo->gen == 8) {
+            if (devinfo->ver == 8) {
                mark_used_with_src(bt, &intrin->src[0],
                                   IRIS_SURFACE_GROUP_RENDER_TARGET_READ);
             }
@@ -988,7 +988,7 @@ iris_setup_binding_table(const struct gen_device_info *devinfo,
             break;
 
          case nir_intrinsic_load_output:
-            if (devinfo->gen == 8) {
+            if (devinfo->ver == 8) {
                rewrite_src_with_bti(&b, bt, instr, &intrin->src[0],
                                     IRIS_SURFACE_GROUP_RENDER_TARGET_READ);
             }
@@ -1200,12 +1200,16 @@ iris_compile_vs(struct iris_screen *screen,
 
    struct brw_vs_prog_key brw_key = iris_to_brw_vs_key(devinfo, key);
 
-   char *error_str = NULL;
-   const unsigned *program =
-      brw_compile_vs(compiler, dbg, mem_ctx, &brw_key, vs_prog_data,
-                     nir, -1, NULL, &error_str);
+   struct brw_compile_vs_params params = {
+      .nir = nir,
+      .key = &brw_key,
+      .prog_data = vs_prog_data,
+      .log_data = dbg,
+   };
+
+   const unsigned *program = brw_compile_vs(compiler, mem_ctx, &params);
    if (program == NULL) {
-      dbg_printf("Failed to compile vertex shader: %s\n", error_str);
+      dbg_printf("Failed to compile vertex shader: %s\n", params.error_str);
       ralloc_free(mem_ctx);
       return false;
    }
@@ -1442,7 +1446,7 @@ iris_update_compiled_tcs(struct iris_context *ice)
       .tes_primitive_mode = tes_info->tess.primitive_mode,
       .input_vertices =
          !tcs || compiler->use_tcs_8_patch ? ice->state.vertices_per_patch : 0,
-      .quads_workaround = devinfo->gen < 9 &&
+      .quads_workaround = devinfo->ver < 9 &&
                           tes_info->tess.primitive_mode == GL_QUADS &&
                           tes_info->tess.spacing == TESS_SPACING_EQUAL,
    };
@@ -1756,16 +1760,16 @@ iris_compile_fs(struct iris_screen *screen,
 
    /* Lower output variables to load_output intrinsics before setting up
     * binding tables, so iris_setup_binding_table can map any load_output
-    * intrinsics to IRIS_SURFACE_GROUP_RENDER_TARGET_READ on Gen8 for
+    * intrinsics to IRIS_SURFACE_GROUP_RENDER_TARGET_READ on Gfx8 for
     * non-coherent framebuffer fetches.
     */
    brw_nir_lower_fs_outputs(nir);
 
-   /* On Gen11+, shader RT write messages have a "Null Render Target" bit
+   /* On Gfx11+, shader RT write messages have a "Null Render Target" bit
     * and do not need a binding table entry with a null surface.  Earlier
     * generations need an entry for a null surface.
     */
-   int null_rts = devinfo->gen < 11 ? 1 : 0;
+   int null_rts = devinfo->ver < 11 ? 1 : 0;
 
    struct iris_binding_table bt;
    iris_setup_binding_table(devinfo, nir, &bt,
@@ -1776,13 +1780,20 @@ iris_compile_fs(struct iris_screen *screen,
 
    struct brw_wm_prog_key brw_key = iris_to_brw_fs_key(devinfo, key);
 
-   char *error_str = NULL;
-   const unsigned *program =
-      brw_compile_fs(compiler, dbg, mem_ctx, &brw_key, fs_prog_data,
-                     nir, -1, -1, -1, true, false, vue_map,
-                     NULL, &error_str);
+   struct brw_compile_fs_params params = {
+      .nir = nir,
+      .key = &brw_key,
+      .prog_data = fs_prog_data,
+
+      .allow_spilling = true,
+      .vue_map = vue_map,
+
+      .log_data = dbg,
+   };
+
+   const unsigned *program = brw_compile_fs(compiler, mem_ctx, &params);
    if (program == NULL) {
-      dbg_printf("Failed to compile fragment shader: %s\n", error_str);
+      dbg_printf("Failed to compile fragment shader: %s\n", params.error_str);
       ralloc_free(mem_ctx);
       return false;
    }
@@ -2040,12 +2051,16 @@ iris_compile_cs(struct iris_screen *screen,
 
    struct brw_cs_prog_key brw_key = iris_to_brw_cs_key(devinfo, key);
 
-   char *error_str = NULL;
-   const unsigned *program =
-      brw_compile_cs(compiler, dbg, mem_ctx, &brw_key, cs_prog_data,
-                     nir, -1, NULL, &error_str);
+   struct brw_compile_cs_params params = {
+      .nir = nir,
+      .key = &brw_key,
+      .prog_data = cs_prog_data,
+      .log_data = dbg,
+   };
+
+   const unsigned *program = brw_compile_cs(compiler, mem_ctx, &params);
    if (program == NULL) {
-      dbg_printf("Failed to compile compute shader: %s\n", error_str);
+      dbg_printf("Failed to compile compute shader: %s\n", params.error_str);
       ralloc_free(mem_ctx);
       return false;
    }
@@ -2147,27 +2162,27 @@ iris_get_scratch_space(struct iris_context *ice,
     * According to the other driver team, this applies to compute shaders
     * as well.  This is not currently documented at all.
     *
-    * This hack is no longer necessary on Gen11+.
+    * This hack is no longer necessary on Gfx11+.
     *
-    * For, Gen11+, scratch space allocation is based on the number of threads
+    * For, Gfx11+, scratch space allocation is based on the number of threads
     * in the base configuration.
     */
    unsigned subslice_total = screen->subslice_total;
-   if (devinfo->gen == 12)
+   if (devinfo->ver == 12)
       subslice_total = (devinfo->is_dg1 || devinfo->gt == 2 ? 6 : 2);
-   else if (devinfo->gen == 11)
+   else if (devinfo->ver == 11)
       subslice_total = 8;
-   else if (devinfo->gen < 11)
+   else if (devinfo->ver < 11)
       subslice_total = 4 * devinfo->num_slices;
    assert(subslice_total >= screen->subslice_total);
 
    if (!*bop) {
       unsigned scratch_ids_per_subslice = devinfo->max_cs_threads;
 
-      if (devinfo->gen >= 12) {
+      if (devinfo->ver >= 12) {
          /* Same as ICL below, but with 16 EUs. */
          scratch_ids_per_subslice = 16 * 8;
-      } else if (devinfo->gen == 11) {
+      } else if (devinfo->ver == 11) {
          /* The MEDIA_VFE_STATE docs say:
           *
           *    "Starting with this configuration, the Maximum Number of
@@ -2422,7 +2437,7 @@ iris_create_fs_state(struct pipe_context *ctx,
       struct iris_fs_prog_key key = {
          KEY_ID(base),
          .nr_color_regions = util_bitcount(color_outputs),
-         .coherent_fb_fetch = devinfo->gen >= 9,
+         .coherent_fb_fetch = devinfo->ver >= 9,
          .input_slots_valid =
             can_rearrange_varyings ? 0 : info->inputs_read | VARYING_BIT_POS,
       };
@@ -2570,8 +2585,8 @@ bind_shader_state(struct iris_context *ice,
    const struct shader_info *old_info = iris_get_shader_info(ice, stage);
    const struct shader_info *new_info = ish ? &ish->nir->info : NULL;
 
-   if ((old_info ? util_last_bit(old_info->textures_used) : 0) !=
-       (new_info ? util_last_bit(new_info->textures_used) : 0)) {
+   if ((old_info ? BITSET_LAST_BIT(old_info->textures_used) : 0) !=
+       (new_info ? BITSET_LAST_BIT(new_info->textures_used) : 0)) {
       ice->state.stage_dirty |= IRIS_STAGE_DIRTY_SAMPLER_STATES_VS << stage;
    }
 
@@ -2682,7 +2697,7 @@ iris_bind_fs_state(struct pipe_context *ctx, void *state)
        (new_ish->nir->info.outputs_written & color_bits))
       ice->state.dirty |= IRIS_DIRTY_PS_BLEND;
 
-   if (devinfo->gen == 8)
+   if (devinfo->ver == 8)
       ice->state.dirty |= IRIS_DIRTY_PMA_FIX;
 
    bind_shader_state((void *) ctx, state, MESA_SHADER_FRAGMENT);

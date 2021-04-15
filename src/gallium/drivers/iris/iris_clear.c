@@ -54,7 +54,7 @@ iris_is_color_fast_clear_compatible(struct iris_context *ice,
          continue;
       }
 
-      if (devinfo->gen < 9 &&
+      if (devinfo->ver < 9 &&
           color.f32[i] != 0.0f && color.f32[i] != 1.0f) {
          return false;
       }
@@ -134,7 +134,7 @@ can_fast_clear_color(struct iris_context *ice,
     * to avoid stomping on other LODs.
     */
    if (level > 0 && util_format_get_blocksizebits(p_res->format) == 8 &&
-       res->aux.usage == ISL_AUX_USAGE_GEN12_CCS_E && p_res->width0 % 64) {
+       res->aux.usage == ISL_AUX_USAGE_GFX12_CCS_E && p_res->width0 % 64) {
       return false;
    }
 
@@ -281,7 +281,7 @@ fast_clear_color(struct iris_context *ice,
    if (!color_changed && box->depth == 1 && aux_state == ISL_AUX_STATE_CLEAR)
       return;
 
-   /* Ivybrigde PRM Vol 2, Part 1, "11.7 MCS Buffer for Render Target(s)":
+   /* Ivybridge PRM Vol 2, Part 1, "11.7 MCS Buffer for Render Target(s)":
     *
     *    "Any transition from any value in {Clear, Render, Resolve} to a
     *    different value in {Clear, Render, Resolve} requires end of pipe

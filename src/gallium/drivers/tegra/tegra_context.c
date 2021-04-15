@@ -25,6 +25,7 @@
 #include <stdlib.h>
 
 #include "util/u_debug.h"
+#include "util/u_draw.h"
 #include "util/u_inlines.h"
 #include "util/u_upload_mgr.h"
 
@@ -52,13 +53,7 @@ tegra_draw_vbo(struct pipe_context *pcontext,
                unsigned num_draws)
 {
    if (num_draws > 1) {
-      struct pipe_draw_info tmp_info = *pinfo;
-
-      for (unsigned i = 0; i < num_draws; i++) {
-         tegra_draw_vbo(pcontext, &tmp_info, pindirect, &draws[i], 1);
-         if (tmp_info.increment_draw_id)
-            tmp_info.drawid++;
-      }
+      util_draw_multi(pcontext, pinfo, pindirect, draws, num_draws);
       return;
    }
 
@@ -75,13 +70,14 @@ tegra_draw_vbo(struct pipe_context *pcontext,
       if (pindirect && pindirect->buffer) {
          memcpy(&indirect, pindirect, sizeof(indirect));
          indirect.buffer = tegra_resource_unwrap(pindirect->buffer);
+         indirect.indirect_draw_count = tegra_resource_unwrap(pindirect->indirect_draw_count);
+         pindirect = &indirect;
       }
 
       if (pinfo->index_size && !pinfo->has_user_indices)
          info.index.resource = tegra_resource_unwrap(info.index.resource);
 
       pinfo = &info;
-      pindirect = &indirect;
    }
 
    context->gpu->draw_vbo(context->gpu, pinfo, pindirect, draws, num_draws);

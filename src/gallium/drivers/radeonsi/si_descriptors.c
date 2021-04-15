@@ -310,11 +310,11 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
    if (sscreen->info.chip_class >= GFX9) {
       /* Only stencil_offset needs to be added here. */
       if (is_stencil)
-         va += tex->surface.u.gfx9.stencil_offset;
+         va += tex->surface.u.gfx9.zs.stencil_offset;
       else
          va += tex->surface.u.gfx9.surf_offset;
    } else {
-      va += base_level_info->offset;
+      va += (uint64_t)base_level_info->offset_256B * 256;
    }
 
    state[0] = va >> 8;
@@ -332,19 +332,19 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
 
       if (!(access & SI_IMAGE_ACCESS_DCC_OFF) && vi_dcc_enabled(tex, first_level)) {
          meta_va =
-            (!tex->dcc_separate_buffer ? tex->buffer.gpu_address : 0) + tex->surface.dcc_offset;
+            (!tex->dcc_separate_buffer ? tex->buffer.gpu_address : 0) + tex->surface.meta_offset;
 
          if (sscreen->info.chip_class == GFX8) {
-            meta_va += base_level_info->dcc_offset;
+            meta_va += tex->surface.u.legacy.color.dcc_level[base_level].dcc_offset;
             assert(base_level_info->mode == RADEON_SURF_MODE_2D);
          }
 
          unsigned dcc_tile_swizzle = tex->surface.tile_swizzle << 8;
-         dcc_tile_swizzle &= tex->surface.dcc_alignment - 1;
+         dcc_tile_swizzle &= (1 << tex->surface.meta_alignment_log2) - 1;
          meta_va |= dcc_tile_swizzle;
       } else if (vi_tc_compat_htile_enabled(tex, first_level,
                                             is_stencil ? PIPE_MASK_S : PIPE_MASK_Z)) {
-         meta_va = tex->buffer.gpu_address + tex->surface.htile_offset;
+         meta_va = tex->buffer.gpu_address + tex->surface.meta_offset;
       }
 
       if (meta_va)
@@ -358,9 +358,9 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
       state[3] &= C_00A00C_SW_MODE;
 
       if (is_stencil) {
-         state[3] |= S_00A00C_SW_MODE(tex->surface.u.gfx9.stencil.swizzle_mode);
+         state[3] |= S_00A00C_SW_MODE(tex->surface.u.gfx9.zs.stencil_swizzle_mode);
       } else {
-         state[3] |= S_00A00C_SW_MODE(tex->surface.u.gfx9.surf.swizzle_mode);
+         state[3] |= S_00A00C_SW_MODE(tex->surface.u.gfx9.swizzle_mode);
       }
 
       state[6] &= C_00A018_META_DATA_ADDRESS_LO & C_00A018_META_PIPE_ALIGNED &
@@ -372,8 +372,8 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
             .pipe_aligned = 1,
          };
 
-         if (tex->surface.dcc_offset)
-            meta = tex->surface.u.gfx9.dcc;
+         if (!tex->is_depth && tex->surface.meta_offset)
+            meta = tex->surface.u.gfx9.color.dcc;
 
          state[6] |= S_00A018_META_PIPE_ALIGNED(meta.pipe_aligned) |
                      S_00A018_META_DATA_ADDRESS_LO(meta_va >> 8) |
@@ -386,10 +386,10 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
       state[4] &= C_008F20_PITCH;
 
       if (is_stencil) {
-         state[3] |= S_008F1C_SW_MODE(tex->surface.u.gfx9.stencil.swizzle_mode);
-         state[4] |= S_008F20_PITCH(tex->surface.u.gfx9.stencil.epitch);
+         state[3] |= S_008F1C_SW_MODE(tex->surface.u.gfx9.zs.stencil_swizzle_mode);
+         state[4] |= S_008F20_PITCH(tex->surface.u.gfx9.zs.stencil_epitch);
       } else {
-         uint16_t epitch = tex->surface.u.gfx9.surf.epitch;
+         uint16_t epitch = tex->surface.u.gfx9.epitch;
          if (tex->buffer.b.b.format == PIPE_FORMAT_R8G8_R8B8_UNORM &&
              block_width == 1) {
             /* epitch is patched in ac_surface for sdma/vcn blocks to get
@@ -399,7 +399,7 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
              */
             epitch = (epitch + 1) / tex->surface.blk_w - 1;
          }
-         state[3] |= S_008F1C_SW_MODE(tex->surface.u.gfx9.surf.swizzle_mode);
+         state[3] |= S_008F1C_SW_MODE(tex->surface.u.gfx9.swizzle_mode);
          state[4] |= S_008F20_PITCH(epitch);
       }
 
@@ -411,8 +411,8 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
             .pipe_aligned = 1,
          };
 
-         if (tex->surface.dcc_offset)
-            meta = tex->surface.u.gfx9.dcc;
+         if (!tex->is_depth && tex->surface.meta_offset)
+            meta = tex->surface.u.gfx9.color.dcc;
 
          state[5] |= S_008F24_META_DATA_ADDRESS(meta_va >> 40) |
                      S_008F24_META_PIPE_ALIGNED(meta.pipe_aligned) |
@@ -428,15 +428,23 @@ void si_set_mutable_tex_desc_fields(struct si_screen *sscreen, struct si_texture
       state[4] &= C_008F20_PITCH;
       state[4] |= S_008F20_PITCH(pitch - 1);
    }
+
+   if (tex->swap_rgb_to_bgr) {
+      unsigned swizzle_x = G_008F1C_DST_SEL_X(state[3]);
+      unsigned swizzle_z = G_008F1C_DST_SEL_Z(state[3]);
+
+      state[3] &= C_008F1C_DST_SEL_X;
+      state[3] |= S_008F1C_DST_SEL_X(swizzle_z);
+      state[3] &= C_008F1C_DST_SEL_Z;
+      state[3] |= S_008F1C_DST_SEL_Z(swizzle_x);
+   }
 }
 
 static void si_set_sampler_state_desc(struct si_sampler_state *sstate,
                                       struct si_sampler_view *sview, struct si_texture *tex,
                                       uint32_t *desc)
 {
-   if (sview && sview->is_integer)
-      memcpy(desc, sstate->integer_val, 4 * 4);
-   else if (tex && tex->upgraded_depth && (!sview || !sview->is_stencil_sampler))
+   if (tex && tex->upgraded_depth && sview && !sview->is_stencil_sampler)
       memcpy(desc, sstate->upgraded_depth_val, 4 * 4);
    else
       memcpy(desc, sstate->val, 4 * 4);
@@ -483,8 +491,11 @@ static void si_set_sampler_view_desc(struct si_context *sctx, struct si_sampler_
 
 static bool color_needs_decompression(struct si_texture *tex)
 {
+   if (tex->is_depth)
+      return false;
+
    return tex->surface.fmask_size ||
-          (tex->dirty_level_mask && (tex->cmask_buffer || tex->surface.dcc_offset));
+          (tex->dirty_level_mask && (tex->cmask_buffer || tex->surface.meta_offset));
 }
 
 static bool depth_needs_decompression(struct si_texture *tex)
@@ -2663,7 +2674,7 @@ bool si_gfx_resources_check_encrypted(struct si_context *sctx)
          si_buffer_resources_check_encrypted(sctx, &sctx->const_and_shader_buffers[i]);
       use_encrypted_bo |=
          si_sampler_views_check_encrypted(sctx, &sctx->samplers[i],
-                                          current_shader->cso->info.base.textures_used);
+                                          current_shader->cso->info.base.textures_used[0]);
       use_encrypted_bo |= si_image_views_check_encrypted(sctx, &sctx->images[i],
                                           u_bit_consecutive(0, current_shader->cso->info.base.num_images));
    }
@@ -2743,7 +2754,7 @@ bool si_compute_resources_check_encrypted(struct si_context *sctx)
     * or all writable buffers are encrypted.
     */
    return si_buffer_resources_check_encrypted(sctx, &sctx->const_and_shader_buffers[sh]) ||
-          si_sampler_views_check_encrypted(sctx, &sctx->samplers[sh], info->base.textures_used) ||
+          si_sampler_views_check_encrypted(sctx, &sctx->samplers[sh], info->base.textures_used[0]) ||
           si_image_views_check_encrypted(sctx, &sctx->images[sh], u_bit_consecutive(0, info->base.num_images)) ||
           si_buffer_resources_check_encrypted(sctx, &sctx->internal_bindings);
 }

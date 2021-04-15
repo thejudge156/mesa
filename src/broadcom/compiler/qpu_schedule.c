@@ -79,6 +79,7 @@ struct schedule_state {
         struct schedule_node *last_vpm_read;
         struct schedule_node *last_tmu_write;
         struct schedule_node *last_tmu_config;
+        struct schedule_node *last_tmu_read;
         struct schedule_node *last_tlb;
         struct schedule_node *last_vpm;
         struct schedule_node *last_unif;
@@ -168,6 +169,36 @@ process_mux_deps(struct schedule_state *state, struct schedule_node *n,
         }
 }
 
+static bool
+tmu_write_is_sequence_terminator(uint32_t waddr)
+{
+        switch (waddr) {
+        case V3D_QPU_WADDR_TMUS:
+        case V3D_QPU_WADDR_TMUSCM:
+        case V3D_QPU_WADDR_TMUSF:
+        case V3D_QPU_WADDR_TMUSLOD:
+        case V3D_QPU_WADDR_TMUA:
+        case V3D_QPU_WADDR_TMUAU:
+                return true;
+        default:
+                return false;
+        }
+}
+
+static bool
+can_reorder_tmu_write(const struct v3d_device_info *devinfo, uint32_t waddr)
+{
+        if (devinfo->ver < 40)
+                return false;
+
+        if (tmu_write_is_sequence_terminator(waddr))
+                return false;
+
+        if (waddr == V3D_QPU_WADDR_TMUD)
+                return false;
+
+        return true;
+}
 
 static void
 process_waddr_deps(struct schedule_state *state, struct schedule_node *n,
@@ -176,22 +207,13 @@ process_waddr_deps(struct schedule_state *state, struct schedule_node *n,
         if (!magic) {
                 add_write_dep(state, &state->last_rf[waddr], n);
         } else if (v3d_qpu_magic_waddr_is_tmu(state->devinfo, waddr)) {
-                /* XXX perf: For V3D 4.x, we could reorder TMU writes other
-                 * than the TMUS/TMUD/TMUA to improve scheduling flexibility.
-                 */
-                add_write_dep(state, &state->last_tmu_write, n);
-                switch (waddr) {
-                case V3D_QPU_WADDR_TMUS:
-                case V3D_QPU_WADDR_TMUSCM:
-                case V3D_QPU_WADDR_TMUSF:
-                case V3D_QPU_WADDR_TMUSLOD:
-                case V3D_QPU_WADDR_TMUA:
-                case V3D_QPU_WADDR_TMUAU:
+                if (can_reorder_tmu_write(state->devinfo, waddr))
+                        add_read_dep(state, state->last_tmu_write, n);
+                else
+                        add_write_dep(state, &state->last_tmu_write, n);
+
+                if (tmu_write_is_sequence_terminator(waddr))
                         add_write_dep(state, &state->last_tmu_config, n);
-                        break;
-                default:
-                        break;
-                }
         } else if (v3d_qpu_magic_waddr_is_sfu(waddr)) {
                 /* Handled by v3d_qpu_writes_r4() check. */
         } else {
@@ -227,6 +249,7 @@ process_waddr_deps(struct schedule_state *state, struct schedule_node *n,
                          * barriers to affect ALU operations.
                          */
                         add_write_dep(state, &state->last_tmu_write, n);
+                        add_write_dep(state, &state->last_tmu_read, n);
                         break;
 
                 case V3D_QPU_WADDR_UNIFA:
@@ -362,6 +385,9 @@ calculate_deps(struct schedule_state *state, struct schedule_node *n)
         if (v3d_qpu_writes_r5(devinfo, inst))
                 add_write_dep(state, &state->last_r[5], n);
 
+        /* If we add any more dependencies here we should consider whether we
+         * also need to update qpu_inst_after_thrsw_valid_in_delay_slot.
+         */
         if (inst->sig.thrsw) {
                 /* All accumulator contents and flags are undefined after the
                  * switch.
@@ -383,11 +409,17 @@ calculate_deps(struct schedule_state *state, struct schedule_node *n)
         if (v3d_qpu_waits_on_tmu(inst)) {
                 /* TMU loads are coming from a FIFO, so ordering is important.
                  */
-                add_write_dep(state, &state->last_tmu_write, n);
+                add_write_dep(state, &state->last_tmu_read, n);
+                /* Keep TMU loads after their TMU lookup terminator */
+                add_read_dep(state, state->last_tmu_config, n);
         }
 
+        /* Allow wrtmuc to be reordered with other instructions in the
+         * same TMU sequence by using a read dependency on the last TMU
+         * sequence terminator.
+         */
         if (inst->sig.wrtmuc)
-                add_write_dep(state, &state->last_tmu_config, n);
+                add_read_dep(state, state->last_tmu_config, n);
 
         if (inst->sig.ldtlb | inst->sig.ldtlbu)
                 add_write_dep(state, &state->last_tlb, n);
@@ -458,8 +490,9 @@ struct choose_scoreboard {
         int last_unifa_write_tick;
         int last_uniforms_reset_tick;
         int last_thrsw_tick;
+        int last_branch_tick;
+        int last_setmsf_tick;
         bool tlb_locked;
-        bool ldvary_pipelining;
         bool fixup_ldvary;
         int ldvary_count;
 };
@@ -797,6 +830,50 @@ qpu_merge_raddrs(struct v3d_qpu_instr *result,
 }
 
 static bool
+can_do_add_as_mul(enum v3d_qpu_add_op op)
+{
+        switch (op) {
+        case V3D_QPU_A_ADD:
+        case V3D_QPU_A_SUB:
+                return true;
+        default:
+                return false;
+        }
+}
+
+static enum v3d_qpu_mul_op
+add_op_as_mul_op(enum v3d_qpu_add_op op)
+{
+        switch (op) {
+        case V3D_QPU_A_ADD:
+                return V3D_QPU_M_ADD;
+        case V3D_QPU_A_SUB:
+                return V3D_QPU_M_SUB;
+        default:
+                unreachable("unexpected add opcode");
+        }
+}
+
+static void
+qpu_convert_add_to_mul(struct v3d_qpu_instr *inst)
+{
+        STATIC_ASSERT(sizeof(inst->alu.mul) == sizeof(inst->alu.add));
+        assert(inst->alu.add.op != V3D_QPU_A_NOP);
+        assert(inst->alu.mul.op == V3D_QPU_M_NOP);
+
+        memcpy(&inst->alu.mul, &inst->alu.add, sizeof(inst->alu.mul));
+        inst->alu.mul.op = add_op_as_mul_op(inst->alu.add.op);
+        inst->alu.add.op = V3D_QPU_A_NOP;
+
+        inst->flags.mc = inst->flags.ac;
+        inst->flags.mpf = inst->flags.apf;
+        inst->flags.muf = inst->flags.auf;
+        inst->flags.ac = V3D_QPU_PF_NONE;
+        inst->flags.apf = V3D_QPU_PF_NONE;
+        inst->flags.auf = V3D_QPU_PF_NONE;
+}
+
+static bool
 qpu_merge_inst(const struct v3d_device_info *devinfo,
                struct v3d_qpu_instr *result,
                const struct v3d_qpu_instr *a,
@@ -813,17 +890,52 @@ qpu_merge_inst(const struct v3d_device_info *devinfo,
         struct v3d_qpu_instr merge = *a;
         const struct v3d_qpu_instr *add_instr = NULL, *mul_instr = NULL;
 
+        struct v3d_qpu_instr mul_inst;
         if (b->alu.add.op != V3D_QPU_A_NOP) {
-                if (a->alu.add.op != V3D_QPU_A_NOP)
+                if (a->alu.add.op == V3D_QPU_A_NOP) {
+                        merge.alu.add = b->alu.add;
+
+                        merge.flags.ac = b->flags.ac;
+                        merge.flags.apf = b->flags.apf;
+                        merge.flags.auf = b->flags.auf;
+
+                        add_instr = b;
+                        mul_instr = a;
+                }
+                /* If a's add op is used but its mul op is not, then see if we
+                 * can convert either a's add op or b's add op to a mul op
+                 * so we can merge.
+                 */
+                else if (a->alu.mul.op == V3D_QPU_M_NOP &&
+                         can_do_add_as_mul(b->alu.add.op)) {
+                        mul_inst = *b;
+                        qpu_convert_add_to_mul(&mul_inst);
+
+                        merge.alu.mul = mul_inst.alu.mul;
+
+                        merge.flags.mc = b->flags.ac;
+                        merge.flags.mpf = b->flags.apf;
+                        merge.flags.muf = b->flags.auf;
+
+                        add_instr = a;
+                        mul_instr = &mul_inst;
+                } else if (a->alu.mul.op == V3D_QPU_M_NOP &&
+                           can_do_add_as_mul(a->alu.add.op)) {
+                        mul_inst = *a;
+                        qpu_convert_add_to_mul(&mul_inst);
+
+                        merge = mul_inst;
+                        merge.alu.add = b->alu.add;
+
+                        merge.flags.ac = b->flags.ac;
+                        merge.flags.apf = b->flags.apf;
+                        merge.flags.auf = b->flags.auf;
+
+                        add_instr = b;
+                        mul_instr = &mul_inst;
+                } else {
                         return false;
-                merge.alu.add = b->alu.add;
-
-                merge.flags.ac = b->flags.ac;
-                merge.flags.apf = b->flags.apf;
-                merge.flags.auf = b->flags.auf;
-
-                add_instr = b;
-                mul_instr = a;
+                }
         }
 
         if (b->alu.mul.op != V3D_QPU_M_NOP) {
@@ -875,6 +987,17 @@ qpu_merge_inst(const struct v3d_device_info *devinfo,
         return ok;
 }
 
+static inline bool
+try_skip_for_ldvary_pipelining(const struct v3d_qpu_instr *inst)
+{
+        return inst->sig.ldunif || inst->sig.ldunifrf;
+}
+
+static bool
+qpu_inst_after_thrsw_valid_in_delay_slot(struct v3d_compile *c,
+                                         struct choose_scoreboard *scoreboard,
+                                         const struct qinst *qinst);
+
 static struct schedule_node *
 choose_instruction_to_schedule(struct v3d_compile *c,
                                struct choose_scoreboard *scoreboard,
@@ -891,32 +1014,17 @@ choose_instruction_to_schedule(struct v3d_compile *c,
                         return NULL;
         }
 
+        bool ldvary_pipelining = c->s->info.stage == MESA_SHADER_FRAGMENT &&
+                                 scoreboard->ldvary_count < c->num_inputs;
+        bool skipped_insts_for_ldvary_pipelining = false;
+retry:
         list_for_each_entry(struct schedule_node, n, &scoreboard->dag->heads,
                             dag.link) {
-                /* If we are scheduling a pipelined varying sequence then
-                 * we want to pick up the next instruction in the sequence.
-                 */
-                if (scoreboard->ldvary_pipelining &&
-                    !n->inst->is_ldvary_sequence) {
-                        continue;
-                }
-
                 const struct v3d_qpu_instr *inst = &n->inst->qpu;
 
-                /* Simulator complains if we have two uniforms loaded in the
-                 * the same instruction, which could happen if we have a ldunif
-                 * or sideband uniform and we pair that with ldunifa.
-                 */
-                if (prev_inst) {
-                        if (vir_has_uniform(prev_inst->inst) &&
-                            (inst->sig.ldunifa || inst->sig.ldunifarf)) {
-                                continue;
-                        }
-                        if ((prev_inst->inst->qpu.sig.ldunifa ||
-                             prev_inst->inst->qpu.sig.ldunifarf) &&
-                            vir_has_uniform(n->inst)) {
-                                continue;
-                        }
+                if (ldvary_pipelining && try_skip_for_ldvary_pipelining(inst)) {
+                        skipped_insts_for_ldvary_pipelining = true;
+                        continue;
                 }
 
                 /* Don't choose the branch instruction until it's the last one
@@ -963,6 +1071,36 @@ choose_instruction_to_schedule(struct v3d_compile *c,
                         continue;
                 }
 
+                /* If we are in a thrsw delay slot check that this instruction
+                 * is valid for that.
+                 */
+                if (scoreboard->last_thrsw_tick + 2 >= scoreboard->tick &&
+                    !qpu_inst_after_thrsw_valid_in_delay_slot(c, scoreboard,
+                                                              n->inst)) {
+                        continue;
+                }
+
+                if (inst->type == V3D_QPU_INSTR_TYPE_BRANCH) {
+                        /* Don't try to put a branch in the delay slots of another
+                         * branch or a unifa write.
+                         */
+                        if (scoreboard->last_branch_tick + 3 >= scoreboard->tick)
+                                continue;
+                        if (scoreboard->last_unifa_write_tick + 3 >= scoreboard->tick)
+                                continue;
+
+                        /* No branch with cond != 0,2,3 and msfign != 0 after
+                         * setmsf.
+                         */
+                        if (scoreboard->last_setmsf_tick == scoreboard->tick - 1 &&
+                            inst->branch.msfign != V3D_QPU_MSFIGN_NONE &&
+                            inst->branch.cond != V3D_QPU_BRANCH_COND_ALWAYS &&
+                            inst->branch.cond != V3D_QPU_BRANCH_COND_A0 &&
+                            inst->branch.cond != V3D_QPU_BRANCH_COND_NA0) {
+                                continue;
+                        }
+                }
+
                 /* If we're trying to pair with another instruction, check
                  * that they're compatible.
                  */
@@ -977,6 +1115,22 @@ choose_instruction_to_schedule(struct v3d_compile *c,
                             n->inst->uniform != -1)
                                 continue;
 
+                       /* Simulator complains if we have two uniforms loaded in
+                        * the the same instruction, which could happen if we
+                        * have a ldunif or sideband uniform and we pair that
+                        * with ldunifa.
+                        */
+                        if (vir_has_uniform(prev_inst->inst) &&
+                            (inst->sig.ldunifa || inst->sig.ldunifarf)) {
+                                continue;
+                        }
+
+                        if ((prev_inst->inst->qpu.sig.ldunifa ||
+                             prev_inst->inst->qpu.sig.ldunifarf) &&
+                            vir_has_uniform(n->inst)) {
+                                continue;
+                        }
+
                         /* Don't merge in something that will lock the TLB.
                          * Hopwefully what we have in inst will release some
                          * other instructions, allowing us to delay the
@@ -985,21 +1139,23 @@ choose_instruction_to_schedule(struct v3d_compile *c,
                         if (!scoreboard->tlb_locked && qpu_inst_is_tlb(inst))
                                 continue;
 
+                        /* When we succesfully pair up an ldvary we then try
+                         * to merge it into the previous instruction if
+                         * possible to improve pipelining. Don't pick up the
+                         * ldvary now if the follow-up fixup would place
+                         * it in the delay slots of a thrsw, which is not
+                         * allowed and would prevent the fixup from being
+                         * successul.
+                         */
+                        if (inst->sig.ldvary &&
+                            scoreboard->last_thrsw_tick + 2 >= scoreboard->tick - 1) {
+                                continue;
+                        }
+
                         struct v3d_qpu_instr merged_inst;
                         if (!qpu_merge_inst(c->devinfo, &merged_inst,
                                             &prev_inst->inst->qpu, inst)) {
                                 continue;
-                        }
-
-                        /* If we find an ldvary inside an ongoing pipelineable
-                         * ldvary sequence we want to pick that and start
-                         * pipelining the new sequence into the previous one.
-                         */
-                        if (scoreboard->ldvary_pipelining && inst->sig.ldvary) {
-                                assert(n->inst->is_ldvary_sequence);
-                                scoreboard->ldvary_count++;
-                                scoreboard->fixup_ldvary = true;
-                                return n;
                         }
                 }
 
@@ -1041,50 +1197,22 @@ choose_instruction_to_schedule(struct v3d_compile *c,
                 }
         }
 
-        /* Update ldvary pipelining state */
-        if (chosen) {
-                if (chosen->inst->qpu.sig.ldvary &&
-                    chosen->inst->is_ldvary_sequence) {
-                        scoreboard->ldvary_pipelining =
-                            c->num_inputs > ++scoreboard->ldvary_count;
-                }
-        } else if (scoreboard->ldvary_pipelining) {
-                /* If we are in the middle of an ldvary sequence we only pick
-                 * up instructions that can continue the sequence so we can
-                 * pipeline them, however, if we failed to find anything to
-                 * schedule (!prev_inst) then we can't possibly continue the
-                 * sequence and we need to stop the pipelining process and try
-                 * again.
-                 *
-                 * There is one exception to the above: noperspective or flat
-                 * varyings can cause us to not be able to pick an instruction
-                 * because they need a nop between the ldvary and the next
-                 * instruction to account for the ldvary r5 write latency. We
-                 * can try to detect this by checking if we are also unable to
-                 * schedule an instruction after disabling pipelining.
-                 *
-                 * FIXME: dropping pipelining and picking up another instruction
-                 * could break the sequence for flat/noperspective varyings we
-                 * could've been able to continue if we returned NULL here and
-                 * scheduled a NOP as a result, but detecting this case would
-                 * require us to know in advance that emitting the next NOP will
-                 * guarantee that we will be able to continue the sequence.
-                 *
-                 * If we failed to pair up (prev_inst != NULL), then we disable
-                 * pipelining if we have already scheduled the last ldvary. This
-                 * may allow any other instruction that is not part of an ldvary
-                 * sequence to be merged into the last instruction of the last
-                 * ldvary sequence for optimal results.
+        /* If we did not find any instruction to schedule but we discarded
+         * some of them to prioritize ldvary pipelining, try again.
+         */
+        if (!chosen && !prev_inst && skipped_insts_for_ldvary_pipelining) {
+                skipped_insts_for_ldvary_pipelining = false;
+                ldvary_pipelining = false;
+                goto retry;
+        }
+
+        if (chosen && chosen->inst->qpu.sig.ldvary) {
+                scoreboard->ldvary_count++;
+                /* If we are pairing an ldvary, flag it so we can fix it up for
+                 * optimal pipelining of ldvary sequences.
                  */
-                if (!prev_inst) {
-                        scoreboard->ldvary_pipelining = false;
-                        chosen = choose_instruction_to_schedule(c, scoreboard,
-                                                                prev_inst);
-                        scoreboard->ldvary_pipelining = !chosen;
-                } else {
-                        scoreboard->ldvary_pipelining =
-                                c->num_inputs > scoreboard->ldvary_count;
-                }
+                if (prev_inst)
+                        scoreboard->fixup_ldvary = true;
         }
 
         return chosen;
@@ -1130,6 +1258,9 @@ update_scoreboard_for_chosen(struct choose_scoreboard *scoreboard,
                         update_scoreboard_for_sfu_stall_waddr(scoreboard,
                                                               inst);
                 }
+
+                if (inst->alu.add.op == V3D_QPU_A_SETMSF)
+                        scoreboard->last_setmsf_tick = scoreboard->tick;
         }
 
         if (inst->alu.mul.op != V3D_QPU_M_NOP) {
@@ -1328,8 +1459,8 @@ emit_nop(struct v3d_compile *c, struct qblock *block,
 }
 
 static bool
-qpu_instruction_valid_in_thrend_slot(struct v3d_compile *c,
-                                     const struct qinst *qinst, int slot)
+qpu_inst_valid_in_thrend_slot(struct v3d_compile *c,
+                              const struct qinst *qinst, int slot)
 {
         const struct v3d_qpu_instr *inst = &qinst->qpu;
 
@@ -1386,6 +1517,140 @@ qpu_instruction_valid_in_thrend_slot(struct v3d_compile *c,
         return true;
 }
 
+/**
+ * This is called when trying to merge a thrsw back into the instruction stream
+ * of instructions that were scheduled *before* the thrsw signal to fill its
+ * delay slots. Because the actual execution of the thrsw happens after the
+ * delay slots, it is usually safe to do this, but there are some cases that
+ * need special care.
+ */
+static bool
+qpu_inst_before_thrsw_valid_in_delay_slot(struct v3d_compile *c,
+                                          const struct qinst *qinst,
+                                          uint32_t slot)
+{
+        /* No scheduling SFU when the result would land in the other
+         * thread.  The simulator complains for safety, though it
+         * would only occur for dead code in our case.
+         */
+        if (slot > 0 &&
+            qinst->qpu.type == V3D_QPU_INSTR_TYPE_ALU &&
+            (v3d_qpu_magic_waddr_is_sfu(qinst->qpu.alu.add.waddr) ||
+             v3d_qpu_magic_waddr_is_sfu(qinst->qpu.alu.mul.waddr))) {
+                return false;
+        }
+
+        if (slot > 0 && qinst->qpu.sig.ldvary)
+                return false;
+
+        /* unifa and the following 3 instructions can't overlap a
+         * thread switch/end. The docs further clarify that this means
+         * the cycle at which the actual thread switch/end happens
+         * and not when the thrsw instruction is processed, which would
+         * be after the 2 delay slots following the thrsw instruction.
+         * This means that we can move up a thrsw up to the instruction
+         * right after unifa:
+         *
+         * unifa, r5
+         * thrsw
+         * delay slot 1
+         * delay slot 2
+         * Thread switch happens here, 4 instructions away from unifa
+         */
+        if (v3d_qpu_writes_unifa(c->devinfo, &qinst->qpu))
+                return false;
+
+        return true;
+}
+
+/**
+ * This is called for instructions scheduled *after* a thrsw signal that may
+ * land in the delay slots of the thrsw. Because these instructions were
+ * scheduled after the thrsw, we need to be careful when placing them into
+ * the delay slots, since that means that we are moving them ahead of the
+ * thread switch and we need to ensure that is not a problem.
+ */
+static bool
+qpu_inst_after_thrsw_valid_in_delay_slot(struct v3d_compile *c,
+                                         struct choose_scoreboard *scoreboard,
+                                         const struct qinst *qinst)
+{
+        const uint32_t slot = scoreboard->tick - scoreboard->last_thrsw_tick;
+        assert(slot <= 2);
+
+        /* We merge thrsw instructions back into the instruction stream
+         * manually, so any instructions scheduled after a thrsw shold be
+         * in the actual delay slots and not in the same slot as the thrsw.
+         */
+        assert(slot >= 1);
+
+        /* No emitting a thrsw while the previous thrsw hasn't happened yet. */
+        if (qinst->qpu.sig.thrsw)
+                return false;
+
+        /* The restrictions for instructions scheduled before the the thrsw
+         * also apply to instructions scheduled after the thrsw that we want
+         * to place in its delay slots.
+         */
+        if (!qpu_inst_before_thrsw_valid_in_delay_slot(c, qinst, slot))
+                return false;
+
+        /* TLB access is disallowed until scoreboard wait is executed, which
+         * we do on the last thread switch.
+         */
+        if (qpu_inst_is_tlb(&qinst->qpu))
+                return false;
+
+        /* Instruction sequence restrictions: Branch is not allowed in delay
+         * slots of a thrsw.
+         */
+        if (qinst->qpu.type == V3D_QPU_INSTR_TYPE_BRANCH)
+                return false;
+
+        /* Miscellaneous restrictions: At the point of a thrsw we need to have
+         * at least one outstanding lookup or TSY wait.
+         *
+         * So avoid placing TMU instructions scheduled after the thrsw into
+         * its delay slots or we may be compromising the integrity of our TMU
+         * sequences. Also, notice that if we moved these instructions into
+         * the delay slots of a previous thrsw we could overflow our TMU output
+         * fifo, since we could be effectively pipelining a lookup scheduled
+         * after the thrsw into the sequence before the thrsw.
+         */
+        if (v3d_qpu_writes_tmu(c->devinfo, &qinst->qpu) ||
+            qinst->qpu.sig.wrtmuc) {
+                return false;
+        }
+
+        /* Don't move instructions that wait on the TMU before the thread switch
+         * happens since that would make the current thread stall before the
+         * switch, which is exactly what we want to avoid with the thrsw
+         * instruction.
+         */
+        if (v3d_qpu_waits_on_tmu(&qinst->qpu))
+                return false;
+
+        /* A thread switch invalidates all accumulators, so don't place any
+         * instructions that write accumulators into the delay slots.
+         */
+        if (v3d_qpu_writes_accum(c->devinfo, &qinst->qpu))
+                return false;
+
+        /* Multop has an implicit write to the rtop register which is an
+         * specialized accumulator that is only used with this instruction.
+         */
+        if (qinst->qpu.alu.mul.op == V3D_QPU_M_MULTOP)
+                return false;
+
+        /* Flags are invalidated across a thread switch, so dont' place
+         * instructions that write flags into delay slots.
+         */
+        if (v3d_qpu_writes_flags(&qinst->qpu))
+                return false;
+
+        return true;
+}
+
 static bool
 valid_thrsw_sequence(struct v3d_compile *c, struct choose_scoreboard *scoreboard,
                      struct qinst *qinst, int instructions_in_sequence,
@@ -1398,41 +1663,13 @@ valid_thrsw_sequence(struct v3d_compile *c, struct choose_scoreboard *scoreboard
         }
 
         for (int slot = 0; slot < instructions_in_sequence; slot++) {
-                /* No scheduling SFU when the result would land in the other
-                 * thread.  The simulator complains for safety, though it
-                 * would only occur for dead code in our case.
-                 */
-                if (slot > 0 &&
-                    qinst->qpu.type == V3D_QPU_INSTR_TYPE_ALU &&
-                    (v3d_qpu_magic_waddr_is_sfu(qinst->qpu.alu.add.waddr) ||
-                     v3d_qpu_magic_waddr_is_sfu(qinst->qpu.alu.mul.waddr))) {
-                        return false;
-                }
-
-                if (slot > 0 && qinst->qpu.sig.ldvary)
+                if (!qpu_inst_before_thrsw_valid_in_delay_slot(c, qinst, slot))
                         return false;
 
                 if (is_thrend &&
-                    !qpu_instruction_valid_in_thrend_slot(c, qinst, slot)) {
+                    !qpu_inst_valid_in_thrend_slot(c, qinst, slot)) {
                         return false;
                 }
-
-                /* unifa and the following 3 instructions can't overlap a
-                 * thread switch/end. The docs further clarify that this means
-                 * the cycle at which the actual thread switch/end happens
-                 * and not when the thrsw instruction is processed, which would
-                 * be after the 2 delay slots following the thrsw instruction.
-                 * This means that we can move up a thrsw up to the instruction
-                 * right after unifa:
-                 *
-                 * unifa, r5
-                 * thrsw
-                 * delay slot 1
-                 * delay slot 2
-                 * Thread switch happens here, 4 instructions away from unifa
-                 */
-                if (v3d_qpu_writes_unifa(c->devinfo, &qinst->qpu))
-                        return false;
 
                 /* Note that the list is circular, so we can only do this up
                  * to instructions_in_sequence.
@@ -1462,6 +1699,18 @@ emit_thrsw(struct v3d_compile *c,
         assert(inst->qpu.type == V3D_QPU_INSTR_TYPE_ALU);
         assert(inst->qpu.alu.add.op == V3D_QPU_A_NOP);
         assert(inst->qpu.alu.mul.op == V3D_QPU_M_NOP);
+
+        /* Don't try to emit a thrsw in the delay slots of a previous thrsw
+         * or branch.
+         */
+        while (scoreboard->last_thrsw_tick + 2 >= scoreboard->tick) {
+                emit_nop(c, block, scoreboard);
+                time++;
+        }
+        while (scoreboard->last_branch_tick + 3 >= scoreboard->tick) {
+                emit_nop(c, block, scoreboard);
+                time++;
+        }
 
         /* Find how far back into previous instructions we can put the THRSW. */
         int slots_filled = 0;
@@ -1498,19 +1747,25 @@ emit_thrsw(struct v3d_compile *c,
                 merge_inst = inst;
         }
 
-        /* Insert any extra delay slot NOPs we need. */
-        for (int i = 0; i < 3 - slots_filled; i++) {
-                emit_nop(c, block, scoreboard);
-                time++;
-        }
-
         /* If we're emitting the last THRSW (other than program end), then
          * signal that to the HW by emitting two THRSWs in a row.
          */
         if (inst->is_last_thrsw) {
+                if (slots_filled <= 1) {
+                        emit_nop(c, block, scoreboard);
+                        time++;
+                }
                 struct qinst *second_inst =
                         (struct qinst *)merge_inst->link.next;
                 second_inst->qpu.sig.thrsw = true;
+        }
+
+        /* Make sure the thread end executes within the program lifespan */
+        if (is_thrend) {
+                for (int i = 0; i < 3 - slots_filled; i++) {
+                        emit_nop(c, block, scoreboard);
+                        time++;
+                }
         }
 
         /* If we put our THRSW into another instruction, free up the
@@ -1520,6 +1775,118 @@ emit_thrsw(struct v3d_compile *c,
                 free(inst);
 
         return time;
+}
+
+static bool
+qpu_inst_valid_in_branch_delay_slot(struct v3d_compile *c, struct qinst *inst)
+{
+        if (inst->qpu.type == V3D_QPU_INSTR_TYPE_BRANCH)
+                return false;
+
+        if (inst->qpu.sig.thrsw)
+                return false;
+
+        if (v3d_qpu_writes_unifa(c->devinfo, &inst->qpu))
+                return false;
+
+        if (vir_has_uniform(inst))
+                return false;
+
+        return true;
+}
+
+static void
+emit_branch(struct v3d_compile *c,
+           struct qblock *block,
+           struct choose_scoreboard *scoreboard,
+           struct qinst *inst)
+{
+        assert(inst->qpu.type == V3D_QPU_INSTR_TYPE_BRANCH);
+
+        /* We should've not picked up a branch for the delay slots of a previous
+         * thrsw, branch or unifa write instruction.
+         */
+        int branch_tick = scoreboard->tick;
+        assert(scoreboard->last_thrsw_tick + 2 < branch_tick);
+        assert(scoreboard->last_branch_tick + 3 < branch_tick);
+        assert(scoreboard->last_unifa_write_tick + 3 < branch_tick);
+
+        /* Can't place a branch with msfign != 0 and cond != 0,2,3 after
+         * setmsf.
+         */
+        bool is_safe_msf_branch =
+                inst->qpu.branch.msfign == V3D_QPU_MSFIGN_NONE ||
+                inst->qpu.branch.cond == V3D_QPU_BRANCH_COND_ALWAYS ||
+                inst->qpu.branch.cond == V3D_QPU_BRANCH_COND_A0 ||
+                inst->qpu.branch.cond == V3D_QPU_BRANCH_COND_NA0;
+        assert(scoreboard->last_setmsf_tick != branch_tick - 1 ||
+               is_safe_msf_branch);
+
+        /* Insert the branch instruction */
+        insert_scheduled_instruction(c, block, scoreboard, inst);
+
+        /* Now see if we can move the branch instruction back into the
+         * instruction stream to fill its delay slots
+         */
+        int slots_filled = 0;
+        while (slots_filled < 3 && block->instructions.next != &inst->link) {
+                struct qinst *prev_inst = (struct qinst *) inst->link.prev;
+                assert(prev_inst->qpu.type != V3D_QPU_INSTR_TYPE_BRANCH);
+
+                /* Can't move the branch instruction if that would place it
+                 * in the delay slots of other instructions.
+                 */
+                if (scoreboard->last_branch_tick + 3 >=
+                    branch_tick - slots_filled - 1) {
+                        break;
+                }
+
+                if (scoreboard->last_thrsw_tick + 2 >=
+                    branch_tick - slots_filled - 1) {
+                        break;
+                }
+
+                if (scoreboard->last_unifa_write_tick + 3 >=
+                    branch_tick - slots_filled - 1) {
+                        break;
+                }
+
+                /* Can't move a conditional branch before the instruction
+                 * that writes the flags for its condition.
+                 */
+                if (v3d_qpu_writes_flags(&prev_inst->qpu) &&
+                    inst->qpu.branch.cond != V3D_QPU_BRANCH_COND_ALWAYS) {
+                        break;
+                }
+
+                if (!qpu_inst_valid_in_branch_delay_slot(c, prev_inst))
+                        break;
+
+                if (!is_safe_msf_branch) {
+                        struct qinst *prev_prev_inst =
+                                (struct qinst *) prev_inst->link.prev;
+                        if (prev_prev_inst->qpu.type == V3D_QPU_INSTR_TYPE_ALU &&
+                            prev_prev_inst->qpu.alu.add.op == V3D_QPU_A_SETMSF) {
+                                break;
+                        }
+                }
+
+                list_del(&prev_inst->link);
+                list_add(&prev_inst->link, &inst->link);
+                slots_filled++;
+        }
+
+        block->branch_qpu_ip = c->qpu_inst_count - 1 - slots_filled;
+        scoreboard->last_branch_tick = branch_tick - slots_filled;
+
+        /* Fill any remaining delay slots.
+         *
+         * For unconditional branches we'll try to fill these with the
+         * first instructions in the successor block after scheduling
+         * all blocks when setting up branch targets.
+         */
+        for (int i = 0; i < 3 - slots_filled; i++)
+                emit_nop(c, block, scoreboard);
 }
 
 static bool
@@ -1647,6 +2014,12 @@ fixup_pipelined_ldvary(struct v3d_compile *c,
         if (v3d_qpu_reads_flags(&prev->qpu))
                 return false;
 
+        /* We can't put an ldvary in the delay slots of a thrsw. We should've
+         * prevented this when pairing up the ldvary with another instruction
+         * and flagging it for a fixup.
+         */
+        assert(scoreboard->last_thrsw_tick + 2 < scoreboard->tick - 1);
+
         /* Move the ldvary to the previous instruction and remove it from the
          * current one.
          */
@@ -1658,6 +2031,15 @@ fixup_pipelined_ldvary(struct v3d_compile *c,
         inst->sig.ldvary = false;
         inst->sig_magic = false;
         inst->sig_addr = 0;
+
+        /* By moving ldvary to the previous instruction we make it update
+         * r5 in the current one, so nothing else in it should write r5.
+         * This should've been prevented by our depedency tracking, which
+         * would not allow ldvary to be paired up with an instruction that
+         * writes r5 (since our dependency tracking doesn't know that the
+         * ldvary write r5 happens in the next instruction).
+         */
+        assert(!v3d_qpu_writes_r5(c->devinfo, inst));
 
         return true;
 }
@@ -1731,7 +2113,6 @@ schedule_instructions(struct v3d_compile *c,
                                 }
 
                                 if (scoreboard->fixup_ldvary) {
-                                        assert(scoreboard->ldvary_pipelining);
                                         scoreboard->fixup_ldvary = false;
                                         if (fixup_pipelined_ldvary(c, scoreboard, block, inst)) {
                                                 /* Flag the ldvary as scheduled
@@ -1788,23 +2169,11 @@ schedule_instructions(struct v3d_compile *c,
 
                 if (inst->sig.thrsw) {
                         time += emit_thrsw(c, block, scoreboard, qinst, false);
+                } else if (inst->type == V3D_QPU_INSTR_TYPE_BRANCH) {
+                        emit_branch(c, block, scoreboard, qinst);
                 } else {
                         insert_scheduled_instruction(c, block,
                                                      scoreboard, qinst);
-
-                        if (inst->type == V3D_QPU_INSTR_TYPE_BRANCH) {
-                                block->branch_qpu_ip = c->qpu_inst_count - 1;
-                                /* Fill the delay slots.
-                                 *
-                                 * We should fill these with actual instructions,
-                                 * instead, but that will probably need to be done
-                                 * after this, once we know what the leading
-                                 * instructions of the successors are (so we can
-                                 * handle A/B register file write latency)
-                                 */
-                                for (int i = 0; i < 3; i++)
-                                        emit_nop(c, block, scoreboard);
-                        }
                 }
         }
 
@@ -1874,11 +2243,30 @@ qpu_set_branch_targets(struct v3d_compile *c)
                 /* Walk back through the delay slots to find the branch
                  * instr.
                  */
+                struct qinst *branch = NULL;
                 struct list_head *entry = block->instructions.prev;
-                for (int i = 0; i < 3; i++)
+                int32_t delay_slot_count = -1;
+                struct qinst *delay_slots_start = NULL;
+                for (int i = 0; i < 3; i++) {
                         entry = entry->prev;
-                struct qinst *branch = container_of(entry, struct qinst, link);
-                assert(branch->qpu.type == V3D_QPU_INSTR_TYPE_BRANCH);
+                        struct qinst *inst =
+                                container_of(entry, struct qinst, link);
+
+                        if (delay_slot_count == -1) {
+                                if (!v3d_qpu_is_nop(&inst->qpu))
+                                        delay_slot_count = i;
+                                else
+                                        delay_slots_start = inst;
+                        }
+
+                        if (inst->qpu.type == V3D_QPU_INSTR_TYPE_BRANCH) {
+                                branch = inst;
+                                break;
+                        }
+                }
+                assert(branch && branch->qpu.type == V3D_QPU_INSTR_TYPE_BRANCH);
+                assert(delay_slot_count >= 0 && delay_slot_count <= 3);
+                assert(delay_slot_count == 0 || delay_slots_start != NULL);
 
                 /* Make sure that the if-we-don't-jump
                  * successor was scheduled just after the
@@ -1904,6 +2292,34 @@ qpu_set_branch_targets(struct v3d_compile *c)
                 c->uniform_data[branch->uniform] =
                         (block->successors[0]->start_uniform -
                          (block->branch_uniform + 1)) * 4;
+
+                /* If this is an unconditional branch, try to fill any remaining
+                 * delay slots with the initial instructions of the successor
+                 * block.
+                 *
+                 * FIXME: we can do the same for conditional branches if we
+                 * predicate the instructions to match the branch condition.
+                 */
+                if (branch->qpu.branch.cond == V3D_QPU_BRANCH_COND_ALWAYS) {
+                        struct list_head *successor_insts =
+                                &block->successors[0]->instructions;
+                        delay_slot_count = MIN2(delay_slot_count,
+                                                list_length(successor_insts));
+                        struct qinst *s_inst =
+                                (struct qinst *) successor_insts->next;
+                        struct qinst *slot = delay_slots_start;
+                        int slots_filled = 0;
+                        while (slots_filled < delay_slot_count &&
+                               qpu_inst_valid_in_branch_delay_slot(c, s_inst)) {
+                                memcpy(&slot->qpu, &s_inst->qpu,
+                                       sizeof(slot->qpu));
+                                s_inst = (struct qinst *) s_inst->link.next;
+                                slot = (struct qinst *) slot->link.next;
+                                slots_filled++;
+                        }
+                        branch->qpu.branch.offset +=
+                                slots_filled * sizeof(uint64_t);
+                }
         }
 }
 
@@ -1932,6 +2348,8 @@ v3d_qpu_schedule_instructions(struct v3d_compile *c)
         scoreboard.last_magic_sfu_write_tick = -10;
         scoreboard.last_uniforms_reset_tick = -10;
         scoreboard.last_thrsw_tick = -10;
+        scoreboard.last_branch_tick = -10;
+        scoreboard.last_setmsf_tick = -10;
         scoreboard.last_stallable_sfu_tick = -10;
 
         if (debug) {

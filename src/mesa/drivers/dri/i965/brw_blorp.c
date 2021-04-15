@@ -36,8 +36,8 @@
 #include "brw_defines.h"
 #include "brw_meta_util.h"
 #include "brw_state.h"
-#include "intel_buffer_objects.h"
-#include "intel_fbo.h"
+#include "brw_buffer_objects.h"
+#include "brw_fbo.h"
 #include "dev/gen_debug.h"
 
 #define FILE_DEBUG_FLAG DEBUG_BLORP
@@ -76,35 +76,35 @@ brw_blorp_init(struct brw_context *brw)
 
    brw->blorp.compiler = brw->screen->compiler;
 
-   switch (devinfo->gen) {
+   switch (devinfo->ver) {
    case 4:
       if (devinfo->is_g4x) {
-         brw->blorp.exec = gen45_blorp_exec;
+         brw->blorp.exec = gfx45_blorp_exec;
       } else {
-         brw->blorp.exec = gen4_blorp_exec;
+         brw->blorp.exec = gfx4_blorp_exec;
       }
       break;
    case 5:
-      brw->blorp.exec = gen5_blorp_exec;
+      brw->blorp.exec = gfx5_blorp_exec;
       break;
    case 6:
-      brw->blorp.exec = gen6_blorp_exec;
+      brw->blorp.exec = gfx6_blorp_exec;
       break;
    case 7:
       if (devinfo->is_haswell) {
-         brw->blorp.exec = gen75_blorp_exec;
+         brw->blorp.exec = gfx75_blorp_exec;
       } else {
-         brw->blorp.exec = gen7_blorp_exec;
+         brw->blorp.exec = gfx7_blorp_exec;
       }
       break;
    case 8:
-      brw->blorp.exec = gen8_blorp_exec;
+      brw->blorp.exec = gfx8_blorp_exec;
       break;
    case 9:
-      brw->blorp.exec = gen9_blorp_exec;
+      brw->blorp.exec = gfx9_blorp_exec;
       break;
    case 11:
-      brw->blorp.exec = gen11_blorp_exec;
+      brw->blorp.exec = gfx11_blorp_exec;
       break;
 
    default:
@@ -182,8 +182,8 @@ blorp_surf_for_miptree(struct brw_context *brw,
    assert((surf->aux_usage == ISL_AUX_USAGE_NONE) ==
           (surf->aux_addr.buffer == NULL));
 
-   if (!is_render_target && brw->screen->devinfo.gen == 9)
-      gen9_apply_single_tex_astc5x5_wa(brw, mt->format, surf->aux_usage);
+   if (!is_render_target && brw->screen->devinfo.ver == 9)
+      gfx9_apply_single_tex_astc5x5_wa(brw, mt->format, surf->aux_usage);
 
    /* ISL wants real levels, not offset ones. */
    *level -= mt->first_level;
@@ -244,7 +244,7 @@ brw_blorp_to_isl_format(struct brw_context *brw, mesa_format format,
 }
 
 /**
- * Convert an swizzle enumeration (i.e. SWIZZLE_X) to one of the Gen7.5+
+ * Convert an swizzle enumeration (i.e. SWIZZLE_X) to one of the Gfx7.5+
  * "Shader Channel Select" enumerations (i.e. HSW_SCS_RED).  The mappings are
  *
  * SWIZZLE_X, SWIZZLE_Y, SWIZZLE_Z, SWIZZLE_W, SWIZZLE_ZERO, SWIZZLE_ONE
@@ -263,7 +263,7 @@ swizzle_to_scs(GLenum swizzle)
 }
 
 /**
- * Note: if the src (or dst) is a 2D multisample array texture on Gen7+ using
+ * Note: if the src (or dst) is a 2D multisample array texture on Gfx7+ using
  * INTEL_MSAA_LAYOUT_UMS or INTEL_MSAA_LAYOUT_CMS, src_layer (dst_layer) is
  * the physical layer holding sample 0.  So, for example, if
  * src_mt->surf.samples == 4, then logical layer n corresponds to src_layer ==
@@ -316,7 +316,7 @@ brw_blorp_blit_miptrees(struct brw_context *brw,
     * shouldn't affect rendering correctness, since the destination format is
     * R32_FLOAT, so only the contents of the red channel matters.
     */
-   if (devinfo->gen == 6 &&
+   if (devinfo->ver == 6 &&
        src_mt->surf.samples > 1 && dst_mt->surf.samples <= 1 &&
        src_mt->format == dst_mt->format &&
        (dst_format == MESA_FORMAT_L_FLOAT32 ||
@@ -657,9 +657,9 @@ try_blorp_blit(struct brw_context *brw,
       break;
    case GL_STENCIL_BUFFER_BIT:
       /* Blorp doesn't support combined depth stencil which is all we have
-       * prior to gen6.
+       * prior to gfx6.
        */
-      if (devinfo->gen < 6)
+      if (devinfo->ver < 6)
          return false;
 
       src_irb =
@@ -1589,7 +1589,7 @@ brw_hiz_exec(struct brw_context *brw, struct brw_mipmap_tree *mt,
     * HiZ clear operations.  However, they also seem to be required for
     * resolve operations.
     */
-   if (devinfo->gen == 6) {
+   if (devinfo->ver == 6) {
       /* From the Sandy Bridge PRM, volume 2 part 1, page 313:
        *
        *   "If other rendering operations have preceded this clear, a
@@ -1601,7 +1601,7 @@ brw_hiz_exec(struct brw_context *brw, struct brw_mipmap_tree *mt,
                                    PIPE_CONTROL_RENDER_TARGET_FLUSH |
                                    PIPE_CONTROL_DEPTH_CACHE_FLUSH |
                                    PIPE_CONTROL_CS_STALL);
-   } else if (devinfo->gen >= 7) {
+   } else if (devinfo->ver >= 7) {
       /*
        * From the Ivybridge PRM, volume 2, "Depth Buffer Clear":
        *
@@ -1610,7 +1610,7 @@ brw_hiz_exec(struct brw_context *brw, struct brw_mipmap_tree *mt,
        *   enabled must be issued before the rectangle primitive used for
        *   the depth buffer clear operation.
        *
-       * Same applies for Gen8 and Gen9.
+       * Same applies for Gfx8 and Gfx9.
        *
        * In addition, from the Ivybridge PRM, volume 2, 1.10.4.1
        * PIPE_CONTROL, Depth Cache Flush Enable:
@@ -1646,7 +1646,7 @@ brw_hiz_exec(struct brw_context *brw, struct brw_mipmap_tree *mt,
     * HiZ clear operations.  However, they also seem to be required for
     * resolve operations.
     */
-   if (devinfo->gen == 6) {
+   if (devinfo->ver == 6) {
       /* From the Sandy Bridge PRM, volume 2 part 1, page 314:
        *
        *     "DevSNB, DevSNB-B{W/A}]: Depth buffer clear pass must be
@@ -1659,7 +1659,7 @@ brw_hiz_exec(struct brw_context *brw, struct brw_mipmap_tree *mt,
       brw_emit_pipe_control_flush(brw,
                                   PIPE_CONTROL_DEPTH_CACHE_FLUSH |
                                   PIPE_CONTROL_CS_STALL);
-   } else if (devinfo->gen >= 8) {
+   } else if (devinfo->ver >= 8) {
       /*
        * From the Broadwell PRM, volume 7, "Depth Buffer Clear":
        *

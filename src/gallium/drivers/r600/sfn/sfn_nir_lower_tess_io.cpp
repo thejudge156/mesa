@@ -8,6 +8,7 @@ bool r600_lower_tess_io_filter(const nir_instr *instr, gl_shader_stage stage)
    nir_intrinsic_instr *op = nir_instr_as_intrinsic(instr);
    switch (op->intrinsic) {
    case nir_intrinsic_load_input:
+      return stage == MESA_SHADER_TESS_CTRL || stage == MESA_SHADER_TESS_EVAL;
    case nir_intrinsic_load_output:
    case nir_intrinsic_load_per_vertex_input:
    case nir_intrinsic_load_per_vertex_output:
@@ -221,7 +222,7 @@ static void replace_load_instr(nir_builder *b, nir_intrinsic_instr *op, nir_ssa_
          }
       }
       auto new_load_remixed = nir_vec(b, remix, comps);
-      nir_ssa_def_rewrite_uses(&op->dest.ssa, nir_src_for_ssa(new_load_remixed));
+      nir_ssa_def_rewrite_uses(&op->dest.ssa, new_load_remixed);
    }
    nir_instr_remove(&op->instr);
 }
@@ -317,7 +318,7 @@ r600_lower_tess_io_impl(nir_builder *b, nir_instr *instr, enum pipe_prim_type pr
          auto base = emit_load_param_base(b, nir_intrinsic_load_tcs_in_param_base_r600);
          vertices_in = nir_channel(b, base, 2);
       }
-      nir_ssa_def_rewrite_uses(&op->dest.ssa, nir_src_for_ssa(vertices_in));
+      nir_ssa_def_rewrite_uses(&op->dest.ssa, vertices_in);
       nir_instr_remove(&op->instr);
       return true;
    }
@@ -384,7 +385,7 @@ r600_lower_tess_io_impl(nir_builder *b, nir_instr *instr, enum pipe_prim_type pr
                         tf->num_components, 32, NULL);
       nir_builder_instr_insert(b, &tf->instr);
 
-      nir_ssa_def_rewrite_uses(&op->dest.ssa, nir_src_for_ssa(&tf->dest.ssa));
+      nir_ssa_def_rewrite_uses(&op->dest.ssa, &tf->dest.ssa);
       nir_instr_remove(instr);
       return true;
    }

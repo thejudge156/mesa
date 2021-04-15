@@ -122,7 +122,6 @@ nir_shader_create(void *mem_ctx,
    shader->num_inputs = 0;
    shader->num_outputs = 0;
    shader->num_uniforms = 0;
-   shader->shared_size = 0;
 
    return shader;
 }
@@ -1352,7 +1351,7 @@ nir_ssa_dest_init(nir_instr *instr, nir_dest *dest,
 }
 
 void
-nir_ssa_def_rewrite_uses_ssa(nir_ssa_def *def, nir_ssa_def *new_ssa)
+nir_ssa_def_rewrite_uses(nir_ssa_def *def, nir_ssa_def *new_ssa)
 {
    assert(def != new_ssa);
    nir_foreach_use_safe(use_src, def)
@@ -1363,10 +1362,10 @@ nir_ssa_def_rewrite_uses_ssa(nir_ssa_def *def, nir_ssa_def *new_ssa)
 }
 
 void
-nir_ssa_def_rewrite_uses(nir_ssa_def *def, nir_src new_src)
+nir_ssa_def_rewrite_uses_src(nir_ssa_def *def, nir_src new_src)
 {
    if (new_src.is_ssa) {
-      nir_ssa_def_rewrite_uses_ssa(def, new_src.ssa);
+      nir_ssa_def_rewrite_uses(def, new_src.ssa);
    } else {
       nir_foreach_use_safe(use_src, def)
          nir_instr_rewrite_src(use_src->parent_instr, use_src, new_src);
@@ -1407,10 +1406,10 @@ is_instr_between(nir_instr *start, nir_instr *end, nir_instr *between)
  * def->parent_instr and that after_me comes after def->parent_instr.
  */
 void
-nir_ssa_def_rewrite_uses_after(nir_ssa_def *def, nir_src new_src,
+nir_ssa_def_rewrite_uses_after(nir_ssa_def *def, nir_ssa_def *new_ssa,
                                nir_instr *after_me)
 {
-   if (new_src.is_ssa && def == new_src.ssa)
+   if (def == new_ssa)
       return;
 
    nir_foreach_use_safe(use_src, def) {
@@ -1420,11 +1419,14 @@ nir_ssa_def_rewrite_uses_after(nir_ssa_def *def, nir_src new_src,
        * the instruction list.
        */
       if (!is_instr_between(def->parent_instr, after_me, use_src->parent_instr))
-         nir_instr_rewrite_src(use_src->parent_instr, use_src, new_src);
+         nir_instr_rewrite_src_ssa(use_src->parent_instr, use_src, new_ssa);
    }
 
-   nir_foreach_if_use_safe(use_src, def)
-      nir_if_rewrite_condition(use_src->parent_if, new_src);
+   nir_foreach_if_use_safe(use_src, def) {
+      nir_if_rewrite_condition_ssa(use_src->parent_if,
+                                   &use_src->parent_if->condition,
+                                   new_ssa);
+   }
 }
 
 nir_component_mask_t
@@ -1651,6 +1653,32 @@ nir_block_get_following_loop(nir_block *block)
       return NULL;
 
    return nir_cf_node_as_loop(next_node);
+}
+
+static int
+compare_block_index(const void *p1, const void *p2)
+{
+   const nir_block *block1 = *((const nir_block **) p1);
+   const nir_block *block2 = *((const nir_block **) p2);
+
+   return (int) block1->index - (int) block2->index;
+}
+
+nir_block **
+nir_block_get_predecessors_sorted(const nir_block *block, void *mem_ctx)
+{
+   nir_block **preds =
+      ralloc_array(mem_ctx, nir_block *, block->predecessors->entries);
+
+   unsigned i = 0;
+   set_foreach(block->predecessors, entry)
+      preds[i++] = (nir_block *) entry->key;
+   assert(i == block->predecessors->entries);
+
+   qsort(preds, block->predecessors->entries, sizeof(nir_block *),
+         compare_block_index);
+
+   return preds;
 }
 
 void
@@ -2239,6 +2267,8 @@ nir_rewrite_image_intrinsic(nir_intrinsic_instr *intrin, nir_ssa_def *src,
    CASE(atomic_exchange)
    CASE(atomic_comp_swap)
    CASE(atomic_fadd)
+   CASE(atomic_fmin)
+   CASE(atomic_fmax)
    CASE(atomic_inc_wrap)
    CASE(atomic_dec_wrap)
    CASE(size)

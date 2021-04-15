@@ -31,7 +31,7 @@
 #include "util/u_dynarray.h"
 
 #include "drm-uapi/i915_drm.h"
-#include "common/gen_decoder.h"
+#include "common/intel_decoder.h"
 
 #include "iris_fence.h"
 #include "iris_fine_fence.h"
@@ -135,7 +135,7 @@ struct iris_batch {
       struct hash_table *render;
    } cache;
 
-   struct gen_batch_decode_ctx decoder;
+   struct intel_batch_decode_ctx decoder;
    struct hash_table_u64 *state_sizes;
 
    /**

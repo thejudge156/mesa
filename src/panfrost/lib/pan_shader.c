@@ -156,12 +156,12 @@ pan_shader_compile(const struct panfrost_device *dev,
 
                 bool vertex_id = BITSET_TEST(s->info.system_values_read,
                                              SYSTEM_VALUE_VERTEX_ID);
-                if (vertex_id)
+                if (vertex_id && !pan_is_bifrost(dev))
                         info->attribute_count = MAX2(info->attribute_count, PAN_VERTEX_ID + 1);
 
                 bool instance_id = BITSET_TEST(s->info.system_values_read,
                                                SYSTEM_VALUE_INSTANCE_ID);
-                if (instance_id)
+                if (instance_id && !pan_is_bifrost(dev))
                         info->attribute_count = MAX2(info->attribute_count, PAN_INSTANCE_ID + 1);
 
                 info->vs.writes_point_size =
@@ -217,7 +217,7 @@ pan_shader_compile(const struct panfrost_device *dev,
                                  &info->varyings.input_count);
                 break;
         case MESA_SHADER_COMPUTE:
-                info->wls_size = s->info.cs.shared_size;
+                info->wls_size = s->info.shared_size;
                 break;
         default:
                 unreachable("Unknown shader state");
@@ -226,10 +226,13 @@ pan_shader_compile(const struct panfrost_device *dev,
         info->outputs_written = s->info.outputs_written;
 
         /* Sysvals have dedicated UBO */
-        info->ubo_count = s->info.num_ubos + (info->sysvals.sysval_count ? 1 : 0);
+        if (info->sysvals.sysval_count)
+                info->ubo_count = MAX2(s->info.num_ubos + 1, inputs->sysval_ubo + 1);
+        else
+                info->ubo_count = s->info.num_ubos;
 
         info->attribute_count += util_bitcount(s->info.images_used);
         info->writes_global = s->info.writes_memory;
 
-        info->texture_count = s->info.num_textures;
+        info->sampler_count = info->texture_count = s->info.num_textures;
 }

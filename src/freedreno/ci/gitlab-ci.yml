@@ -1,18 +1,18 @@
 .freedreno-test:
   extends:
     - .baremetal-test
-    - .use-arm64_test
+    - .use-arm_test
     - .freedreno-rules
   variables:
     MINIO_ARTIFACT_NAME: mesa-arm64
-    BM_ROOTFS: /lava-files/rootfs-arm64
+    BM_ROOTFS: /rootfs-arm64
     FLAKES_CHANNEL: "#freedreno-ci"
     PIGLIT_PLATFORM: mixed_glx_egl
     BM_CMDLINE: "ip=dhcp console=ttyMSM0,115200n8 root=/dev/nfs rw nfsrootdebug nfsroot=,tcp,nfsvers=4.2 init=/init $BM_KERNELARGS"
   script:
     - ./install/bare-metal/fastboot.sh
   needs:
-    - arm64_test
+    - arm_test
     - job: meson-arm64
       artifacts: false
   tags:
@@ -25,26 +25,37 @@
     DEQP_VER: vk
     VK_DRIVER: freedreno
 
-.arm64-a306-test:
+.freedreno-test-traces:
+  extends:
+    - .piglit-traces-test
+  variables:
+    BARE_METAL_TEST_SCRIPT: "/install/piglit/run.sh"
+    BM_START_XORG: 1
+    PIGLIT_REPLAY_DESCRIPTION_FILE: "/install/traces-freedreno.yml"
+  artifacts:
+    reports:
+      junit: results/junit.xml
+
+.a306-test:
   extends:
     - .freedreno-test
   variables:
-    BM_KERNEL: /lava-files/Image.gz
-    BM_DTB: /lava-files/apq8016-sbc.dtb
+    BM_KERNEL: /baremetal-files/Image.gz
+    BM_DTB: /baremetal-files/apq8016-sbc.dtb
     GPU_VERSION: freedreno-a307
     DEQP_EXPECTED_RENDERER: FD307
 
 a306_gles2:
   extends:
     - .baremetal-deqp-test
-    - .arm64-a306-test
+    - .a306-test
   variables:
     DEQP_VER: gles2
 
 a306_gles3:
   extends:
     - .baremetal-deqp-test
-    - .arm64-a306-test
+    - .a306-test
   parallel: 3
   variables:
     DEQP_VER: gles3
@@ -54,19 +65,27 @@ a306_gles3:
 a306_gles3_options:
   extends:
     - .baremetal-deqp-test
-    - .arm64-a306-test
+    - .a306-test
   variables:
     DEQP_VER: gles3
   script:
     # Check that the non-constbuf UBO case works.
     - DEQP_RUN_SUFFIX=-nouboopt IR3_SHADER_DEBUG=nouboopt DEQP_CASELIST_FILTER="functional.*ubo" ./install/bare-metal/fastboot.sh
 
-.arm64-a530-test:
+a306-traces:
+  extends:
+    - .freedreno-test-traces
+    - .a306-test
+  variables:
+    PIGLIT_REPLAY_DEVICE_NAME: "freedreno-a306"
+    PIGLIT_RESULTS: "freedreno-a306-replay"
+
+.a530-test:
   extends:
     - .freedreno-test
   variables:
-    BM_KERNEL: /lava-files/Image.gz
-    BM_DTB: /lava-files/apq8096-db820c.dtb
+    BM_KERNEL: /baremetal-files/Image.gz
+    BM_DTB: /baremetal-files/apq8096-db820c.dtb
     GPU_VERSION: freedreno-a530
     DEQP_EXPECTED_RENDERER: FD530
   tags:
@@ -75,14 +94,14 @@ a306_gles3_options:
 a530_gles2:
   extends:
     - .baremetal-deqp-test
-    - .arm64-a530-test
+    - .a530-test
   variables:
     DEQP_VER: gles2
 
 a530_gles3:
   extends:
     - .baremetal-deqp-test
-    - .arm64-a530-test
+    - .a530-test
   parallel: 2
   variables:
     DEQP_VER: gles3
@@ -98,66 +117,40 @@ a530_gles31:
 .a530_piglit:
   extends:
     - .piglit-test
-    - .arm64-a530-test
-    - .test-manual
+    - .a530-test
   variables:
-    BARE_METAL_TEST_SCRIPT: "/install/piglit/run.sh"
+    BARE_METAL_TEST_SCRIPT: "/install/piglit/piglit-runner.sh"
     BM_START_XORG: 1
-    # Excluding for flakes in multisample (MSAA fails covered well by deqp, we
-    # can enable it once we stabilize that.) and other flakes from
-    # atomic_counters through userclip in the list.
-    #
-    # Also excluding some particularly slow tests (gl-1.3-texture-env)
-    #
-    # Check fastboot.sh for more piglit tests being excluded!
-    PIGLIT_TESTS: >-
-      -x atomic_counters
-      -x gl-1.0-blend-func
-      -x glsl-1.30@execution@clipping
-      -x user-clip
-      -x arb_texture_multisample
-      -x ext_framebuffer_multisample
-      -x egl_ext_device_
-      -x egl_ext_platform_device
-      -x ext_timer_query@time-elapsed
-      -x glx-multithread-clearbuffer
-      -x glx-multithread-shader-compile
-      -x max-texture-size
-      -x maxsize
-      -x arb_gpu_shader5
-      -x arb_gpu_shader_fp64
-      -x arb_gpu_shader_int64
-      -x arb_tessellation_shader
-      -x glsl-1.50
-      -x glsl-4.00
-      -x glsl-4.10
-      -x glsl-4.20
-      -x glsl-4.30
-      -x glsl-4.40
-      -x glsl-4.50
-      -x glsl-4.60
-      -x gl-1.3-texture-env
 
-# Takes ~25 minutes, so manual-only until we can sort out runtime.
+# Run 1/2 of piglit_gl since it takes a bit under 20 minutes
 a530_piglit_gl:
   extends:
     - .a530_piglit
   variables:
     PIGLIT_PROFILES: quick_gl
-    PIGLIT_RESULTS: freedreno-a530-gl
+    PIGLIT_FRACTION: 2
 
+# Run 1/2 of piglit_shader since it takes a bit under 20 minutes
 a530_piglit_shader:
   extends:
     - .a530_piglit
   variables:
     PIGLIT_PROFILES: quick_shader
-    PIGLIT_RESULTS: freedreno-a530-shader
+    PIGLIT_FRACTION: 2
+
+a530-traces:
+  extends:
+    - .freedreno-test-traces
+    - .a530-test
+  variables:
+    PIGLIT_REPLAY_DEVICE_NAME: "freedreno-a530"
+    PIGLIT_RESULTS: "freedreno-a530-replay"
 
 .a630-test:
   extends:
     - .freedreno-test
   variables:
-    BM_KERNEL: /lava-files/cheza-kernel
+    BM_KERNEL: /baremetal-files/cheza-kernel
     BM_CMDLINE: "ip=dhcp console=ttyMSM0,115200n8 root=/dev/nfs rw nfsrootdebug nfsroot=,tcp,nfsvers=4.2 init=/init"
     GPU_VERSION: freedreno-a630
     DEQP_EXPECTED_RENDERER: FD630
@@ -206,6 +199,7 @@ a630_gles_asan:
     - .baremetal-deqp-test
     - .a630-test
     - .baremetal-arm64-asan-test
+    - .test-manual
   variables:
     DEQP_VER: gles31
     DEQP_FRACTION: 10
@@ -258,90 +252,30 @@ a630_vk_sysmem:
   extends:
     - .piglit-test
     - .a630-test
-    - .test-manual
   variables:
-    BARE_METAL_TEST_SCRIPT: "/install/piglit/run.sh"
+    BARE_METAL_TEST_SCRIPT: "/install/piglit/piglit-runner.sh"
     BM_START_XORG: 1
-    # Excluding various features we don't support to keep runtime down in
-    # deciding that they aren't supported.
-    #
-    # Also excluding some particularly slow tests (gl-1.3-texture-env takes 100s)
-    #
-    # Known flakes in the list are between "arb_blend_func_extended" and
-    # "varray-disabled"
-    #
-    # vs-output-array-vec2-index-wr-before-gs is skipped because it causes
-    # a flood of GPU hangs and makes the rest of the job flakey
-    #
-    # vs-clip-distance/vertex-enables skipped because they seem to be flaky in
-    # parallel with other tests (reliably fails on its own)
-    PIGLIT_TESTS: >-
-      -x vs-output-array-vec2-index-wr-before-gs
-      -x fixed-clip-enables
-      -x vs-clip-distance-enables
-      -x vs-clip-vertex-enables
-      -x arb_blend_func_extended-fbo-extended-blend-pattern_gles2
-      -x clear-accum
-      -x copypixels-sync
-      -x copyteximage-border
-      -x copytexsubimage
-      -x draw-sync
-      -x getteximage-simple
-      -x gl30basic
-      -x tcs-input
-      -x tes-input
-      -x unaligned-blit
-      -x user-clip
-      -x varray-disabled
-      -x egl_ext_device_
-      -x egl_ext_platform_device
-      -x ext_timer_query@time-elapsed
-      -x glx-multithread-clearbuffer
-      -x glx-multithread-shader-compile
-      -x max-texture-size
-      -x maxsize
-      -x arb_gpu_shader_fp64
-      -x arb_gpu_shader_gpu5
-      -x arb_gpu_shader_int64
-      -x glsl-4.00
-      -x glsl-4.10
-      -x glsl-4.20
-      -x glsl-4.30
-      -x glsl-4.40
-      -x glsl-4.50
-      -x glsl-4.60
-      -x gl-1.3-texture-env
 
-# Takes ~20 minutes, so manual-only until we can sort out runtime.
 a630_piglit_gl:
   extends:
     - .a630_piglit
-    - .test-manual
   variables:
     PIGLIT_PROFILES: quick_gl
-    PIGLIT_RESULTS: freedreno-a630-gl
 
 a630_piglit_shader:
   extends:
     - .a630_piglit
   variables:
     PIGLIT_PROFILES: quick_shader
-    PIGLIT_RESULTS: freedreno-a630-shader
 
 a630-traces:
   extends:
-    - .piglit-traces-test
+    - .freedreno-test-traces
     - .a630-test
   variables:
-    BARE_METAL_TEST_SCRIPT: "/install/piglit/run.sh"
-    BM_START_XORG: 1
-    PIGLIT_REPLAY_DESCRIPTION_FILE: "/install/traces-freedreno.yml"
     PIGLIT_REPLAY_DEVICE_NAME: "freedreno-a630"
     PIGLIT_RESULTS: "freedreno-a630-replay"
     # This lets us run several more traces which don't use any features we're
     # missing.
     MESA_GLSL_VERSION_OVERRIDE: "460"
     MESA_GL_VERSION_OVERRIDE: "4.6"
-  artifacts:
-    reports:
-      junit: results/junit.xml

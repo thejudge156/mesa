@@ -210,6 +210,12 @@ enum pipe_tex_compare {
    PIPE_TEX_COMPARE_R_TO_TEXTURE,
 };
 
+enum pipe_tex_reduction_mode {
+   PIPE_TEX_REDUCTION_WEIGHTED_AVERAGE,
+   PIPE_TEX_REDUCTION_MIN,
+   PIPE_TEX_REDUCTION_MAX,
+};
+
 /**
  * Clear buffer bits
  */
@@ -484,6 +490,7 @@ enum pipe_flush_flags
 #define PIPE_BIND_COMPUTE_RESOURCE     (1 << 16) /* set_compute_resources */
 #define PIPE_BIND_COMMAND_ARGS_BUFFER  (1 << 17) /* pipe_draw_info.indirect */
 #define PIPE_BIND_QUERY_BUFFER         (1 << 18) /* get_query_result_resource */
+#define PIPE_BIND_SAMPLER_REDUCTION_MINMAX (1 << 19) /* PIPE_CAP_SAMPLER_REDUCTION_MINMAX */
 
 /**
  * The first two flags above were previously part of the amorphous
@@ -979,6 +986,9 @@ enum pipe_cap
    PIPE_CAP_PREFER_REAL_BUFFER_IN_CONSTBUF0,
    PIPE_CAP_GL_CLAMP,
    PIPE_CAP_TEXRECT,
+   PIPE_CAP_SAMPLER_REDUCTION_MINMAX,
+   PIPE_CAP_SAMPLER_REDUCTION_MINMAX_ARB,
+   PIPE_CAP_ALLOW_DYNAMIC_VAO_FASTPATH,
 
    PIPE_CAP_LAST,
    /* XXX do not add caps after PIPE_CAP_LAST! */
@@ -1050,6 +1060,7 @@ enum pipe_shader_cap
    PIPE_SHADER_CAP_INT64_ATOMICS,
    PIPE_SHADER_CAP_FP16,
    PIPE_SHADER_CAP_FP16_DERIVATIVES,
+   PIPE_SHADER_CAP_FP16_CONST_BUFFERS,
    PIPE_SHADER_CAP_INT16,
    PIPE_SHADER_CAP_GLSL_16BIT_CONSTS,
    PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS,

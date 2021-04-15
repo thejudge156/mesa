@@ -211,6 +211,16 @@ nine_csmt_process( struct NineDevice9 *device )
     nine_csmt_wait_processed(ctx);
 }
 
+void
+nine_csmt_flush( struct NineDevice9* device )
+{
+    if (!device->csmt_active)
+        return;
+
+    nine_queue_flush(device->csmt_ctx->pool);
+}
+
+
 /* Destroys a CSMT context.
  * Waits for the worker thread to terminate.
  */
@@ -317,6 +327,17 @@ nine_context_get_pipe_release( struct NineDevice9 *device )
     nine_csmt_resume(device);
 }
 
+bool
+nine_context_is_worker( struct NineDevice9 *device )
+{
+    struct csmt_context *ctx = device->csmt_ctx;
+
+    if (!device->csmt_active)
+        return false;
+
+    return u_thread_is_self(ctx->worker);
+}
+
 /* Nine state functions */
 
 /* Check if some states need to be set dirty */
@@ -324,10 +345,16 @@ nine_context_get_pipe_release( struct NineDevice9 *device )
 static inline DWORD
 check_multisample(struct NineDevice9 *device)
 {
-    DWORD *rs = device->context.rs;
-    DWORD new_value = (rs[D3DRS_ZENABLE] || rs[D3DRS_STENCILENABLE]) &&
-                      device->context.rt[0]->desc.MultiSampleType >= 1 &&
-                      rs[D3DRS_MULTISAMPLEANTIALIAS];
+    struct nine_context *context = &device->context;
+    DWORD *rs = context->rs;
+    struct NineSurface9 *rt0 = context->rt[0];
+    bool multisampled_target;
+    DWORD new_value;
+
+    multisampled_target = rt0 && rt0->desc.MultiSampleType >= 1;
+    if (rt0 && rt0->desc.Format == D3DFMT_NULL && context->ds)
+        multisampled_target = context->ds->desc.MultiSampleType >= 1;
+    new_value = (multisampled_target && rs[D3DRS_MULTISAMPLEANTIALIAS]) ? 1 : 0;
     if (rs[NINED3DRS_MULTISAMPLE] != new_value) {
         rs[NINED3DRS_MULTISAMPLE] = new_value;
         return NINE_STATE_RASTERIZER;
@@ -769,6 +796,10 @@ update_viewport(struct NineDevice9 *device)
     pvport.translate[0] = (float)vport->Width * 0.5f + (float)vport->X;
     pvport.translate[1] = (float)vport->Height * 0.5f + (float)vport->Y;
     pvport.translate[2] = vport->MinZ;
+    pvport.swizzle_x = PIPE_VIEWPORT_SWIZZLE_POSITIVE_X;
+    pvport.swizzle_y = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y;
+    pvport.swizzle_z = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z;
+    pvport.swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 
     /* We found R600 and SI cards have some imprecision
      * on the barycentric coordinates used for interpolation.
@@ -1369,18 +1400,6 @@ nine_context_set_texture_apply(struct NineDevice9 *device,
                                struct pipe_resource *res,
                                struct pipe_sampler_view *view0,
                                struct pipe_sampler_view *view1);
-static void
-nine_context_set_stream_source_apply(struct NineDevice9 *device,
-                                    UINT StreamNumber,
-                                    struct pipe_resource *res,
-                                    UINT OffsetInBytes,
-                                    UINT Stride);
-
-static void
-nine_context_set_indices_apply(struct NineDevice9 *device,
-                               struct pipe_resource *res,
-                               UINT IndexSize,
-                               UINT OffsetInBytes);
 
 static void
 nine_context_set_pixel_shader_constant_i_transformed(struct NineDevice9 *device,
@@ -1402,9 +1421,16 @@ CSMT_ITEM_NO_WAIT(nine_context_set_render_state,
             return;
         }
 
+        /* NINED3DRS_ALPHACOVERAGE:
+         * bit 0: NVIDIA alpha to coverage
+         * bit 1: NVIDIA ATOC state active
+         * bit 2: AMD alpha to coverage
+         * These need to be separate else the set of states to
+         * disable NVIDIA alpha to coverage can disable the AMD one */
         if (Value == ALPHA_TO_COVERAGE_ENABLE ||
             Value == ALPHA_TO_COVERAGE_DISABLE) {
-            context->rs[NINED3DRS_ALPHACOVERAGE] = (Value == ALPHA_TO_COVERAGE_ENABLE);
+            context->rs[NINED3DRS_ALPHACOVERAGE] &= 3;
+            context->rs[NINED3DRS_ALPHACOVERAGE] |= (Value == ALPHA_TO_COVERAGE_ENABLE) ? 4 : 0;
             context->changed.group |= NINE_STATE_BLEND;
             return;
         }
@@ -1412,16 +1438,18 @@ CSMT_ITEM_NO_WAIT(nine_context_set_render_state,
 
     /* NV hack */
     if (unlikely(State == D3DRS_ADAPTIVETESS_Y)) {
-        if (Value == D3DFMT_ATOC || (Value == D3DFMT_UNKNOWN && context->rs[NINED3DRS_ALPHACOVERAGE])) {
-            context->rs[NINED3DRS_ALPHACOVERAGE] = (Value == D3DFMT_ATOC) ? 3 : 0;
-            context->rs[NINED3DRS_ALPHACOVERAGE] &= context->rs[D3DRS_ALPHATESTENABLE] ? 3 : 2;
+        if (Value == D3DFMT_ATOC || (Value == D3DFMT_UNKNOWN && context->rs[NINED3DRS_ALPHACOVERAGE] & 3)) {
+            context->rs[NINED3DRS_ALPHACOVERAGE] &= 4;
+            context->rs[NINED3DRS_ALPHACOVERAGE] |=
+                ((Value == D3DFMT_ATOC) ? 3 : 0) & (context->rs[D3DRS_ALPHATESTENABLE] ? 3 : 2);
             context->changed.group |= NINE_STATE_BLEND;
             return;
         }
     }
     if (unlikely(State == D3DRS_ALPHATESTENABLE && (context->rs[NINED3DRS_ALPHACOVERAGE] & 2))) {
         DWORD alphacoverage_prev = context->rs[NINED3DRS_ALPHACOVERAGE];
-        context->rs[NINED3DRS_ALPHACOVERAGE] = (Value ? 3 : 2);
+        context->rs[NINED3DRS_ALPHACOVERAGE] &= 6;
+        context->rs[NINED3DRS_ALPHACOVERAGE] |= (context->rs[D3DRS_ALPHATESTENABLE] ? 1 : 0);
         if (context->rs[NINED3DRS_ALPHACOVERAGE] != alphacoverage_prev)
             context->changed.group |= NINE_STATE_BLEND;
     }
@@ -1529,6 +1557,13 @@ CSMT_ITEM_NO_WAIT(nine_context_set_stream_source_apply,
 {
     struct nine_context *context = &device->context;
     const unsigned i = StreamNumber;
+
+    /* For normal draws, these tests are useless,
+     * but not for *Up draws */
+    if (context->vtxbuf[i].buffer.resource == res &&
+        context->vtxbuf[i].buffer_offset == OffsetInBytes &&
+        context->vtxbuf[i].stride == Stride)
+        return;
 
     context->vtxbuf[i].stride = Stride;
     context->vtxbuf[i].buffer_offset = OffsetInBytes;
@@ -1816,19 +1851,7 @@ CSMT_ITEM_NO_WAIT(nine_context_set_render_target,
     const unsigned i = RenderTargetIndex;
 
     if (i == 0) {
-        context->viewport.X = 0;
-        context->viewport.Y = 0;
-        context->viewport.Width = rt->desc.Width;
-        context->viewport.Height = rt->desc.Height;
-        context->viewport.MinZ = 0.0f;
-        context->viewport.MaxZ = 1.0f;
-
-        context->scissor.minx = 0;
-        context->scissor.miny = 0;
-        context->scissor.maxx = rt->desc.Width;
-        context->scissor.maxy = rt->desc.Height;
-
-        context->changed.group |= NINE_STATE_VIEWPORT | NINE_STATE_SCISSOR | NINE_STATE_MULTISAMPLE;
+        context->changed.group |= NINE_STATE_MULTISAMPLE;
 
         if (context->rt[0] &&
             (context->rt[0]->desc.MultiSampleType <= D3DMULTISAMPLE_NONMASKABLE) !=
@@ -1857,6 +1880,9 @@ CSMT_ITEM_NO_WAIT(nine_context_set_viewport,
 {
     struct nine_context *context = &device->context;
 
+    if (!memcmp(viewport, &context->viewport, sizeof(context->viewport)))
+        return;
+
     context->viewport = *viewport;
     context->changed.group |= NINE_STATE_VIEWPORT;
 }
@@ -1865,6 +1891,9 @@ CSMT_ITEM_NO_WAIT(nine_context_set_scissor,
                   ARG_COPY_REF(struct pipe_scissor_state, scissor))
 {
     struct nine_context *context = &device->context;
+
+    if (!memcmp(scissor, &context->scissor, sizeof(context->scissor)))
+        return;
 
     context->scissor = *scissor;
     context->changed.group |= NINE_STATE_SCISSOR;
@@ -2356,7 +2385,7 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_primitive,
     draw.start = StartVertex;
     info.index_bias = 0;
     info.min_index = draw.start;
-    info.max_index = draw.count - 1;
+    info.max_index = draw.start + draw.count - 1;
     info.index.resource = NULL;
 
     context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
@@ -2385,30 +2414,6 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive,
     info.min_index = MinVertexIndex;
     info.max_index = MinVertexIndex + NumVertices - 1;
     info.index.resource = context->idxbuf;
-
-    context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
-}
-
-CSMT_ITEM_NO_WAIT(nine_context_draw_primitive_from_vtxbuf,
-                  ARG_VAL(D3DPRIMITIVETYPE, PrimitiveType),
-                  ARG_VAL(UINT, PrimitiveCount),
-                  ARG_BIND_VBUF(struct pipe_vertex_buffer, vtxbuf))
-{
-    struct nine_context *context = &device->context;
-    struct pipe_draw_info info;
-    struct pipe_draw_start_count draw;
-
-    nine_update_state(device);
-
-    init_draw_info(&info, &draw, device, PrimitiveType, PrimitiveCount);
-    info.index_size = 0;
-    draw.start = 0;
-    info.index_bias = 0;
-    info.min_index = 0;
-    info.max_index = draw.count - 1;
-    info.index.resource = NULL;
-
-    context->pipe->set_vertex_buffers(context->pipe, 0, 1, 0, false, vtxbuf);
 
     context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
 }
@@ -2444,6 +2449,7 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive_from_vtxbuf_idxbuf,
         info.index.user = user_ibuf;
 
     context->pipe->set_vertex_buffers(context->pipe, 0, 1, 0, false, vbuf);
+    context->changed.vtxbuf |= 1;
 
     context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
 }
@@ -2523,6 +2529,7 @@ CSMT_ITEM_NO_WAIT_WITH_COUNTER(nine_context_range_upload,
                                ARG_BIND_RES(struct pipe_resource, res),
                                ARG_VAL(unsigned, offset),
                                ARG_VAL(unsigned, size),
+                               ARG_VAL(unsigned, usage),
                                ARG_VAL(const void *, data))
 {
     struct nine_context *context = &device->context;
@@ -2530,7 +2537,7 @@ CSMT_ITEM_NO_WAIT_WITH_COUNTER(nine_context_range_upload,
     /* Binding src_ref avoids release before upload */
     (void)src_ref;
 
-    context->pipe->buffer_subdata(context->pipe, res, 0, offset, size, data);
+    context->pipe->buffer_subdata(context->pipe, res, usage, offset, size, data);
 }
 
 CSMT_ITEM_NO_WAIT_WITH_COUNTER(nine_context_box_upload,
@@ -2551,6 +2558,18 @@ CSMT_ITEM_NO_WAIT_WITH_COUNTER(nine_context_box_upload,
 
     /* Binding src_ref avoids release before upload */
     (void)src_ref;
+
+    if (is_ATI1_ATI2(src_format)) {
+        const unsigned bw = util_format_get_blockwidth(src_format);
+        const unsigned bh = util_format_get_blockheight(src_format);
+        /* For these formats, the allocate surface can be too small to contain
+         * a block. Yet we can be asked to upload such surfaces.
+         * It is ok for these surfaces to have buggy content,
+         * but we should avoid crashing.
+         * Calling util_format_translate_3d would read out of bounds. */
+        if (dst_box->width < bw || dst_box->height < bh)
+            return;
+    }
 
     map = pipe->transfer_map(pipe,
                              res,
@@ -2635,6 +2654,13 @@ nine_context_get_query_result(struct NineDevice9 *device, struct pipe_query *que
 
     DBG("Query result %s\n", ret ? "found" : "not yet available");
     return ret;
+}
+
+CSMT_ITEM_NO_WAIT(nine_context_pipe_flush)
+{
+    struct nine_context *context = &device->context;
+
+    context->pipe->flush(context->pipe, NULL, PIPE_FLUSH_ASYNC);
 }
 
 /* State defaults */

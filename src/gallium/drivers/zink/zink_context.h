@@ -24,16 +24,25 @@
 #ifndef ZINK_CONTEXT_H
 #define ZINK_CONTEXT_H
 
+#define ZINK_SHADER_COUNT (PIPE_SHADER_TYPES - 1)
+
+#define ZINK_DEFAULT_MAX_DESCS 5000
+
 #include "zink_clear.h"
 #include "zink_pipeline.h"
 #include "zink_batch.h"
+#include "zink_compiler.h"
+#include "zink_descriptors.h"
+#include "zink_surface.h"
 
 #include "pipe/p_context.h"
 #include "pipe/p_state.h"
 #include "util/u_rect.h"
+#include "util/u_threaded_context.h"
 
 #include "util/slab.h"
 #include "util/list.h"
+#include "util/u_dynarray.h"
 
 #include <vulkan/vulkan.h>
 
@@ -46,7 +55,6 @@ struct zink_depth_stencil_alpha_state;
 struct zink_gfx_program;
 struct zink_rasterizer_state;
 struct zink_resource;
-struct zink_surface;
 struct zink_vertex_elements_state;
 
 enum zink_blit_flags {
@@ -56,19 +64,37 @@ enum zink_blit_flags {
    ZINK_BLIT_SAVE_TEXTURES = 1 << 3,
 };
 
+struct zink_sampler_state {
+   VkSampler sampler;
+   uint32_t hash;
+   struct zink_descriptor_refs desc_set_refs;
+   struct zink_batch_usage batch_uses;
+   bool custom_border_color;
+};
+
+struct zink_buffer_view {
+   struct pipe_reference reference;
+   VkBufferViewCreateInfo bvci;
+   VkBufferView buffer_view;
+   uint32_t hash;
+   struct zink_batch_usage batch_uses;
+};
+
 struct zink_sampler_view {
    struct pipe_sampler_view base;
+   struct zink_descriptor_refs desc_set_refs;
    union {
-      VkImageView image_view;
-      VkBufferView buffer_view;
+      struct zink_surface *image_view;
+      struct zink_buffer_view *buffer_view;
    };
 };
 
 struct zink_image_view {
    struct pipe_image_view base;
+   struct zink_descriptor_refs desc_set_refs;
    union {
       struct zink_surface *surface;
-      VkBufferView buffer_view;
+      struct zink_buffer_view *buffer_view;
    };
 };
 
@@ -98,32 +124,35 @@ struct zink_viewport_state {
    uint8_t num_viewports;
 };
 
-
-#define ZINK_SHADER_COUNT (PIPE_SHADER_TYPES - 1)
-#define ZINK_NUM_GFX_BATCHES 4
-#define ZINK_COMPUTE_BATCH_ID ZINK_NUM_GFX_BATCHES
-#define ZINK_COMPUTE_BATCH_COUNT 1
-#define ZINK_NUM_BATCHES (ZINK_NUM_GFX_BATCHES + 1)
-
 struct zink_context {
    struct pipe_context base;
+   struct threaded_context *tc;
    struct slab_child_pool transfer_pool;
+   struct slab_child_pool transfer_pool_unsync;
    struct blitter_context *blitter;
 
    struct pipe_device_reset_callback reset;
 
-   struct zink_batch batches[ZINK_NUM_GFX_BATCHES];
    bool is_device_lost;
-   unsigned curr_batch;
 
-   VkQueue queue;
+   uint32_t curr_batch; //the current batch id
+   struct zink_batch batch;
+   simple_mtx_t batch_mtx;
+   struct zink_fence *last_fence; //the last command buffer submitted
+   struct hash_table batch_states; //submitted batch states
+   struct util_dynarray free_batch_states; //unused batch states
+   VkDeviceSize resource_size; //the accumulated size of resources in submitted buffers
 
-   struct zink_batch compute_batch;
+   unsigned shader_has_inlinable_uniforms_mask;
+   unsigned inlinable_uniforms_dirty_mask;
+   unsigned inlinable_uniforms_valid_mask;
+   uint32_t inlinable_uniforms[PIPE_SHADER_TYPES][MAX_INLINABLE_UNIFORMS];
 
    struct pipe_constant_buffer ubos[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
    struct pipe_shader_buffer ssbos[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_BUFFERS];
    uint32_t writable_ssbos[PIPE_SHADER_TYPES];
    struct zink_image_view image_views[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_IMAGES];
+
    struct pipe_framebuffer_state fb_state;
 
    struct zink_vertex_elements_state *element_state;
@@ -135,6 +164,10 @@ struct zink_context {
    enum pipe_prim_type gfx_prim_mode;
    struct hash_table *program_cache;
    struct zink_gfx_program *curr_program;
+
+   struct zink_descriptor_state gfx_descriptor_states[ZINK_SHADER_COUNT]; // keep incremental hashes here
+   struct zink_descriptor_state descriptor_states[2]; // gfx, compute
+   struct hash_table *descriptor_pools[ZINK_DESCRIPTOR_TYPES];
 
    struct zink_shader *compute_stage;
    struct zink_compute_pipeline_state compute_pipeline_state;
@@ -148,11 +181,12 @@ struct zink_context {
 
    struct primconvert_context *primconvert;
 
+   struct zink_resource *flush_res;
    struct zink_framebuffer *framebuffer;
    struct zink_framebuffer_clear fb_clears[PIPE_MAX_COLOR_BUFS + 1];
+   uint16_t clears_enabled;
 
    struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
-   uint32_t vertex_buffers_enabled_mask;
 
    void *sampler_states[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
    VkSampler samplers[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
@@ -180,6 +214,10 @@ struct zink_context {
    struct list_head suspended_queries;
    struct list_head primitives_generated_queries;
    bool queries_disabled, render_condition_active;
+   struct {
+      struct zink_query *query;
+      bool inverted;
+   } render_condition;
 
    struct pipe_resource *dummy_vertex_buffer;
    struct pipe_resource *dummy_xfb_buffer;
@@ -189,6 +227,8 @@ struct zink_context {
    struct pipe_stream_output_target *so_targets[PIPE_MAX_SO_OUTPUTS];
    bool dirty_so_targets;
    bool xfb_barrier;
+   bool first_frame_done;
+   bool have_timelines;
 };
 
 static inline struct zink_context *
@@ -197,23 +237,12 @@ zink_context(struct pipe_context *context)
    return (struct zink_context *)context;
 }
 
-static inline struct zink_batch *
-zink_curr_batch(struct zink_context *ctx)
+static inline bool
+zink_fb_clear_enabled(const struct zink_context *ctx, unsigned idx)
 {
-   assert(ctx->curr_batch < ARRAY_SIZE(ctx->batches));
-   return ctx->batches + ctx->curr_batch;
-}
-
-static inline struct zink_batch *
-zink_prev_batch(struct zink_context *ctx)
-{
-   unsigned curr_batch = ctx->curr_batch;
-   if (!curr_batch)
-      curr_batch = ZINK_NUM_GFX_BATCHES - 1;
-   else
-      curr_batch--;
-   assert(curr_batch < ARRAY_SIZE(ctx->batches));
-   return ctx->batches + curr_batch;
+   if (idx == PIPE_MAX_COLOR_BUFS)
+      return ctx->clears_enabled & PIPE_CLEAR_DEPTHSTENCIL;
+   return ctx->clears_enabled & (PIPE_CLEAR_COLOR0 << idx);
 }
 
 struct zink_batch *
@@ -226,10 +255,16 @@ void
 zink_fence_wait(struct pipe_context *ctx);
 
 void
-zink_wait_on_batch(struct zink_context *ctx, int batch_id);
+zink_wait_on_batch(struct zink_context *ctx, uint32_t batch_id);
+
+bool
+zink_check_batch_completion(struct zink_context *ctx, uint32_t batch_id);
 
 void
-zink_flush_compute(struct zink_context *ctx);
+zink_flush_queue(struct zink_context *ctx);
+
+void
+zink_maybe_flush_or_stall(struct zink_context *ctx);
 
 bool
 zink_resource_access_is_write(VkAccessFlags flags);
@@ -237,11 +272,16 @@ zink_resource_access_is_write(VkAccessFlags flags);
 bool
 zink_resource_buffer_needs_barrier(struct zink_resource *res, VkAccessFlags flags, VkPipelineStageFlags pipeline);
 
+bool
+zink_resource_buffer_barrier_init(VkBufferMemoryBarrier *bmb, struct zink_resource *res, VkAccessFlags flags, VkPipelineStageFlags pipeline);
+
 void
 zink_resource_buffer_barrier(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *res, VkAccessFlags flags, VkPipelineStageFlags pipeline);
 
 bool
 zink_resource_image_needs_barrier(struct zink_resource *res, VkImageLayout new_layout, VkAccessFlags flags, VkPipelineStageFlags pipeline);
+bool
+zink_resource_image_barrier_init(VkImageMemoryBarrier *imb, struct zink_resource *res, VkImageLayout new_layout, VkAccessFlags flags, VkPipelineStageFlags pipeline);
 void
 zink_resource_image_barrier(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *res,
                       VkImageLayout new_layout, VkAccessFlags flags, VkPipelineStageFlags pipeline);
@@ -287,6 +327,12 @@ zink_rect_from_box(const struct pipe_box *box)
 }
 
 void
+zink_resource_rebind(struct zink_context *ctx, struct zink_resource *res);
+
+void
+zink_rebind_framebuffer(struct zink_context *ctx, struct zink_resource *res);
+
+void
 zink_draw_vbo(struct pipe_context *pctx,
               const struct pipe_draw_info *dinfo,
               const struct pipe_draw_indirect_info *indirect,
@@ -299,4 +345,29 @@ zink_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info);
 void
 zink_copy_buffer(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *dst, struct zink_resource *src,
                  unsigned dst_offset, unsigned src_offset, unsigned size);
+
+void
+zink_copy_image_buffer(struct zink_context *ctx, struct zink_batch *batch, struct zink_resource *dst, struct zink_resource *src,
+                       unsigned dst_level, unsigned dstx, unsigned dsty, unsigned dstz,
+                       unsigned src_level, const struct pipe_box *src_box, enum pipe_map_flags map_flags);
+
+void
+zink_destroy_buffer_view(struct zink_screen *screen, struct zink_buffer_view *buffer_view);
+
+void
+debug_describe_zink_buffer_view(char *buf, const struct zink_buffer_view *ptr);
+
+static inline void
+zink_buffer_view_reference(struct zink_screen *screen,
+                           struct zink_buffer_view **dst,
+                           struct zink_buffer_view *src)
+{
+   struct zink_buffer_view *old_dst = dst ? *dst : NULL;
+
+   if (pipe_reference_described(old_dst ? &old_dst->reference : NULL, &src->reference,
+                                (debug_reference_descriptor)debug_describe_zink_buffer_view))
+      zink_destroy_buffer_view(screen, old_dst);
+   if (dst) *dst = src;
+}
+
 #endif

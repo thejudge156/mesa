@@ -76,7 +76,8 @@ v3d_screen_destroy(struct pipe_screen *pscreen)
         _mesa_hash_table_destroy(screen->bo_handles, NULL);
         v3d_bufmgr_destroy(pscreen);
         slab_destroy_parent(&screen->transfer_pool);
-        free(screen->ro);
+        if (screen->ro)
+                screen->ro->destroy(screen->ro);
 
         if (using_v3d_simulator)
                 v3d_simulator_destroy(screen->sim_file);
@@ -380,6 +381,7 @@ v3d_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
                 return 1;
         case PIPE_SHADER_CAP_FP16:
         case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+        case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
         case PIPE_SHADER_CAP_INT16:
         case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
         case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
@@ -636,6 +638,7 @@ v3d_screen_get_compiler_options(struct pipe_screen *pscreen,
 static const uint64_t v3d_available_modifiers[] = {
    DRM_FORMAT_MOD_BROADCOM_UIF,
    DRM_FORMAT_MOD_LINEAR,
+   DRM_FORMAT_MOD_BROADCOM_SAND128,
 };
 
 static void
@@ -657,7 +660,9 @@ v3d_screen_query_dmabuf_modifiers(struct pipe_screen *pscreen,
         for (i = 0; i < *count; i++) {
                 modifiers[i] = v3d_available_modifiers[i];
                 if (external_only)
-                        external_only[i] = false;
+                        external_only[i] =
+                                v3d_available_modifiers[i] ==
+                                DRM_FORMAT_MOD_BROADCOM_SAND128;
        }
 }
 
@@ -668,8 +673,22 @@ v3d_screen_is_dmabuf_modifier_supported(struct pipe_screen *pscreen,
                                         bool *external_only)
 {
         int i;
+        bool is_sand_col128 = (format == PIPE_FORMAT_NV12) &&
+                (fourcc_mod_broadcom_mod(modifier) == DRM_FORMAT_MOD_BROADCOM_SAND128);
 
-        for (i = 0; i < ARRAY_SIZE(v3d_available_modifiers); i++) {
+        if (is_sand_col128) {
+                if (external_only)
+                        *external_only = true;
+                return true;
+        }
+
+        /* We don't want to generally allow DRM_FORMAT_MOD_BROADCOM_SAND128
+         * modifier, that is the last v3d_available_modifiers. We only accept
+         * it in the case of having a PIPE_FORMAT_NV12.
+         */
+        assert(v3d_available_modifiers[ARRAY_SIZE(v3d_available_modifiers) - 1] ==
+               DRM_FORMAT_MOD_BROADCOM_SAND128);
+        for (i = 0; i < ARRAY_SIZE(v3d_available_modifiers) - 1; i++) {
                 if (v3d_available_modifiers[i] == modifier) {
                         if (external_only)
                                 *external_only = false;
@@ -699,14 +718,8 @@ v3d_screen_create(int fd, const struct pipe_screen_config *config,
         pscreen->is_format_supported = v3d_screen_is_format_supported;
 
         screen->fd = fd;
-        if (ro) {
-                screen->ro = renderonly_dup(ro);
-                if (!screen->ro) {
-                        fprintf(stderr, "Failed to dup renderonly object\n");
-                        ralloc_free(screen);
-                        return NULL;
-                }
-        }
+        screen->ro = ro;
+
         list_inithead(&screen->bo_cache.time_list);
         (void)mtx_init(&screen->bo_handles_mutex, mtx_plain);
         screen->bo_handles = util_hash_table_create_ptr_keys();

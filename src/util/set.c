@@ -174,7 +174,7 @@ key_u32_equals(const void *a, const void *b)
 struct set *
 _mesa_set_create_u32_keys(void *mem_ctx)
 {
-   return _mesa_set_create(NULL, key_u32_hash, key_u32_equals);
+   return _mesa_set_create(mem_ctx, key_u32_hash, key_u32_equals);
 }
 
 struct set *
@@ -558,6 +558,27 @@ void
 _mesa_set_remove_key(struct set *set, const void *key)
 {
    _mesa_set_remove(set, _mesa_set_search(set, key));
+}
+
+/**
+ * This function is an iterator over the set when no deleted entries are present.
+ *
+ * Pass in NULL for the first entry, as in the start of a for loop.
+ */
+struct set_entry *
+_mesa_set_next_entry_unsafe(const struct set *ht, struct set_entry *entry)
+{
+   assert(!ht->deleted_entries);
+   if (!ht->entries)
+      return NULL;
+   if (entry == NULL)
+      entry = ht->table;
+   else
+      entry = entry + 1;
+   if (entry != ht->table + ht->size)
+      return entry->key ? entry : _mesa_set_next_entry_unsafe(ht, entry);
+
+   return NULL;
 }
 
 /**

@@ -663,7 +663,7 @@ namespace brw {
           *
           * CMP null<d> src0<f> src1<f>
           *
-          * Original gen4 does type conversion to the destination type
+          * Original gfx4 does type conversion to the destination type
           * before comparison, producing garbage results for floating
           * point comparisons.
           *
@@ -688,7 +688,7 @@ namespace brw {
           *
           * CMP null<d> src0<f> src1<f>
           *
-          * Original gen4 does type conversion to the destination type
+          * Original gfx4 does type conversion to the destination type
           * before comparison, producing garbage results for floating
           * point comparisons.
           *
@@ -703,7 +703,7 @@ namespace brw {
       }
 
       /**
-       * Gen4 predicated IF.
+       * Gfx4 predicated IF.
        */
       instruction *
       IF(brw_predicate predicate) const
@@ -739,7 +739,7 @@ namespace brw {
       LRP(const dst_reg &dst, const src_reg &x, const src_reg &y,
           const src_reg &a) const
       {
-         if (shader->devinfo->gen >= 6 && shader->devinfo->gen <= 10) {
+         if (shader->devinfo->ver >= 6 && shader->devinfo->ver <= 10) {
             /* The LRP instruction actually does op1 * op0 + op2 * (1 - op0), so
              * we need to reorder the operands.
              */
@@ -844,21 +844,21 @@ namespace brw {
       src_reg
       fix_math_operand(const src_reg &src) const
       {
-         /* Can't do hstride == 0 args on gen6 math, so expand it out. We
+         /* Can't do hstride == 0 args on gfx6 math, so expand it out. We
           * might be able to do better by doing execsize = 1 math and then
           * expanding that result out, but we would need to be careful with
           * masking.
           *
-          * Gen6 hardware ignores source modifiers (negate and abs) on math
+          * Gfx6 hardware ignores source modifiers (negate and abs) on math
           * instructions, so we also move to a temp to set those up.
           *
-          * Gen7 relaxes most of the above restrictions, but still can't use IMM
+          * Gfx7 relaxes most of the above restrictions, but still can't use IMM
           * operands to math
           */
-         if ((shader->devinfo->gen == 6 &&
+         if ((shader->devinfo->ver == 6 &&
               (src.file == IMM || src.file == UNIFORM ||
                src.abs || src.negate)) ||
-             (shader->devinfo->gen == 7 && src.file == IMM)) {
+             (shader->devinfo->ver == 7 && src.file == IMM)) {
             const dst_reg tmp = vgrf(src.type);
             MOV(tmp, src);
             return tmp;

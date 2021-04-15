@@ -513,8 +513,15 @@ st_glsl_to_nir_post_opts(struct st_context *st, struct gl_program *prog,
     * storage don't need to lower builtins.
     */
    if (!shader_program->data->spirv &&
-       !st->ctx->Const.PackedDriverUniformStorage)
+       !st->ctx->Const.PackedDriverUniformStorage) {
+      /* at this point, array uniforms have been split into separate
+       * nir_variable structs where possible. this codepath can't handle dynamic
+       * array indexing, however, so all indirect uniform derefs
+       * must be eliminated beforehand to avoid trying to lower one of those builtins
+       */
+      NIR_PASS_V(nir, nir_lower_indirect_builtin_uniform_derefs);
       NIR_PASS_V(nir, st_nir_lower_builtin);
+   }
 
    if (!screen->get_param(screen, PIPE_CAP_NIR_ATOMICS_AS_DEREF))
       NIR_PASS_V(nir, gl_nir_lower_atomics, shader_program, true);
@@ -590,6 +597,13 @@ st_nir_vectorize_io(nir_shader *producer, nir_shader *consumer)
       NIR_PASS_V(producer, nir_split_var_copies);
       NIR_PASS_V(producer, nir_lower_var_copies);
    }
+
+   /* Undef scalar store_deref intrinsics are not ignored by nir_lower_io,
+    * so they must be removed before that. These passes remove them.
+    */
+   NIR_PASS_V(producer, nir_lower_vars_to_ssa);
+   NIR_PASS_V(producer, nir_opt_undef);
+   NIR_PASS_V(producer, nir_opt_dce);
 }
 
 static void
@@ -627,6 +641,8 @@ st_nir_link_shaders(nir_shader *producer, nir_shader *consumer)
       NIR_PASS_V(consumer, nir_remove_dead_variables, nir_var_shader_in,
                  NULL);
    }
+
+   nir_link_varying_precision(producer, consumer);
 }
 
 static void
@@ -968,8 +984,8 @@ st_nir_lower_samplers(struct pipe_screen *screen, nir_shader *nir,
       NIR_PASS_V(nir, gl_nir_lower_samplers, shader_program);
 
    if (prog) {
-      prog->info.textures_used = nir->info.textures_used;
-      prog->info.textures_used_by_txf = nir->info.textures_used_by_txf;
+      BITSET_COPY(prog->info.textures_used, nir->info.textures_used);
+      BITSET_COPY(prog->info.textures_used_by_txf, nir->info.textures_used_by_txf);
       prog->info.images_used = nir->info.images_used;
    }
 }

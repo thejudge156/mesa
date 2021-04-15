@@ -33,8 +33,8 @@
 #include "iris_context.h"
 #include "iris_resource.h"
 #include "iris_screen.h"
-#include "common/gen_defines.h"
-#include "common/gen_sample_positions.h"
+#include "common/intel_defines.h"
+#include "common/intel_sample_positions.h"
 
 /**
  * For debugging purposes, this returns a time in seconds.
@@ -74,11 +74,6 @@ iris_set_debug_callback(struct pipe_context *ctx,
 void
 iris_lost_context_state(struct iris_batch *batch)
 {
-   /* The batch module doesn't have an iris_context, because we want to
-    * avoid introducing lots of layering violations.  Unfortunately, here
-    * we do need to inform the context of batch catastrophe.  We know the
-    * batch is one of our context's, so hackily claw our way back.
-    */
    struct iris_context *ice = batch->ice;
 
    if (batch->name == IRIS_BATCH_RENDER) {
@@ -169,11 +164,11 @@ iris_get_sample_position(struct pipe_context *ctx,
       } v;
    } u;
    switch (sample_count) {
-   case 1:  GEN_SAMPLE_POS_1X(u.v._);  break;
-   case 2:  GEN_SAMPLE_POS_2X(u.v._);  break;
-   case 4:  GEN_SAMPLE_POS_4X(u.v._);  break;
-   case 8:  GEN_SAMPLE_POS_8X(u.v._);  break;
-   case 16: GEN_SAMPLE_POS_16X(u.v._); break;
+   case 1:  INTEL_SAMPLE_POS_1X(u.v._);  break;
+   case 2:  INTEL_SAMPLE_POS_2X(u.v._);  break;
+   case 4:  INTEL_SAMPLE_POS_4X(u.v._);  break;
+   case 8:  INTEL_SAMPLE_POS_8X(u.v._);  break;
+   case 16: INTEL_SAMPLE_POS_16X(u.v._); break;
    default: unreachable("invalid sample count");
    }
 
@@ -259,21 +254,21 @@ iris_destroy_context(struct pipe_context *ctx)
 }
 
 #define genX_call(devinfo, func, ...)             \
-   switch ((devinfo)->genx10) {                   \
+   switch ((devinfo)->verx10) {                   \
    case 125:                                      \
-      gen125_##func(__VA_ARGS__);                 \
+      gfx125_##func(__VA_ARGS__);                 \
       break;                                      \
    case 120:                                      \
-      gen12_##func(__VA_ARGS__);                  \
+      gfx12_##func(__VA_ARGS__);                  \
       break;                                      \
    case 110:                                      \
-      gen11_##func(__VA_ARGS__);                  \
+      gfx11_##func(__VA_ARGS__);                  \
       break;                                      \
    case 90:                                       \
-      gen9_##func(__VA_ARGS__);                   \
+      gfx9_##func(__VA_ARGS__);                   \
       break;                                      \
    case 80:                                       \
-      gen8_##func(__VA_ARGS__);                   \
+      gfx8_##func(__VA_ARGS__);                   \
       break;                                      \
    default:                                       \
       unreachable("Unknown hardware generation"); \
@@ -349,9 +344,9 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    int priority = 0;
    if (flags & PIPE_CONTEXT_HIGH_PRIORITY)
-      priority = GEN_CONTEXT_HIGH_PRIORITY;
+      priority = INTEL_CONTEXT_HIGH_PRIORITY;
    if (flags & PIPE_CONTEXT_LOW_PRIORITY)
-      priority = GEN_CONTEXT_LOW_PRIORITY;
+      priority = INTEL_CONTEXT_LOW_PRIORITY;
 
    if (INTEL_DEBUG & DEBUG_BATCH)
       ice->state.sizes = _mesa_hash_table_u64_create(ice);

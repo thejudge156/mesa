@@ -29,9 +29,9 @@
 #include "swrast/swrast.h"
 #include "drivers/common/meta.h"
 
-#include "intel_batchbuffer.h"
-#include "intel_fbo.h"
-#include "intel_mipmap_tree.h"
+#include "brw_batch.h"
+#include "brw_fbo.h"
+#include "brw_mipmap_tree.h"
 
 #include "brw_context.h"
 #include "brw_blorp.h"
@@ -47,7 +47,6 @@ static const char *buffer_names[] = {
    [BUFFER_DEPTH] = "depth",
    [BUFFER_STENCIL] = "stencil",
    [BUFFER_ACCUM] = "accum",
-   [BUFFER_AUX0] = "aux0",
    [BUFFER_COLOR0] = "color0",
    [BUFFER_COLOR1] = "color1",
    [BUFFER_COLOR2] = "color2",
@@ -86,7 +85,7 @@ noop_scissor(struct gl_framebuffer *fb)
 }
 
 /**
- * Implements fast depth clears on gen6+.
+ * Implements fast depth clears on gfx6+.
  *
  * Fast clears basically work by setting a flag in each of the subspans
  * represented in the HiZ buffer that says "When you need the depth values for
@@ -111,7 +110,7 @@ brw_fast_clear_depth(struct gl_context *ctx)
    if (INTEL_DEBUG & DEBUG_NO_FAST_CLEAR)
       return false;
 
-   if (devinfo->gen < 6)
+   if (devinfo->ver < 6)
       return false;
 
    if (!brw_renderbuffer_has_hiz(depth_irb))
@@ -152,7 +151,7 @@ brw_fast_clear_depth(struct gl_context *ctx)
        *        width of the map (LOD0) is not multiple of 16, fast clear
        *        optimization must be disabled.
        */
-      if (devinfo->gen == 6 &&
+      if (devinfo->ver == 6 &&
           (minify(mt->surf.phys_level0_sa.width,
                   depth_irb->mt_level - mt->first_level) % 16) != 0)
          return false;
@@ -270,7 +269,7 @@ brw_clear(struct gl_context *ctx, GLbitfield mask)
       mask &= ~BUFFER_BITS_COLOR;
    }
 
-   if (devinfo->gen >= 6 && (mask & BUFFER_BITS_DEPTH_STENCIL)) {
+   if (devinfo->ver >= 6 && (mask & BUFFER_BITS_DEPTH_STENCIL)) {
       brw_blorp_clear_depth_stencil(brw, fb, mask, partial_clear);
       debug_mask("blorp depth/stencil", mask & BUFFER_BITS_DEPTH_STENCIL);
       mask &= ~BUFFER_BITS_DEPTH_STENCIL;

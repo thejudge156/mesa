@@ -27,10 +27,10 @@
  * Identified sequences of ALU instructions that operate on constant operands
  * and reduces them to a uniform load.
  *
- * Currently, this is useul to optimize the result of removing leading ldunifa
- * instructions in the DCE pass, which can leave a series of constant additions
- * that increment the unifa address by 4 for each leading ldunif removed. It
- * helps turn this:
+ * This is useful, for example, to optimize the result of removing leading
+ * ldunifa instructions in the DCE pass, which can leave a series of constant
+ * additions that increment the unifa address by 4 for each leading ldunif
+ * removed. It helps turn this:
  *
  * nop t1; ldunif (0x00000004 / 0.000000)
  * nop t2; ldunif (0x00000004 / 0.000000)
@@ -56,25 +56,43 @@
 
 #include "v3d_compiler.h"
 
+#include "util/half_float.h"
+#include "util/u_math.h"
+
 static bool
-opt_constant_add(struct v3d_compile *c, struct qinst *inst, uint32_t *values)
+opt_constant_add(struct v3d_compile *c, struct qinst *inst, union fi *values)
 {
         /* FIXME: handle more add operations */
         struct qreg unif = { };
         switch (inst->qpu.alu.add.op) {
         case V3D_QPU_A_ADD:
                 c->cursor = vir_after_inst(inst);
-                unif = vir_uniform_ui(c, values[0] + values[1]);
+                unif = vir_uniform_ui(c, values[0].ui + values[1].ui);
                 break;
+
+        case V3D_QPU_A_VFPACK: {
+                assert(inst->qpu.alu.add.output_pack == V3D_QPU_PACK_NONE);
+
+                const uint32_t packed =
+                        (((uint32_t)_mesa_float_to_half(values[1].f)) << 16) |
+                        _mesa_float_to_half(values[0].f);
+
+                c->cursor = vir_after_inst(inst);
+                unif = vir_uniform_ui(c, packed);
+                break;
+        }
+
         default:
                 return false;
         }
 
         /* Remove the original ALU instruction and replace it with a uniform
-         * load.
+         * load. If the original instruction loaded an implicit uniform we
+         * need to replicate that in the new instruction.
          */
         struct qreg dst = inst->dst;
         struct qinst *mov = vir_MOV_dest(c, dst, unif);
+        mov->uniform = inst->uniform;
         vir_remove_instruction(c, inst);
         if (dst.file == QFILE_TEMP)
                 c->defs[dst.index] = mov;
@@ -101,12 +119,12 @@ try_opt_constant_alu(struct v3d_compile *c, struct qinst *inst)
         }
 
         assert(vir_get_nsrc(inst) <= 2);
-        uint32_t values[2];
+        union fi values[2];
         for (int i = 0; i < vir_get_nsrc(inst); i++) {
                 if (inst->src[i].file == QFILE_SMALL_IMM &&
                     v3d_qpu_small_imm_unpack(c->devinfo,
                                              inst->qpu.raddr_b,
-                                             &values[i])) {
+                                             &values[i].ui)) {
                         continue;
                 }
 
@@ -117,7 +135,7 @@ try_opt_constant_alu(struct v3d_compile *c, struct qinst *inst)
 
                         if ((def->qpu.sig.ldunif || def->qpu.sig.ldunifrf) &&
                             c->uniform_contents[def->uniform] == QUNIFORM_CONSTANT) {
-                                values[i] = c->uniform_data[def->uniform];
+                                values[i].ui = c->uniform_data[def->uniform];
                                 continue;
                         }
                 }

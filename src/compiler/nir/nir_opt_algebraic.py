@@ -340,8 +340,14 @@ optimizations.extend([
    # instruction or a constant offset field for in load / store instructions.
    (('ishl', ('iadd', a, '#b'), '#c'), ('iadd', ('ishl', a, c), ('ishl', b, c))),
 
-   # (a + #b) * #c
+   # (a + #b) * #c => (a * #c) + (#b * #c)
    (('imul', ('iadd(is_used_once)', a, '#b'), '#c'), ('iadd', ('imul', a, c), ('imul', b, c))),
+
+   # ((a + #b) + c) * #d => ((a + c) * #d) + (#b * #d)
+   (('imul', ('iadd(is_used_once)', ('iadd(is_used_once)', a, '#b'), c), '#d'),
+    ('iadd', ('imul', ('iadd', a, c), d), ('imul', b, d))),
+   (('ishl', ('iadd(is_used_once)', ('iadd(is_used_once)', a, '#b'), c), '#d'),
+    ('iadd', ('ishl', ('iadd', a, c), d), ('ishl', b, d))),
 
    # Comparison simplifications
    (('~inot', ('flt', a, b)), ('fge', a, b)),
@@ -1195,11 +1201,13 @@ optimizations.extend([
    (('unpack_64_2x32_split_y', ('pack_64_2x32_split', a, b)), b),
    (('unpack_64_2x32', ('pack_64_2x32_split', a, b)), ('vec2', a, b)),
    (('unpack_64_2x32', ('pack_64_2x32', a)), a),
+   (('unpack_double_2x32_dxil', ('pack_double_2x32_dxil', a)), a),
    (('pack_64_2x32_split', ('unpack_64_2x32_split_x', a),
                            ('unpack_64_2x32_split_y', a)), a),
    (('pack_64_2x32', ('vec2', ('unpack_64_2x32_split_x', a),
                               ('unpack_64_2x32_split_y', a))), a),
    (('pack_64_2x32', ('unpack_64_2x32', a)), a),
+   (('pack_double_2x32_dxil', ('unpack_double_2x32_dxil', a)), a),
 
    # Comparing two halves of an unpack separately.  While this optimization
    # should be correct for non-constant values, it's less obvious that it's
@@ -1517,6 +1525,18 @@ optimizations.extend([
     ('ufind_msb', ('bcsel', ('ilt', 'value', 0), ('inot', 'value'), 'value')),
     'options->lower_ifind_msb'),
 
+   (('ifind_msb', 'value'),
+    ('bcsel', ('ige', ('ifind_msb_rev', 'value'), 0),
+     ('isub', 31, ('ifind_msb_rev', 'value')),
+     ('ifind_msb_rev', 'value')),
+    'options->lower_find_msb_to_reverse'),
+
+    (('ufind_msb', 'value'),
+     ('bcsel', ('ige', ('ufind_msb_rev', 'value'), 0),
+      ('isub', 31, ('ufind_msb_rev', 'value')),
+      ('ufind_msb_rev', 'value')),
+     'options->lower_find_msb_to_reverse'),
+
    (('find_lsb', 'value'),
     ('ufind_msb', ('iand', 'value', ('ineg', 'value'))),
     'options->lower_find_lsb'),
@@ -1644,6 +1664,22 @@ optimizations.extend([
    (('imul24', a, '#b@32(is_pos_power_of_two)'), ('ishl', a, ('find_lsb', b)), '!options->lower_bitops'),
    (('imul24', a, '#b@32(is_neg_power_of_two)'), ('ineg', ('ishl', a, ('find_lsb', ('iabs', b)))), '!options->lower_bitops'),
    (('imul24', a, 0), (0)),
+
+   (('fcsel', ('slt', 0, a), b, c), ('fcsel_gt', a, b, c), "options->has_fused_comp_and_csel"),
+   (('fcsel', ('slt', a, 0), b, c), ('fcsel_ge', a, c, b), "options->has_fused_comp_and_csel"),
+   (('fcsel', ('sge', a, 0), b, c), ('fcsel_ge', a, b, c), "options->has_fused_comp_and_csel"),
+   (('fcsel', ('sge', 0, a), b, c), ('fcsel_gt', a, c, b), "options->has_fused_comp_and_csel"),
+
+   (('bcsel', ('ilt', 0, 'a@32'), 'b@32', 'c@32'), ('i32csel_gt', a, b, c), "options->has_fused_comp_and_csel"),
+   (('bcsel', ('ilt', 'a@32', 0), 'b@32', 'c@32'), ('i32csel_ge', a, c, b), "options->has_fused_comp_and_csel"),
+   (('bcsel', ('ige', 'a@32', 0), 'b@32', 'c@32'), ('i32csel_ge', a, b, c), "options->has_fused_comp_and_csel"),
+   (('bcsel', ('ige', 0, 'a@32'), 'b@32', 'c@32'), ('i32csel_gt', a, c, b), "options->has_fused_comp_and_csel"),
+
+   (('bcsel', ('flt', 0, 'a@32'), 'b@32', 'c@32'), ('fcsel_gt', a, b, c), "options->has_fused_comp_and_csel"),
+   (('bcsel', ('flt', 'a@32', 0), 'b@32', 'c@32'), ('fcsel_ge', a, c, b), "options->has_fused_comp_and_csel"),
+   (('bcsel', ('fge', 'a@32', 0), 'b@32', 'c@32'), ('fcsel_ge', a, b, c), "options->has_fused_comp_and_csel"),
+   (('bcsel', ('fge', 0, 'a@32'), 'b@32', 'c@32'), ('fcsel_gt', a, c, b), "options->has_fused_comp_and_csel"),
+
 ])
 
 # bit_size dependent lowerings

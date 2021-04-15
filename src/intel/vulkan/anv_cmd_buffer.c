@@ -30,7 +30,6 @@
 #include "anv_private.h"
 #include "anv_measure.h"
 
-#include "vk_format_info.h"
 #include "vk_util.h"
 
 /** \file anv_cmd_buffer.c
@@ -254,13 +253,10 @@ static VkResult anv_create_cmd_buffer(
    struct anv_cmd_buffer *cmd_buffer;
    VkResult result;
 
-   cmd_buffer = vk_alloc(&pool->alloc, sizeof(*cmd_buffer), 8,
-                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   cmd_buffer = vk_object_alloc(&device->vk, &pool->alloc, sizeof(*cmd_buffer),
+                                VK_OBJECT_TYPE_COMMAND_BUFFER);
    if (cmd_buffer == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
-
-   vk_object_base_init(&device->vk, &cmd_buffer->base,
-                       VK_OBJECT_TYPE_COMMAND_BUFFER);
 
    cmd_buffer->batch.status = VK_SUCCESS;
 
@@ -342,8 +338,7 @@ anv_cmd_buffer_destroy(struct anv_cmd_buffer *cmd_buffer)
 
    vk_free(&cmd_buffer->pool->alloc, cmd_buffer->self_mod_locations);
 
-   vk_object_base_finish(&cmd_buffer->base);
-   vk_free(&cmd_buffer->pool->alloc, cmd_buffer);
+   vk_object_free(&cmd_buffer->device->vk, &cmd_buffer->pool->alloc, cmd_buffer);
 }
 
 void anv_FreeCommandBuffers(
@@ -1064,11 +1059,11 @@ anv_cmd_buffer_cs_push_constants(struct anv_cmd_buffer *cmd_buffer)
       return (struct anv_state) { .offset = 0 };
 
    const unsigned push_constant_alignment =
-      cmd_buffer->device->info.gen < 8 ? 32 : 64;
+      cmd_buffer->device->info.ver < 8 ? 32 : 64;
    const unsigned aligned_total_push_constants_size =
       ALIGN(total_push_constants_size, push_constant_alignment);
    struct anv_state state;
-   if (devinfo->genx10 >= 125) {
+   if (devinfo->verx10 >= 125) {
       state = anv_state_stream_alloc(&cmd_buffer->general_state_stream,
                                      aligned_total_push_constants_size,
                                      push_constant_alignment);
@@ -1138,12 +1133,10 @@ VkResult anv_CreateCommandPool(
    ANV_FROM_HANDLE(anv_device, device, _device);
    struct anv_cmd_pool *pool;
 
-   pool = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*pool), 8,
-                     VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   pool = vk_object_alloc(&device->vk, pAllocator, sizeof(*pool),
+                          VK_OBJECT_TYPE_COMMAND_POOL);
    if (pool == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
-
-   vk_object_base_init(&device->vk, &pool->base, VK_OBJECT_TYPE_COMMAND_POOL);
 
    if (pAllocator)
       pool->alloc = *pAllocator;
@@ -1175,8 +1168,7 @@ void anv_DestroyCommandPool(
       anv_cmd_buffer_destroy(cmd_buffer);
    }
 
-   vk_object_base_finish(&pool->base);
-   vk_free2(&device->vk.alloc, pAllocator, pool);
+   vk_object_free(&device->vk, pAllocator, pool);
 }
 
 VkResult anv_ResetCommandPool(
@@ -1270,7 +1262,8 @@ anv_cmd_buffer_push_descriptor_set(struct anv_cmd_buffer *cmd_buffer,
        */
       struct anv_state desc_mem =
          anv_state_stream_alloc(&cmd_buffer->dynamic_state_stream,
-                                layout->descriptor_buffer_size, 32);
+                                anv_descriptor_set_layout_descriptor_buffer_size(layout, 0),
+                                ANV_UBO_ALIGNMENT);
       if (set->desc_mem.alloc_size) {
          /* TODO: Do we really need to copy all the time? */
          memcpy(desc_mem.map, set->desc_mem.map,

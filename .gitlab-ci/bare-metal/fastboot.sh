@@ -139,7 +139,7 @@ export PATH=$BM:$PATH
 
 # Start background command for talking to serial if we have one.
 if [ -n "$BM_SERIAL_SCRIPT" ]; then
-  $BM_SERIAL_SCRIPT | tee results/serial-output.txt &
+  $BM_SERIAL_SCRIPT > results/serial-output.txt &
 
   while [ ! -e results/serial-output.txt ]; do
     sleep 1
@@ -155,8 +155,10 @@ $BM/fastboot_run.py \
 ret=$?
 set -e
 
-# Bring artifacts back from the NFS dir to the build dir where gitlab-runner
-# will look for them.
-cp -Rp /nfs/results/. results/
+if [ -n "$BM_FASTBOOT_NFSROOT" ]; then
+  # Bring artifacts back from the NFS dir to the build dir where gitlab-runner
+  # will look for them.
+  cp -Rp /nfs/results/. results/
+fi
 
 exit $ret

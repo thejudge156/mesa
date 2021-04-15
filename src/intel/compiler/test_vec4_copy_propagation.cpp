@@ -50,7 +50,7 @@ public:
                                  nir_shader *shader,
                                  struct brw_vue_prog_data *prog_data)
       : vec4_visitor(compiler, NULL, NULL, prog_data, shader, mem_ctx,
-                     false /* no_spills */, -1)
+                     false /* no_spills */, -1, false)
    {
       prog_data->dispatch_mode = DISPATCH_MODE_4X2_DUAL_OBJECT;
    }
@@ -101,8 +101,8 @@ void copy_propagation_test::SetUp()
 
    v = new copy_propagation_vec4_visitor(compiler, ctx, shader, prog_data);
 
-   devinfo->gen = 4;
-   devinfo->genx10 = devinfo->gen * 10;
+   devinfo->ver = 4;
+   devinfo->verx10 = devinfo->ver * 10;
 }
 
 void copy_propagation_test::TearDown()

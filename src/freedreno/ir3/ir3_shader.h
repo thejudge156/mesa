@@ -45,15 +45,18 @@ enum ir3_driver_param {
 	IR3_DP_NUM_WORK_GROUPS_X = 0,
 	IR3_DP_NUM_WORK_GROUPS_Y = 1,
 	IR3_DP_NUM_WORK_GROUPS_Z = 2,
-	IR3_DP_LOCAL_GROUP_SIZE_X = 4,
-	IR3_DP_LOCAL_GROUP_SIZE_Y = 5,
-	IR3_DP_LOCAL_GROUP_SIZE_Z = 6,
+	IR3_DP_BASE_GROUP_X = 4,
+	IR3_DP_BASE_GROUP_Y = 5,
+	IR3_DP_BASE_GROUP_Z = 6,
+	IR3_DP_LOCAL_GROUP_SIZE_X = 8,
+	IR3_DP_LOCAL_GROUP_SIZE_Y = 9,
+	IR3_DP_LOCAL_GROUP_SIZE_Z = 10,
 	/* NOTE: gl_NumWorkGroups should be vec4 aligned because
 	 * glDispatchComputeIndirect() needs to load these from
 	 * the info->indirect buffer.  Keep that in mind when/if
 	 * adding any addition CS driver params.
 	 */
-	IR3_DP_CS_COUNT   = 8,   /* must be aligned to vec4 */
+	IR3_DP_CS_COUNT   = 12,   /* must be aligned to vec4 */
 
 	/* vertex shader driver params: */
 	IR3_DP_DRAWID = 0,
@@ -442,6 +445,12 @@ struct ir3_ibo_mapping {
 	uint8_t tex_base;   /* the number of real textures, ie. image/ssbo start here */
 };
 
+struct ir3_disasm_info {
+	bool write_disasm;
+	char *nir;
+	char *disasm;
+};
+
 /* Represents half register in regid */
 #define HALF_REG_ID    0x100
 
@@ -598,6 +607,9 @@ struct ir3_shader_variant {
 	 */
 	unsigned total_in;
 
+	/* sum of sysval input components (scalar). */
+	unsigned sysval_in;
+
 	/* For frag shaders, the total number of inputs (not scalar,
 	 * ie. SP_VS_PARAM_REG.TOTALVSOUTVAR)
 	 */
@@ -629,6 +641,9 @@ struct ir3_shader_variant {
 
 	bool need_fine_derivatives;
 
+	/* do we need VS driver params? */
+	bool need_driver_params;
+
 	/* do we have image write, etc (which prevents early-z): */
 	bool no_earlyz;
 
@@ -657,6 +672,11 @@ struct ir3_shader_variant {
 	/* texture sampler pre-dispatches */
 	uint32_t num_sampler_prefetch;
 	struct ir3_sampler_prefetch sampler_prefetch[IR3_MAX_SAMPLER_PREFETCH];
+
+	uint16_t local_size[3];
+	bool local_size_variable;
+
+	struct ir3_disasm_info disasm_info;
 };
 
 static inline const char *
@@ -756,7 +776,7 @@ ir3_max_const(const struct ir3_shader_variant *v)
 
 void * ir3_shader_assemble(struct ir3_shader_variant *v);
 struct ir3_shader_variant * ir3_shader_get_variant(struct ir3_shader *shader,
-		const struct ir3_shader_key *key, bool binning_pass, bool *created);
+		const struct ir3_shader_key *key, bool binning_pass, bool keep_ir, bool *created);
 struct ir3_shader * ir3_shader_from_nir(struct ir3_compiler *compiler, nir_shader *nir,
 		unsigned reserved_user_consts, struct ir3_stream_output_info *stream_output);
 uint32_t ir3_trim_constlen(struct ir3_shader_variant **variants,

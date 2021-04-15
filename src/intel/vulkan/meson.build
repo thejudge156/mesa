@@ -25,11 +25,12 @@ anv_entrypoints = custom_target(
   command : [
     prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--proto', '--weak',
     '--out-h', '@OUTPUT0@', '--out-c', '@OUTPUT1@', '--prefix', 'anv',
-    '--device-prefix', 'gen7', '--device-prefix', 'gen75',
-    '--device-prefix', 'gen8', '--device-prefix', 'gen9',
-    '--device-prefix', 'gen11', '--device-prefix', 'gen12',
-    '--device-prefix', 'gen125',
+    '--device-prefix', 'gfx7', '--device-prefix', 'gfx75',
+    '--device-prefix', 'gfx8', '--device-prefix', 'gfx9',
+    '--device-prefix', 'gfx11', '--device-prefix', 'gfx12',
+    '--device-prefix', 'gfx125',
   ],
+  depend_files : vk_entrypoints_gen_depend_files,
 )
 
 intel_icd = custom_target(
@@ -57,10 +58,10 @@ anv_gen_files = files(
   'genX_query.c',
   'genX_state.c',
 )
-foreach g : [['70', ['gen7_cmd_buffer.c']], ['75', ['gen7_cmd_buffer.c']],
-             ['80', ['gen8_cmd_buffer.c']], ['90', ['gen8_cmd_buffer.c']],
-             ['110', ['gen8_cmd_buffer.c']], ['120', ['gen8_cmd_buffer.c']],
-             ['125', ['gen8_cmd_buffer.c']]]
+foreach g : [['70', ['gfx7_cmd_buffer.c']], ['75', ['gfx7_cmd_buffer.c']],
+             ['80', ['gfx8_cmd_buffer.c']], ['90', ['gfx8_cmd_buffer.c']],
+             ['110', ['gfx8_cmd_buffer.c']], ['120', ['gfx8_cmd_buffer.c']],
+             ['125', ['gfx8_cmd_buffer.c']]]
   _gen = g[0]
   libanv_gen_libs += static_library(
     'anv_gen@0@'.format(_gen),
@@ -70,7 +71,7 @@ foreach g : [['70', ['gen7_cmd_buffer.c']], ['75', ['gen7_cmd_buffer.c']],
     ],
     c_args : [
       no_override_init_args, c_sse2_args,
-      '-DGEN_VERSIONx10=@0@'.format(_gen),
+      '-DGFX_VERx10=@0@'.format(_gen),
     ],
     gnu_symbol_visibility : 'hidden',
     dependencies : [
@@ -90,7 +91,6 @@ libanv_files = files(
   'anv_formats.c',
   'anv_genX.h',
   'anv_image.c',
-  'anv_intel.c',
   'anv_measure.c',
   'anv_measure.h',
   'anv_nir.h',
@@ -98,6 +98,7 @@ libanv_files = files(
   'anv_nir_apply_pipeline_layout.c',
   'anv_nir_compute_push_layout.c',
   'anv_nir_lower_multiview.c',
+  'anv_nir_lower_ubo_loads.c',
   'anv_nir_lower_ycbcr_textures.c',
   'anv_pass.c',
   'anv_perf.c',
@@ -107,7 +108,6 @@ libanv_files = files(
   'anv_queue.c',
   'anv_util.c',
   'anv_wsi.c',
-  'vk_format_info.h',
 )
 
 anv_deps = [

@@ -23,6 +23,7 @@
 
 %{
 #include <stdlib.h>
+#include "util/ralloc.h"
 #include "ir3/ir3.h"
 #include "ir3_parser.h"
 
@@ -30,6 +31,7 @@
 #define YY_NO_UNPUT
 #define TOKEN(t) (ir3_yylval.tok = t)
 extern YYSTYPE ir3_yylval;
+extern void *ir3_parser_dead_ctx;
 
 void ir3_yyset_input(FILE *f);
 
@@ -89,18 +91,18 @@ static int parse_w(const char *str)
 "\n"                              yylineno++;
 [ \t]                             ; /* ignore whitespace */
 ";"[^\n]*"\n"                     yylineno++; /* ignore comments */
-"0.0"                             ir3_yylval.num = 0;  return T_FLUT_0_0;
-"0.5"                             ir3_yylval.num = 1;  return T_FLUT_0_5;
-"1.0"                             ir3_yylval.num = 2;  return T_FLUT_1_0;
-"2.0"                             ir3_yylval.num = 3;  return T_FLUT_2_0;
-"e"                               ir3_yylval.num = 4;  return T_FLUT_E;
-"pi"                              ir3_yylval.num = 5;  return T_FLUT_PI;
-"1/pi"                            ir3_yylval.num = 6;  return T_FLUT_INV_PI;
-"1/log2(e)"                       ir3_yylval.num = 7;  return T_FLUT_INV_LOG2_E;
-"log2(e)"                         ir3_yylval.num = 8;  return T_FLUT_LOG2_E;
-"1/log2(10)"                      ir3_yylval.num = 9;  return T_FLUT_INV_LOG2_10;
-"log2(10)"                        ir3_yylval.num = 10; return T_FLUT_LOG2_10;
-"4.0"                             ir3_yylval.num = 11; return T_FLUT_4_0;
+"(0.0)"                           ir3_yylval.num = 0;  return T_FLUT_0_0;
+"(0.5)"                           ir3_yylval.num = 1;  return T_FLUT_0_5;
+"(1.0)"                           ir3_yylval.num = 2;  return T_FLUT_1_0;
+"(2.0)"                           ir3_yylval.num = 3;  return T_FLUT_2_0;
+"(e)"                             ir3_yylval.num = 4;  return T_FLUT_E;
+"(pi)"                            ir3_yylval.num = 5;  return T_FLUT_PI;
+"(1/pi)"                          ir3_yylval.num = 6;  return T_FLUT_INV_PI;
+"(1/log2(e))"                     ir3_yylval.num = 7;  return T_FLUT_INV_LOG2_E;
+"(log2(e))"                       ir3_yylval.num = 8;  return T_FLUT_LOG2_E;
+"(1/log2(10))"                    ir3_yylval.num = 9;  return T_FLUT_INV_LOG2_10;
+"(log2(10))"                      ir3_yylval.num = 10; return T_FLUT_LOG2_10;
+"(4.0)"                           ir3_yylval.num = 11; return T_FLUT_4_0;
 [0-9]+"."[0-9]+                   ir3_yylval.flt = strtod(yytext, NULL);       return T_FLOAT;
 [0-9]*                            ir3_yylval.num = strtoul(yytext, NULL, 0);    return T_INT;
 "0x"[0-9a-fA-F]*                  ir3_yylval.num = strtoul(yytext, NULL, 0);    return T_HEX;
@@ -110,6 +112,7 @@ static int parse_w(const char *str)
 "@invocationid"                   return TOKEN(T_A_INVOCATIONID);
 "@wgid"                           return TOKEN(T_A_WGID);
 "@numwg"                          return TOKEN(T_A_NUMWG);
+"@branchstack"                    return TOKEN(T_A_BRANCHSTACK);
 "@in"                             return TOKEN(T_A_IN);
 "@out"                            return TOKEN(T_A_OUT);
 "@tex"                            return TOKEN(T_A_TEX);
@@ -374,7 +377,7 @@ static int parse_w(const char *str)
 "nonuniform"                      return T_NONUNIFORM;
 "imm"                             return T_IMM;
 
-"h("                              return TOKEN(T_HP);
+"h"                               return 'h';
 "="                               return '=';
 "("                               return '(';
 ")"                               return ')';
@@ -396,10 +399,11 @@ static int parse_w(const char *str)
 ">"                               return '>';
 "!"                               return '!';
 "#"                               return '#';
+":"                               return ':';
 
 "nan"                             return TOKEN(T_NAN);
 "inf"                             return TOKEN(T_INF);
 
-[a-zA-Z_][a-zA-Z_0-9]*            ir3_yylval.str = yytext;     return T_IDENTIFIER;
+[a-zA-Z_][a-zA-Z_0-9]*            ir3_yylval.str = ralloc_strdup(ir3_parser_dead_ctx, yytext); return T_IDENTIFIER;
 .                                 fprintf(stderr, "error at line %d: Unknown token: %s\n", ir3_yyget_lineno(), yytext); yyterminate();
 %%

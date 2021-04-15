@@ -132,9 +132,13 @@ schedule_barrier(compiler_context *ctx)
 
 M_LOAD(ld_attr_32, nir_type_uint32);
 M_LOAD(ld_vary_32, nir_type_uint32);
-M_LOAD(ld_ubo_int4, nir_type_uint32);
-M_LOAD(ld_int4, nir_type_uint32);
-M_STORE(st_int4, nir_type_uint32);
+M_LOAD(ld_ubo_u128, nir_type_uint32);
+M_LOAD(ld_u32, nir_type_uint32);
+M_LOAD(ld_u64, nir_type_uint32);
+M_LOAD(ld_u128, nir_type_uint32);
+M_STORE(st_u32, nir_type_uint32);
+M_STORE(st_u64, nir_type_uint32);
+M_STORE(st_u128, nir_type_uint32);
 M_LOAD(ld_color_buffer_32u, nir_type_uint32);
 M_LOAD(ld_color_buffer_as_fp16, nir_type_float16);
 M_LOAD(ld_color_buffer_as_fp32, nir_type_float32);
@@ -226,7 +230,7 @@ midgard_nir_lower_fdot2_instr(nir_builder *b, nir_instr *instr, void *data)
                                     nir_channel(b, product, 1));
 
         /* Replace the fdot2 with this sum */
-        nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, nir_src_for_ssa(sum));
+        nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, sum);
 
         return true;
 }
@@ -292,7 +296,11 @@ optimise_nir(nir_shader *nir, unsigned quirks, bool is_blend)
                 (nir->options->lower_flrp64 ? 64 : 0);
 
         NIR_PASS(progress, nir, nir_lower_regs_to_ssa);
-        NIR_PASS(progress, nir, nir_lower_idiv, nir_lower_idiv_fast);
+        nir_lower_idiv_options idiv_options = {
+                .imprecise_32bit_lowering = true,
+                .allow_fp16 = true,
+        };
+        NIR_PASS(progress, nir, nir_lower_idiv, &idiv_options);
 
         nir_lower_tex_options lower_tex_options = {
                 .lower_txs_lod = true,
@@ -1147,7 +1155,7 @@ emit_ubo_read(
 {
         /* TODO: half-floats */
 
-        midgard_instruction ins = m_ld_ubo_int4(dest, 0);
+        midgard_instruction ins = m_ld_ubo_u128(dest, 0);
         ins.constants.u32[0] = offset;
 
         if (instr->type == nir_instr_type_intrinsic)
@@ -1186,14 +1194,34 @@ emit_global(
         nir_src *offset,
         unsigned seg)
 {
-        /* TODO: types */
-
         midgard_instruction ins;
 
-        if (is_read)
-                ins = m_ld_int4(srcdest, 0);
-        else
-                ins = m_st_int4(srcdest, 0);
+        nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+        if (is_read) {
+                unsigned bitsize = nir_dest_bit_size(intr->dest) *
+                        nir_dest_num_components(intr->dest);
+
+                if (bitsize <= 32)
+                        ins = m_ld_u32(srcdest, 0);
+                else if (bitsize <= 64)
+                        ins = m_ld_u64(srcdest, 0);
+                else if (bitsize <= 128)
+                        ins = m_ld_u128(srcdest, 0);
+                else
+                        unreachable("Invalid global read size");
+        } else {
+                unsigned bitsize = nir_src_bit_size(intr->src[0]) *
+                        nir_src_num_components(intr->src[0]);
+
+                if (bitsize <= 32)
+                        ins = m_st_u32(srcdest, 0);
+                else if (bitsize <= 64)
+                        ins = m_st_u64(srcdest, 0);
+                else if (bitsize <= 128)
+                        ins = m_st_u128(srcdest, 0);
+                else
+                        unreachable("Invalid global store size");
+        }
 
         mir_set_offset(ctx, &ins, offset, seg);
         mir_set_intr_mask(instr, &ins, is_read);
@@ -1445,6 +1473,8 @@ emit_sysval_read(compiler_context *ctx, nir_instr *instr,
         nir_dest nir_dest;
 
         /* Figure out which uniform this is */
+        unsigned sysval_ubo =
+                MAX2(ctx->inputs->sysval_ubo, ctx->nir->info.num_ubos);
         int sysval = panfrost_sysval_for_instr(instr, &nir_dest);
         unsigned dest = nir_dest_index(&nir_dest);
         unsigned uniform =
@@ -1453,7 +1483,7 @@ emit_sysval_read(compiler_context *ctx, nir_instr *instr,
         /* Emit the read itself -- this is never indirect */
         midgard_instruction *ins =
                 emit_ubo_read(ctx, instr, dest, (uniform * 16) + offset, NULL, 0,
-                                ctx->nir->info.num_ubos);
+                              sysval_ubo);
 
         ins->mask = mask_of(nr_components);
 }
@@ -2273,7 +2303,7 @@ emit_texop_native(compiler_context *ctx, nir_tex_instr *instr,
         nir_dest *dest = &instr->dest;
 
         int texture_index = instr->texture_index;
-        int sampler_index = texture_index;
+        int sampler_index = instr->sampler_index;
 
         nir_alu_type dest_base = nir_alu_type_get_base_type(instr->dest_type);
 
@@ -3171,6 +3201,7 @@ midgard_compile_shader_nir(nir_shader *nir,
         if ((midgard_debug & MIDGARD_DBG_SHADERS) && !nir->info.internal) {
                 disassemble_midgard(stdout, binary->data,
                                     binary->size, inputs->gpu_id);
+                fflush(stdout);
         }
 
         if ((midgard_debug & MIDGARD_DBG_SHADERDB || inputs->shaderdb) &&

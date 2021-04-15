@@ -55,6 +55,8 @@ enum {
    DEBUG_NO_VN = 0x10,
    DEBUG_NO_OPT = 0x20,
    DEBUG_NO_SCHED = 0x40,
+   DEBUG_PERF_INFO = 0x80,
+   DEBUG_LIVE_INFO = 0x100,
 };
 
 /**
@@ -105,6 +107,30 @@ enum class Format : std::uint16_t {
    VINTRP = 1 << 12,
    DPP = 1 << 13,
    SDWA = 1 << 14,
+};
+
+enum class instr_class : uint8_t {
+   valu32 = 0,
+   valu_convert32 = 1,
+   valu64 = 2,
+   valu_quarter_rate32 = 3,
+   valu_fma = 4,
+   valu_transcendental32 = 5,
+   valu_double = 6,
+   valu_double_add = 7,
+   valu_double_convert = 8,
+   valu_double_transcendental = 9,
+   salu = 10,
+   smem = 11,
+   barrier = 12,
+   branch = 13,
+   sendmsg = 14,
+   ds = 15,
+   exp = 16,
+   vmem = 17,
+   waitcnt = 18,
+   other = 19,
+   count,
 };
 
 enum storage_class : uint8_t {
@@ -231,6 +257,25 @@ struct float_mode {
              (care_about_round32 || !other.care_about_round32) &&
              (care_about_round16_64 || !other.care_about_round16_64);
    }
+};
+
+struct wait_imm {
+   static const uint8_t unset_counter = 0xff;
+
+   uint8_t vm;
+   uint8_t exp;
+   uint8_t lgkm;
+   uint8_t vs;
+
+   wait_imm();
+   wait_imm(uint16_t vm_, uint16_t exp_, uint16_t lgkm_, uint16_t vs_);
+   wait_imm(enum chip_class chip, uint16_t packed);
+
+   uint16_t pack(enum chip_class chip) const;
+
+   bool combine(const wait_imm& other);
+
+   bool empty() const;
 };
 
 constexpr Format asVOP3(Format format) {
@@ -1571,6 +1616,8 @@ bool needs_exec_mask(const Instruction* instr);
 
 uint32_t get_reduction_identity(ReduceOp op, unsigned idx);
 
+unsigned get_mimg_nsa_dwords(const Instruction *instr);
+
 enum block_kind {
    /* uniform indicates that leaving this block,
     * all actives lanes stay active */
@@ -1670,6 +1717,8 @@ struct Block {
    std::vector<unsigned> linear_succs;
    RegisterDemand register_demand = RegisterDemand();
    uint16_t loop_nest_depth = 0;
+   uint16_t divergent_if_logical_depth = 0;
+   uint16_t uniform_if_depth = 0;
    uint16_t kind = 0;
    int logical_idom = -1;
    int linear_idom = -1;
@@ -1679,7 +1728,6 @@ struct Block {
    bool scc_live_out = false;
    PhysReg scratch_sgpr = PhysReg(); /* only needs to be valid if scc_live_out != false */
 
-   Block(unsigned idx) : index(idx) {}
    Block() : index(0) {}
 };
 
@@ -1784,11 +1832,10 @@ enum statistic {
    statistic_instructions,
    statistic_copies,
    statistic_branches,
-   statistic_cycles,
+   statistic_latency,
+   statistic_inv_throughput,
    statistic_vmem_clauses,
    statistic_smem_clauses,
-   statistic_vmem_score,
-   statistic_smem_score,
    statistic_sgpr_presched,
    statistic_vgpr_presched,
    num_statistics
@@ -1814,7 +1861,6 @@ struct DeviceInfo {
 
 class Program final {
 public:
-   float_mode next_fp_mode;
    std::vector<Block> blocks;
    std::vector<RegClass> temp_rc = {s1};
    RegisterDemand max_reg_demand = RegisterDemand();
@@ -1845,6 +1891,11 @@ public:
 
    bool collect_statistics = false;
    uint32_t statistics[num_statistics];
+
+   float_mode next_fp_mode;
+   unsigned next_loop_depth = 0;
+   unsigned next_divergent_if_logical_depth = 0;
+   unsigned next_uniform_if_depth = 0;
 
    struct {
       void (*func)(void *private_data,
@@ -1877,15 +1928,20 @@ public:
       return allocationID;
    }
 
+   friend void reindex_ssa(Program* program);
+   friend void reindex_ssa(Program* program, std::vector<IDSet>& live_out);
+
    Block* create_and_insert_block() {
-      blocks.emplace_back(blocks.size());
-      blocks.back().fp_mode = next_fp_mode;
-      return &blocks.back();
+      Block block;
+      return insert_block(std::move(block));
    }
 
    Block* insert_block(Block&& block) {
       block.index = blocks.size();
       block.fp_mode = next_fp_mode;
+      block.loop_nest_depth = next_loop_depth;
+      block.divergent_if_logical_depth = next_divergent_if_logical_depth;
+      block.uniform_if_depth = next_uniform_if_depth;
       blocks.emplace_back(std::move(block));
       return &blocks.back();
    }
@@ -1959,9 +2015,17 @@ void collect_presched_stats(Program *program);
 void collect_preasm_stats(Program *program);
 void collect_postasm_stats(Program *program, const std::vector<uint32_t>& code);
 
-void aco_print_operand(const Operand *operand, FILE *output);
-void aco_print_instr(const Instruction *instr, FILE *output);
-void aco_print_program(const Program *program, FILE *output);
+enum print_flags {
+   print_no_ssa = 0x1,
+   print_perf_info = 0x2,
+   print_kill = 0x4,
+   print_live_vars = 0x8,
+};
+
+void aco_print_operand(const Operand *operand, FILE *output, unsigned flags=0);
+void aco_print_instr(const Instruction *instr, FILE *output, unsigned flags=0);
+void aco_print_program(const Program *program, FILE *output, unsigned flags=0);
+void aco_print_program(const Program *program, FILE *output, const live& live_vars, unsigned flags=0);
 
 void _aco_perfwarn(Program *program, const char *file, unsigned line,
                    const char *fmt, ...);
@@ -1999,6 +2063,7 @@ typedef struct {
    /* sizes used for input/output modifiers and constants */
    const unsigned operand_size[static_cast<int>(aco_opcode::num_opcodes)];
    const unsigned definition_size[static_cast<int>(aco_opcode::num_opcodes)];
+   const instr_class classes[static_cast<int>(aco_opcode::num_opcodes)];
 } Info;
 
 extern const Info instr_info;

@@ -49,7 +49,8 @@ brw_vec4_generate_assembly(const struct brw_compiler *compiler,
                            struct brw_vue_prog_data *prog_data,
                            const struct cfg_t *cfg,
                            const brw::performance &perf,
-                           struct brw_compile_stats *stats);
+                           struct brw_compile_stats *stats,
+                           bool debug_enabled);
 
 #ifdef __cplusplus
 } /* extern "C" */
@@ -71,7 +72,8 @@ public:
                 const nir_shader *shader,
 		void *mem_ctx,
                 bool no_spills,
-                int shader_time_index);
+                int shader_time_index,
+                bool debug_enabled);
 
    dst_reg dst_null_f()
    {
@@ -268,7 +270,7 @@ public:
 
    src_reg emit_mcs_fetch(const glsl_type *coordinate_type, src_reg coordinate,
                           src_reg surface);
-   void emit_gen6_gather_wa(uint8_t wa, dst_reg dst);
+   void emit_gfx6_gather_wa(uint8_t wa, dst_reg dst);
 
    void emit_ndc_computation();
    void emit_psiz_and_flags(dst_reg reg);

@@ -1935,11 +1935,15 @@ void lower_to_hw_instr(Program* program)
             case aco_opcode::p_spill:
             {
                assert(instr->operands[0].regClass() == v1.as_linear());
-               for (unsigned i = 0; i < instr->operands[2].size(); i++)
+               for (unsigned i = 0; i < instr->operands[2].size(); i++) {
+                  Operand src = instr->operands[2].isConstant() ?
+                                Operand(uint32_t(instr->operands[2].constantValue64() >> (32 * i))) :
+                                Operand(PhysReg{instr->operands[2].physReg() + i}, s1);
                   bld.writelane(bld.def(v1, instr->operands[0].physReg()),
-                                Operand(PhysReg{instr->operands[2].physReg() + i}, s1),
+                                src,
                                 Operand(instr->operands[1].constantValue() + i),
                                 instr->operands[0]);
+               }
                break;
             }
             case aco_opcode::p_reload:
@@ -1977,6 +1981,17 @@ void lower_to_hw_instr(Program* program)
                   emit_gfx10_wave64_bpermute(program, instr, bld);
                else
                   unreachable("Current hardware supports ds_bpermute, don't emit p_bpermute.");
+               break;
+            }
+            case aco_opcode::p_constaddr:
+            {
+               unsigned id = instr->definitions[0].tempId();
+               PhysReg reg = instr->definitions[0].physReg();
+               bld.sop1(aco_opcode::p_constaddr_getpc, instr->definitions[0], Operand(id));
+               bld.sop2(aco_opcode::p_constaddr_addlo, Definition(reg, s1), bld.def(s1, scc),
+                        Operand(reg, s1), Operand(id));
+               bld.sop2(aco_opcode::s_addc_u32, Definition(reg.advance(4), s1), bld.def(s1, scc),
+                        Operand(reg.advance(4), s1), Operand(0u), Operand(scc, s1));
                break;
             }
             default:

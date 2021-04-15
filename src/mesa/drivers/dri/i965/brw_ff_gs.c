@@ -33,7 +33,7 @@
 #include "main/enums.h"
 #include "main/transformfeedback.h"
 
-#include "intel_batchbuffer.h"
+#include "brw_batch.h"
 
 #include "brw_defines.h"
 #include "brw_context.h"
@@ -72,7 +72,7 @@ brw_codegen_ff_gs_prog(struct brw_context *brw,
     */
    brw_set_default_mask_control(&c.func, BRW_MASK_DISABLE);
 
-   if (devinfo->gen >= 6) {
+   if (devinfo->ver >= 6) {
       unsigned num_verts;
       bool check_edge_flag;
       /* On Sandybridge, we use the GS for implementing transform feedback
@@ -103,11 +103,11 @@ brw_codegen_ff_gs_prog(struct brw_context *brw,
          check_edge_flag = true;
          break;
       default:
-         unreachable("Unexpected primitive type in Gen6 SOL program.");
+         unreachable("Unexpected primitive type in Gfx6 SOL program.");
       }
-      gen6_sol_program(&c, key, num_verts, check_edge_flag);
+      gfx6_sol_program(&c, key, num_verts, check_edge_flag);
    } else {
-      /* On Gen4-5, we use the GS to decompose certain types of primitives.
+      /* On Gfx4-5, we use the GS to decompose certain types of primitives.
        * Note that primitives which don't require a GS program have already
        * been weeded out by now.
        */
@@ -172,7 +172,7 @@ brw_ff_gs_populate_key(struct brw_context *brw,
 
    struct gl_context *ctx = &brw->ctx;
 
-   assert(devinfo->gen < 7);
+   assert(devinfo->ver < 7);
 
    memset(key, 0, sizeof(*key));
 
@@ -191,8 +191,8 @@ brw_ff_gs_populate_key(struct brw_context *brw,
       key->pv_first = true;
    }
 
-   if (devinfo->gen == 6) {
-      /* On Gen6, GS is used for transform feedback. */
+   if (devinfo->ver == 6) {
+      /* On Gfx6, GS is used for transform feedback. */
       /* BRW_NEW_TRANSFORM_FEEDBACK */
       if (_mesa_is_xfb_active_and_unpaused(ctx)) {
          const struct gl_program *prog =
@@ -222,7 +222,7 @@ brw_ff_gs_populate_key(struct brw_context *brw,
          }
       }
    } else {
-      /* Pre-gen6, GS is used to transform QUADLIST, QUADSTRIP, and LINELOOP
+      /* Pre-gfx6, GS is used to transform QUADLIST, QUADSTRIP, and LINELOOP
        * into simpler primitives.
        */
       key->need_gs_prog = (brw->primitive == _3DPRIM_QUADLIST ||

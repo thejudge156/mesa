@@ -82,13 +82,30 @@ panfrost_emit_varying_descriptor(struct panfrost_batch *batch,
                                  mali_ptr *vs_attribs,
                                  mali_ptr *fs_attribs,
                                  mali_ptr *buffers,
+                                 unsigned *buffer_count,
                                  mali_ptr *position,
-                                 mali_ptr *psiz);
+                                 mali_ptr *psiz,
+                                 bool point_coord_replace);
 
 void
 panfrost_emit_vertex_tiler_jobs(struct panfrost_batch *batch,
                                 const struct panfrost_ptr *vertex_job,
                                 const struct panfrost_ptr *tiler_job);
+
+mali_ptr
+panfrost_emit_fragment_job(struct panfrost_batch *batch,
+                           const struct pan_fb_info *fb);
+
+void
+panfrost_emit_tls(struct panfrost_batch *batch);
+
+void
+panfrost_emit_fbd(struct panfrost_batch *batch,
+                  const struct pan_fb_info *fb);
+
+void
+panfrost_emit_tile_map(struct panfrost_batch *batch,
+                       struct pan_fb_info *fb);
 
 static inline unsigned
 panfrost_translate_compare_func(enum pipe_compare_func in)

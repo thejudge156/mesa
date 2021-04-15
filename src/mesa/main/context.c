@@ -235,15 +235,11 @@ _mesa_create_visual( GLboolean dbFlag,
 {
    struct gl_config *vis = CALLOC_STRUCT(gl_config);
    if (vis) {
-      if (!_mesa_initialize_visual(vis, dbFlag, stereoFlag,
-                                   redBits, greenBits, blueBits, alphaBits,
-                                   depthBits, stencilBits,
-                                   accumRedBits, accumGreenBits,
-                                   accumBlueBits, accumAlphaBits,
-                                   numSamples)) {
-         free(vis);
-         return NULL;
-      }
+      _mesa_initialize_visual(vis, dbFlag, stereoFlag,
+                              redBits, greenBits, blueBits, alphaBits,
+                              depthBits, stencilBits,
+                              accumRedBits, accumGreenBits, accumBlueBits,
+                              accumAlphaBits, numSamples);
    }
    return vis;
 }
@@ -259,7 +255,7 @@ _mesa_create_visual( GLboolean dbFlag,
  *
  * \sa _mesa_create_visual() above for the parameter description.
  */
-GLboolean
+void
 _mesa_initialize_visual( struct gl_config *vis,
                          GLboolean dbFlag,
                          GLboolean stereoFlag,
@@ -277,17 +273,6 @@ _mesa_initialize_visual( struct gl_config *vis,
 {
    assert(vis);
 
-   if (depthBits < 0 || depthBits > 32) {
-      return GL_FALSE;
-   }
-   if (stencilBits < 0 || stencilBits > 8) {
-      return GL_FALSE;
-   }
-   assert(accumRedBits >= 0);
-   assert(accumGreenBits >= 0);
-   assert(accumBlueBits >= 0);
-   assert(accumAlphaBits >= 0);
-
    vis->doubleBufferMode = dbFlag;
    vis->stereoMode       = stereoFlag;
 
@@ -295,7 +280,7 @@ _mesa_initialize_visual( struct gl_config *vis,
    vis->greenBits        = greenBits;
    vis->blueBits         = blueBits;
    vis->alphaBits        = alphaBits;
-   vis->rgbBits          = redBits + greenBits + blueBits;
+   vis->rgbBits          = redBits + greenBits + blueBits + alphaBits;
 
    vis->depthBits      = depthBits;
    vis->stencilBits    = stencilBits;
@@ -305,12 +290,7 @@ _mesa_initialize_visual( struct gl_config *vis,
    vis->accumBlueBits  = accumBlueBits;
    vis->accumAlphaBits = accumAlphaBits;
 
-   vis->numAuxBuffers = 0;
-   vis->level = 0;
-   vis->sampleBuffers = numSamples > 0 ? 1 : 0;
    vis->samples = numSamples;
-
-   return GL_TRUE;
 }
 
 
@@ -1383,9 +1363,6 @@ _mesa_free_context_data(struct gl_context *ctx, bool destroy_debug_output)
 
    /* Shared context state (display lists, textures, etc) */
    _mesa_reference_shared_state(ctx, &ctx->Shared, NULL);
-
-   /* needs to be after freeing shared state */
-   _mesa_free_display_list_data(ctx);
 
    if (destroy_debug_output)
       _mesa_destroy_debug_output(ctx);

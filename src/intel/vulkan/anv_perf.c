@@ -41,9 +41,9 @@ anv_physical_device_init_perf(struct anv_physical_device *device, int fd)
    device->perf = NULL;
 
    /* We need self modifying batches. The i915 parser prevents it on
-    * Gen7.5 :( maybe one day.
+    * Gfx7.5 :( maybe one day.
     */
-   if (devinfo->gen < 8)
+   if (devinfo->ver < 8)
       return;
 
    struct gen_perf_config *perf = gen_perf_new(NULL);
@@ -122,7 +122,7 @@ anv_device_perf_open(struct anv_device *device, uint64_t metric_id)
    properties[p++] = metric_id;
 
    properties[p++] = DRM_I915_PERF_PROP_OA_FORMAT;
-   properties[p++] = device->info.gen >= 8 ?
+   properties[p++] = device->info.ver >= 8 ?
       I915_OA_FORMAT_A32u40_A4u32_B8_C8 :
       I915_OA_FORMAT_A45_B8_C8;
 
@@ -136,8 +136,8 @@ anv_device_perf_open(struct anv_device *device, uint64_t metric_id)
    properties[p++] = true;
 
    /* If global SSEU is available, pin it to the default. This will ensure on
-    * Gen11 for instance we use the full EU array. Initially when perf was
-    * enabled we would use only half on Gen11 because of functional
+    * Gfx11 for instance we use the full EU array. Initially when perf was
+    * enabled we would use only half on Gfx11 because of functional
     * requirements.
     */
    if (gen_perf_has_global_sseu(device->physical->perf)) {
@@ -151,7 +151,7 @@ anv_device_perf_open(struct anv_device *device, uint64_t metric_id)
    param.properties_ptr = (uintptr_t)properties;
    param.num_properties = p / 2;
 
-   stream_fd = gen_ioctl(device->fd, DRM_IOCTL_I915_PERF_OPEN, &param);
+   stream_fd = intel_ioctl(device->fd, DRM_IOCTL_I915_PERF_OPEN, &param);
    return stream_fd;
 }
 
@@ -218,8 +218,8 @@ VkResult anv_AcquirePerformanceConfigurationINTEL(
    ANV_FROM_HANDLE(anv_device, device, _device);
    struct anv_performance_configuration_intel *config;
 
-   config = vk_alloc(&device->vk.alloc, sizeof(*config), 8,
-                     VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   config = vk_object_alloc(&device->vk, NULL, sizeof(*config),
+                            VK_OBJECT_TYPE_PERFORMANCE_CONFIGURATION_INTEL);
    if (!config)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -228,7 +228,7 @@ VkResult anv_AcquirePerformanceConfigurationINTEL(
          gen_perf_load_configuration(device->physical->perf, device->fd,
                                      GEN_PERF_QUERY_GUID_MDAPI);
       if (!config->register_config) {
-         vk_free(&device->vk.alloc, config);
+         vk_object_free(&device->vk, NULL, config);
          return VK_INCOMPLETE;
       }
 
@@ -237,15 +237,12 @@ VkResult anv_AcquirePerformanceConfigurationINTEL(
                                       config->register_config, NULL /* guid */);
       if (ret < 0) {
          ralloc_free(config->register_config);
-         vk_free(&device->vk.alloc, config);
+         vk_object_free(&device->vk, NULL, config);
          return VK_INCOMPLETE;
       }
 
       config->config_id = ret;
    }
-
-   vk_object_base_init(&device->vk, &config->base,
-                       VK_OBJECT_TYPE_PERFORMANCE_CONFIGURATION_INTEL);
 
    *pConfiguration = anv_performance_configuration_intel_to_handle(config);
 
@@ -260,11 +257,11 @@ VkResult anv_ReleasePerformanceConfigurationINTEL(
    ANV_FROM_HANDLE(anv_performance_configuration_intel, config, _configuration);
 
    if (!(INTEL_DEBUG & DEBUG_NO_OACONFIG))
-      gen_ioctl(device->fd, DRM_IOCTL_I915_PERF_REMOVE_CONFIG, &config->config_id);
+      intel_ioctl(device->fd, DRM_IOCTL_I915_PERF_REMOVE_CONFIG, &config->config_id);
 
    ralloc_free(config->register_config);
-   vk_object_base_finish(&config->base);
-   vk_free(&device->vk.alloc, config);
+
+   vk_object_free(&device->vk, NULL, config);
 
    return VK_SUCCESS;
 }
@@ -283,8 +280,8 @@ VkResult anv_QueueSetPerformanceConfigurationINTEL(
          if (device->perf_fd < 0)
             return VK_ERROR_INITIALIZATION_FAILED;
       } else {
-         int ret = gen_ioctl(device->perf_fd, I915_PERF_IOCTL_CONFIG,
-                          (void *)(uintptr_t) config->config_id);
+         int ret = intel_ioctl(device->perf_fd, I915_PERF_IOCTL_CONFIG,
+                               (void *)(uintptr_t) config->config_id);
          if (ret < 0)
             return anv_device_set_lost(device, "i915-perf config failed: %m");
       }

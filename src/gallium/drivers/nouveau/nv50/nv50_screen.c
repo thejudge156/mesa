@@ -61,6 +61,12 @@ nv50_screen_is_format_supported(struct pipe_screen *pscreen,
    if (MAX2(1, sample_count) != MAX2(1, storage_sample_count))
       return false;
 
+   /* Short-circuit the rest of the logic -- this is used by the gallium frontend
+    * to determine valid MS levels in a no-attachments scenario.
+    */
+   if (format == PIPE_FORMAT_NONE && bindings & PIPE_BIND_RENDER_TARGET)
+      return true;
+
    switch (format) {
    case PIPE_FORMAT_Z16_UNORM:
       if (nv50_screen(pscreen)->tesla->oclass < NVA0_3D_CLASS)
@@ -238,6 +244,7 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CLIP_PLANES:
    case PIPE_CAP_PACKED_STREAM_OUTPUT:
    case PIPE_CAP_CLEAR_SCISSORED:
+   case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
       return 1;
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
       return 1; /* class_3d >= NVA0_3D_CLASS; */
@@ -290,7 +297,6 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_PCI_BUS:
    case PIPE_CAP_PCI_DEVICE:
    case PIPE_CAP_PCI_FUNCTION:
-   case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
    case PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES:
    case PIPE_CAP_TGSI_VOTE:
@@ -453,6 +459,7 @@ nv50_screen_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_INT64_ATOMICS:
    case PIPE_SHADER_CAP_FP16:
    case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+   case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
    case PIPE_SHADER_CAP_INT16:
    case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
    case PIPE_SHADER_CAP_SUBROUTINES:
@@ -769,8 +776,8 @@ nv50_screen_init_hwctx(struct nv50_screen *screen)
    PUSH_DATA (push, (NV50_CB_PFP << 16) | 0x0000);
 
    BEGIN_NV04(push, NV50_3D(CB_DEF_ADDRESS_HIGH), 3);
-   PUSH_DATAh(push, screen->uniforms->offset + (3 << 16));
-   PUSH_DATA (push, screen->uniforms->offset + (3 << 16));
+   PUSH_DATAh(push, screen->uniforms->offset + (4 << 16));
+   PUSH_DATA (push, screen->uniforms->offset + (4 << 16));
    PUSH_DATA (push, (NV50_CB_AUX << 16) | (NV50_CB_AUX_SIZE & 0xffff));
 
    BEGIN_NI04(push, NV50_3D(SET_PROGRAM_CB), 3);
@@ -787,13 +794,13 @@ nv50_screen_init_hwctx(struct nv50_screen *screen)
    PUSH_DATAf(push, 0.0f);
    PUSH_DATAf(push, 0.0f);
    BEGIN_NV04(push, NV50_3D(VERTEX_RUNOUT_ADDRESS_HIGH), 2);
-   PUSH_DATAh(push, screen->uniforms->offset + (3 << 16) + NV50_CB_AUX_RUNOUT_OFFSET);
-   PUSH_DATA (push, screen->uniforms->offset + (3 << 16) + NV50_CB_AUX_RUNOUT_OFFSET);
+   PUSH_DATAh(push, screen->uniforms->offset + (4 << 16) + NV50_CB_AUX_RUNOUT_OFFSET);
+   PUSH_DATA (push, screen->uniforms->offset + (4 << 16) + NV50_CB_AUX_RUNOUT_OFFSET);
 
    nv50_upload_ms_info(push);
 
    /* max TIC (bits 4:8) & TSC bindings, per program type */
-   for (i = 0; i < 3; ++i) {
+   for (i = 0; i < NV50_MAX_3D_SHADER_STAGES; ++i) {
       BEGIN_NV04(push, NV50_3D(TEX_LIMITS(i)), 1);
       PUSH_DATA (push, 0x54);
    }
@@ -1157,7 +1164,7 @@ nv50_screen_create(struct nouveau_device *dev)
       debug_printf("TPs = %u, MPsInTP = %u, VRAM = %"PRIu64" MiB, tls_size = %"PRIu64" KiB\n",
             screen->TPs, screen->MPsInTP, dev->vram_size >> 20, tls_size >> 10);
 
-   ret = nouveau_bo_new(dev, NOUVEAU_BO_VRAM, 1 << 16, 4 << 16, NULL,
+   ret = nouveau_bo_new(dev, NOUVEAU_BO_VRAM, 1 << 16, 5 << 16, NULL,
                         &screen->uniforms);
    if (ret) {
       NOUVEAU_ERR("Failed to allocate uniforms bo: %d\n", ret);

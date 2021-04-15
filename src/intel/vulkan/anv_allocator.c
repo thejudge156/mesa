@@ -29,7 +29,7 @@
 
 #include "anv_private.h"
 
-#include "common/gen_aux_map.h"
+#include "common/intel_aux_map.h"
 #include "util/anon_file.h"
 
 #ifdef HAVE_VALGRIND
@@ -376,7 +376,7 @@ anv_block_pool_init(struct anv_block_pool *pool,
    pool->nbos = 0;
    pool->size = 0;
    pool->center_bo_offset = 0;
-   pool->start_address = gen_canonical_address(start_address);
+   pool->start_address = intel_canonical_address(start_address);
    pool->map = NULL;
 
    if (pool->use_softpin) {
@@ -1450,23 +1450,23 @@ anv_scratch_pool_alloc(struct anv_device *device, struct anv_scratch_pool *pool,
     * According to the other driver team, this applies to compute shaders
     * as well.  This is not currently documented at all.
     *
-    * This hack is no longer necessary on Gen11+.
+    * This hack is no longer necessary on Gfx11+.
     *
-    * For, Gen11+, scratch space allocation is based on the number of threads
+    * For, Gfx11+, scratch space allocation is based on the number of threads
     * in the base configuration.
     */
-   if (devinfo->gen == 12)
+   if (devinfo->ver == 12)
       subslices = (devinfo->is_dg1 || devinfo->gt == 2 ? 6 : 2);
-   else if (devinfo->gen == 11)
+   else if (devinfo->ver == 11)
       subslices = 8;
-   else if (devinfo->gen >= 9)
+   else if (devinfo->ver >= 9)
       subslices = 4 * devinfo->num_slices;
 
    unsigned scratch_ids_per_subslice;
-   if (devinfo->gen >= 12) {
+   if (devinfo->ver >= 12) {
       /* Same as ICL below, but with 16 EUs. */
       scratch_ids_per_subslice = 16 * 8;
-   } else if (devinfo->gen == 11) {
+   } else if (devinfo->ver == 11) {
       /* The MEDIA_VFE_STATE docs say:
        *
        *    "Starting with this configuration, the Maximum Number of
@@ -1610,8 +1610,8 @@ static uint32_t
 anv_device_get_bo_align(struct anv_device *device,
                         enum anv_bo_alloc_flags alloc_flags)
 {
-   /* Gen12 CCS surface addresses need to be 64K aligned. */
-   if (device->info.gen >= 12 && (alloc_flags & ANV_BO_ALLOC_IMPLICIT_CCS))
+   /* Gfx12 CCS surface addresses need to be 64K aligned. */
+   if (device->info.ver >= 12 && (alloc_flags & ANV_BO_ALLOC_IMPLICIT_CCS))
       return 64 * 1024;
 
    return 4096;
@@ -1645,7 +1645,7 @@ anv_device_alloc_bo(struct anv_device *device,
       size = align_u64(size, 64 * 1024);
 
       /* See anv_bo::_ccs_size */
-      ccs_size = align_u64(DIV_ROUND_UP(size, GEN_AUX_MAP_GEN12_CCS_SCALE), 4096);
+      ccs_size = align_u64(DIV_ROUND_UP(size, INTEL_AUX_MAP_GFX12_CCS_SCALE), 4096);
    }
 
    uint32_t gem_handle = anv_gem_create(device, size + ccs_size);
@@ -1713,10 +1713,10 @@ anv_device_alloc_bo(struct anv_device *device,
 
    if (new_bo._ccs_size > 0) {
       assert(device->info.has_aux_map);
-      gen_aux_map_add_mapping(device->aux_map_ctx,
-                              gen_canonical_address(new_bo.offset),
-                              gen_canonical_address(new_bo.offset + new_bo.size),
-                              new_bo.size, 0 /* format_bits */);
+      intel_aux_map_add_mapping(device->aux_map_ctx,
+                                intel_canonical_address(new_bo.offset),
+                                intel_canonical_address(new_bo.offset + new_bo.size),
+                                new_bo.size, 0 /* format_bits */);
    }
 
    assert(new_bo.gem_handle);
@@ -1779,7 +1779,7 @@ anv_device_import_bo_from_host_ptr(struct anv_device *device,
                           "device address");
       }
 
-      if (client_address && client_address != gen_48b_address(bo->offset)) {
+      if (client_address && client_address != intel_48b_address(bo->offset)) {
          pthread_mutex_unlock(&cache->mutex);
          return vk_errorf(device, NULL, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                           "The same BO was imported at two different "
@@ -1802,7 +1802,7 @@ anv_device_import_bo_from_host_ptr(struct anv_device *device,
             (alloc_flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0,
       };
 
-      assert(client_address == gen_48b_address(client_address));
+      assert(client_address == intel_48b_address(client_address));
       if (new_bo.flags & EXEC_OBJECT_PINNED) {
          assert(new_bo._ccs_size == 0);
          new_bo.offset = anv_vma_alloc(device, new_bo.size,
@@ -1905,7 +1905,7 @@ anv_device_import_bo(struct anv_device *device,
                           "device address");
       }
 
-      if (client_address && client_address != gen_48b_address(bo->offset)) {
+      if (client_address && client_address != intel_48b_address(bo->offset)) {
          pthread_mutex_unlock(&cache->mutex);
          return vk_errorf(device, NULL, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                           "The same BO was imported at two different "
@@ -1935,7 +1935,7 @@ anv_device_import_bo(struct anv_device *device,
             (alloc_flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0,
       };
 
-      assert(client_address == gen_48b_address(client_address));
+      assert(client_address == intel_48b_address(client_address));
       if (new_bo.flags & EXEC_OBJECT_PINNED) {
          assert(new_bo._ccs_size == 0);
          new_bo.offset = anv_vma_alloc(device, new_bo.size,
@@ -2035,9 +2035,9 @@ anv_device_release_bo(struct anv_device *device,
       assert(device->physical->has_implicit_ccs);
       assert(device->info.has_aux_map);
       assert(bo->has_implicit_ccs);
-      gen_aux_map_unmap_range(device->aux_map_ctx,
-                              gen_canonical_address(bo->offset),
-                              bo->size);
+      intel_aux_map_unmap_range(device->aux_map_ctx,
+                                intel_canonical_address(bo->offset),
+                                bo->size);
    }
 
    if ((bo->flags & EXEC_OBJECT_PINNED) && !bo->has_fixed_address)

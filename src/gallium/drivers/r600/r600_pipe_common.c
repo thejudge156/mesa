@@ -487,7 +487,7 @@ static enum pipe_reset_status r600_get_reset_status(struct pipe_context *ctx)
 {
 	struct r600_common_context *rctx = (struct r600_common_context *)ctx;
 
-	return rctx->ws->ctx_query_reset_status(rctx->ctx);
+	return rctx->ws->ctx_query_reset_status(rctx->ctx, false, NULL);
 }
 
 static void r600_set_debug_callback(struct pipe_context *ctx,
@@ -572,7 +572,7 @@ static bool r600_resource_commit(struct pipe_context *pctx,
 
 	assert(resource->target == PIPE_BUFFER);
 
-	return ctx->ws->buffer_commit(res->buf, box->x, box->width, commit);
+	return ctx->ws->buffer_commit(ctx->ws, res->buf, box->x, box->width, commit);
 }
 
 bool r600_common_context_init(struct r600_common_context *rctx,
@@ -1305,7 +1305,6 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		.fuse_ffma16 = true,
 		.fuse_ffma32 = true,
 		.fuse_ffma64 = true,
-		.lower_scmp = true, /* TODO: Should be checked */
 		.lower_flrp32 = true,
 		.lower_flrp64 = true,
 		.lower_fpow = true,
@@ -1327,6 +1326,10 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		.has_fsub = true,
 		.has_isub = true,
 		.lower_iabs = true,
+		.lower_bitfield_extract = true,
+		.lower_bitfield_insert_to_bitfield_select = true,
+		.has_fused_comp_and_csel = true,
+		.lower_find_msb_to_reverse = true,
 	};
 
 	rscreen->nir_options = nir_options;

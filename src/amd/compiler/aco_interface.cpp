@@ -37,11 +37,10 @@ static const std::array<aco_compiler_statistic_info, aco::num_statistics> statis
    ret[aco::statistic_instructions] = aco_compiler_statistic_info{"Instructions", "Instruction count"};
    ret[aco::statistic_copies] = aco_compiler_statistic_info{"Copies", "Copy instructions created for pseudo-instructions"};
    ret[aco::statistic_branches] = aco_compiler_statistic_info{"Branches", "Branch instructions"};
-   ret[aco::statistic_cycles] = aco_compiler_statistic_info{"Busy Cycles", "Estimate of busy cycles"};
+   ret[aco::statistic_latency] = aco_compiler_statistic_info{"Latency", "Issue cycles plus stall cycles"};
+   ret[aco::statistic_inv_throughput] = aco_compiler_statistic_info{"Inverse Throughput", "Estimated busy cycles to execute one wave"};
    ret[aco::statistic_vmem_clauses] = aco_compiler_statistic_info{"VMEM Clause", "Number of VMEM clauses (includes 1-sized clauses)"};
    ret[aco::statistic_smem_clauses] = aco_compiler_statistic_info{"SMEM Clause", "Number of SMEM clauses (includes 1-sized clauses)"};
-   ret[aco::statistic_vmem_score] = aco_compiler_statistic_info{"VMEM Score", "Average VMEM def-use distances"};
-   ret[aco::statistic_smem_score] = aco_compiler_statistic_info{"SMEM Score", "Average SMEM def-use distances"};
    ret[aco::statistic_sgpr_presched] = aco_compiler_statistic_info{"Pre-Sched SGPRs", "SGPR usage before scheduling"};
    ret[aco::statistic_vgpr_presched] = aco_compiler_statistic_info{"Pre-Sched VGPRs", "VGPR usage before scheduling"};
    return ret;
@@ -132,6 +131,9 @@ void aco_compile_shader(unsigned shader_count,
    if (program->collect_statistics)
       aco::collect_presched_stats(program.get());
 
+   if ((aco::debug_flags & aco::DEBUG_LIVE_INFO) && args->options->dump_shader)
+      aco_print_program(program.get(), stderr, live_vars, aco::print_live_vars | aco::print_kill);
+
    if (!args->is_trap_handler_shader) {
       if (!args->options->disable_optimizations &&
           !(aco::debug_flags & aco::DEBUG_NO_SCHED))
@@ -166,7 +168,7 @@ void aco_compile_shader(unsigned shader_count,
    if (program->chip_class >= GFX10)
       aco::form_hard_clauses(program.get());
 
-   if (program->collect_statistics)
+   if (program->collect_statistics || (aco::debug_flags & aco::DEBUG_PERF_INFO))
       aco::collect_preasm_stats(program.get());
 
    /* Assembly */

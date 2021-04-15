@@ -351,8 +351,26 @@ lima_resource_from_handle(struct pipe_screen *pscreen,
       stride = util_format_get_stride(pres->format, width);
       size = util_format_get_2d_size(pres->format, stride, height);
 
-      if (res->levels[0].stride != stride || res->bo->size < size) {
-         debug_error("import buffer not properly aligned\n");
+      if (res->tiled && res->levels[0].stride != stride) {
+         fprintf(stderr, "tiled imported buffer has mismatching stride: %d (BO) != %d (expected)",
+                     res->levels[0].stride, stride);
+         goto err_out;
+      }
+
+      if (!res->tiled && (res->levels[0].stride % 8)) {
+         fprintf(stderr, "linear imported buffer stride is not aligned to 8 bytes: %d\n",
+                 res->levels[0].stride);
+      }
+
+      if (!res->tiled && res->levels[0].stride < stride) {
+         fprintf(stderr, "linear imported buffer stride is smaller than minimal: %d (BO) < %d (min)",
+                 res->levels[0].stride, stride);
+         goto err_out;
+      }
+
+      if (res->bo->size < size) {
+         fprintf(stderr, "imported bo size is smaller than expected: %d (BO) < %d (expected)\n",
+                 res->bo->size, size);
          goto err_out;
       }
 
@@ -718,8 +736,8 @@ lima_util_blitter_save_states(struct lima_context *ctx)
    util_blitter_save_depth_stencil_alpha(ctx->blitter, (void *)ctx->zsa);
    util_blitter_save_stencil_ref(ctx->blitter, &ctx->stencil_ref);
    util_blitter_save_rasterizer(ctx->blitter, (void *)ctx->rasterizer);
-   util_blitter_save_fragment_shader(ctx->blitter, ctx->bind_fs);
-   util_blitter_save_vertex_shader(ctx->blitter, ctx->bind_vs);
+   util_blitter_save_fragment_shader(ctx->blitter, ctx->uncomp_fs);
+   util_blitter_save_vertex_shader(ctx->blitter, ctx->uncomp_vs);
    util_blitter_save_viewport(ctx->blitter,
                               &ctx->viewport.transform);
    util_blitter_save_scissor(ctx->blitter, &ctx->scissor);

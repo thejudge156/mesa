@@ -45,9 +45,12 @@ struct spirv_supported_capabilities {
    bool descriptor_indexing;
    bool device_group;
    bool draw_parameters;
+   bool float16_atomic_min_max;
    bool float32_atomic_add;
+   bool float32_atomic_min_max;
    bool float64;
    bool float64_atomic_add;
+   bool float64_atomic_min_max;
    bool fragment_shader_sample_interlock;
    bool fragment_shader_pixel_interlock;
    bool fragment_shading_rate;
@@ -64,6 +67,7 @@ struct spirv_supported_capabilities {
    bool integer_functions2;
    bool kernel;
    bool kernel_image;
+   bool kernel_image_read_write;
    bool literal_sampler;
    bool min_lod;
    bool multiview;
@@ -148,6 +152,15 @@ typedef struct shader_info {
    /* Which system values are actually read */
    BITSET_DECLARE(system_values_read, SYSTEM_VALUE_MAX);
 
+   /* Which 16-bit inputs and outputs are used corresponding to
+    * VARYING_SLOT_VARn_16BIT.
+    */
+   uint16_t inputs_read_16bit;
+   uint16_t outputs_written_16bit;
+   uint16_t outputs_read_16bit;
+   uint16_t inputs_read_indirectly_16bit;
+   uint16_t outputs_accessed_indirectly_16bit;
+
    /* Which patch inputs are actually read */
    uint32_t patch_inputs_read;
    /* Which patch outputs are actually written */
@@ -165,10 +178,10 @@ typedef struct shader_info {
    uint64_t patch_outputs_accessed_indirectly;
 
    /** Bitfield of which textures are used */
-   uint32_t textures_used;
+   BITSET_DECLARE(textures_used, 32);
 
    /** Bitfield of which textures are used by texelFetch() */
-   uint32_t textures_used_by_txf;
+   BITSET_DECLARE(textures_used_by_txf, 32);
 
    /** Bitfield of which images are used */
    uint32_t images_used;
@@ -179,6 +192,11 @@ typedef struct shader_info {
 
    /* SPV_KHR_float_controls: execution mode for floating point ops */
    uint16_t float_controls_execution_mode;
+
+   /**
+    * Size of shared variables accessed by compute/task/mesh shaders.
+    */
+   unsigned shared_size;
 
    uint16_t inlinable_uniform_dw_offsets[MAX_INLINABLE_UNIFORMS];
    uint8_t num_inlinable_uniforms:4;
@@ -373,11 +391,6 @@ typedef struct shader_info {
          enum gl_derivative_group derivative_group:2;
 
          bool zero_initialize_shared_memory;
-
-         /**
-          * Size of shared variables accessed by the compute shader.
-          */
-         unsigned shared_size;
 
          /**
           * pointer size is:

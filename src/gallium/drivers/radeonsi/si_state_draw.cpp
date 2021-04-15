@@ -1612,8 +1612,8 @@ static bool si_all_vs_resources_read_only(struct si_context *sctx, struct pipe_r
    }
 
    /* Samplers. */
-   if (vs->info.base.textures_used) {
-      unsigned num_samplers = util_last_bit(vs->info.base.textures_used);
+   if (vs->info.base.textures_used[0]) {
+      unsigned num_samplers = BITSET_LAST_BIT(vs->info.base.textures_used);
 
       for (unsigned i = 0; i < num_samplers; i++) {
          struct pipe_sampler_view *view = sctx->samplers[PIPE_SHADER_VERTEX].views[i];
@@ -2085,7 +2085,8 @@ static void si_draw_vbo(struct pipe_context *ctx,
 
    /* Use optimal packet order based on whether we need to sync the pipeline. */
    if (unlikely(sctx->flags & (SI_CONTEXT_FLUSH_AND_INV_CB | SI_CONTEXT_FLUSH_AND_INV_DB |
-                               SI_CONTEXT_PS_PARTIAL_FLUSH | SI_CONTEXT_CS_PARTIAL_FLUSH))) {
+                               SI_CONTEXT_PS_PARTIAL_FLUSH | SI_CONTEXT_CS_PARTIAL_FLUSH |
+                               SI_CONTEXT_VS_PARTIAL_FLUSH))) {
       /* If we have to wait for idle, set all states first, so that all
        * SET packets are processed in parallel with previous draw calls.
        * Then draw and prefetch at the end. This ensures that the time

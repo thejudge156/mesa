@@ -2212,9 +2212,10 @@ emit_copy_buffer(struct v3dv_job *job,
                  uint32_t dst_offset,
                  uint32_t src_offset,
                  struct framebuffer_data *framebuffer,
-                 uint32_t format)
+                 uint32_t format,
+                 uint32_t item_size)
 {
-   const uint32_t stride = job->frame_tiling.width * 4;
+   const uint32_t stride = job->frame_tiling.width * item_size;
    emit_copy_buffer_per_tile_list(job, dst, src,
                                   dst_offset, src_offset,
                                   stride, format);
@@ -2228,13 +2229,17 @@ emit_copy_buffer_rcl(struct v3dv_job *job,
                      uint32_t dst_offset,
                      uint32_t src_offset,
                      struct framebuffer_data *framebuffer,
-                     uint32_t format)
+                     uint32_t format,
+                     uint32_t item_size)
 {
    struct v3dv_cl *rcl = emit_rcl_prologue(job, framebuffer, NULL);
    v3dv_return_if_oom(NULL, job);
 
    emit_frame_setup(job, 0, NULL);
-   emit_copy_buffer(job, dst, src, dst_offset, src_offset, framebuffer, format);
+
+   emit_copy_buffer(job, dst, src, dst_offset, src_offset,
+                    framebuffer, format, item_size);
+
    cl_emit(rcl, END_OF_RENDERING, end);
 }
 
@@ -2337,7 +2342,7 @@ copy_buffer(struct v3dv_cmd_buffer *cmd_buffer,
       v3dv_job_emit_binning_flush(job);
 
       emit_copy_buffer_rcl(job, dst, src, dst_offset, src_offset,
-                           &framebuffer, format);
+                           &framebuffer, format, item_size);
 
       v3dv_cmd_buffer_finish_job(cmd_buffer);
 
@@ -4475,7 +4480,7 @@ build_nir_tex_op_ms_resolve(struct nir_builder *b,
 
    const bool is_int = glsl_base_type_is_integer(tex_type);
 
-   nir_ssa_def *tmp;
+   nir_ssa_def *tmp = NULL;
    nir_ssa_def *tex_deref = &nir_build_deref_var(b, sampler)->dest.ssa;
    for (uint32_t i = 0; i < src_samples; i++) {
       nir_ssa_def *s =
@@ -4682,23 +4687,23 @@ create_pipeline(struct v3dv_device *device,
                 const VkPipelineLayout layout,
                 VkPipeline *pipeline)
 {
-   struct v3dv_shader_module vs_m;
-   struct v3dv_shader_module fs_m;
+   struct vk_shader_module vs_m;
+   struct vk_shader_module fs_m;
 
-   v3dv_shader_module_internal_init(&vs_m, vs_nir);
-   v3dv_shader_module_internal_init(&fs_m, fs_nir);
+   v3dv_shader_module_internal_init(device, &vs_m, vs_nir);
+   v3dv_shader_module_internal_init(device, &fs_m, fs_nir);
 
    VkPipelineShaderStageCreateInfo stages[2] = {
       {
          .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
          .stage = VK_SHADER_STAGE_VERTEX_BIT,
-         .module = v3dv_shader_module_to_handle(&vs_m),
+         .module = vk_shader_module_to_handle(&vs_m),
          .pName = "main",
       },
       {
          .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
          .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .module = v3dv_shader_module_to_handle(&fs_m),
+         .module = vk_shader_module_to_handle(&fs_m),
          .pName = "main",
       },
    };

@@ -99,7 +99,6 @@ attachment_to_buffer_index(enum st_attachment_type statt)
    case ST_ATTACHMENT_ACCUM:
       index = BUFFER_ACCUM;
       break;
-   case ST_ATTACHMENT_SAMPLE:
    default:
       index = BUFFER_COUNT;
       break;
@@ -424,7 +423,6 @@ st_visual_to_context_mode(const struct st_visual *visual,
    }
 
    if (visual->samples > 1) {
-      mode->sampleBuffers = 1;
       mode->samples = visual->samples;
    }
 }
@@ -873,8 +871,7 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
    struct st_context *shared_ctx = (struct st_context *) shared_stctxi;
    struct st_context *st;
    struct pipe_context *pipe;
-   struct gl_config* mode_ptr;
-   struct gl_config mode;
+   struct gl_config mode, *mode_ptr = &mode;
    gl_api api;
    bool no_error = false;
    unsigned ctx_flags = PIPE_CONTEXT_PREFER_THREADED;
@@ -938,12 +935,8 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
    }
 
    st_visual_to_context_mode(&attribs->visual, &mode);
-
-   if (attribs->visual.no_config)
+   if (attribs->visual.color_format == PIPE_FORMAT_NONE)
       mode_ptr = NULL;
-   else
-      mode_ptr = &mode;
-
    st = st_create_context(api, pipe, mode_ptr, shared_ctx,
                           &attribs->options, no_error);
    if (!st) {
@@ -1095,6 +1088,10 @@ st_api_make_current(struct st_api *stapi, struct st_context_iface *stctxi,
          if (stdraw)
             st_framebuffer_reference(&stread, stdraw);
       }
+
+      /* If framebuffers were asked for, we'd better have allocated them */
+      if ((stdrawi && !stdraw) || (streadi && !stread))
+         return false;
 
       if (stdraw && stread) {
          st_framebuffer_validate(stdraw, st);

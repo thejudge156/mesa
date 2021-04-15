@@ -1,5 +1,6 @@
 #include <vector>
 #include <algorithm>
+#include <map>
 
 #include "aco_ir.h"
 #include "aco_builder.h"
@@ -10,11 +11,16 @@
 
 namespace aco {
 
+struct constaddr_info {
+   unsigned getpc_end;
+   unsigned add_literal;
+};
+
 struct asm_context {
    Program *program;
    enum chip_class chip_class;
    std::vector<std::pair<int, SOPP_instruction*>> branches;
-   std::vector<unsigned> constaddrs;
+   std::map<unsigned, constaddr_info> constaddrs;
    const int16_t* opcode;
    // TODO: keep track of branch instructions referring blocks
    // and, when emitting the block, correct the offset in instr
@@ -42,42 +48,29 @@ static uint32_t get_sdwa_sel(unsigned sel, PhysReg reg)
    return sel & sdwa_asuint;
 }
 
+unsigned get_mimg_nsa_dwords(const Instruction *instr) {
+   unsigned addr_dwords = instr->operands.size() - 3;
+   for (unsigned i = 1; i < addr_dwords; i++) {
+      if (instr->operands[3 + i].physReg() != instr->operands[3].physReg().advance(i * 4))
+         return DIV_ROUND_UP(addr_dwords - 1, 4);
+   }
+   return 0;
+}
+
 void emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* instr)
 {
    /* lower remaining pseudo-instructions */
-   if (instr->opcode == aco_opcode::p_constaddr) {
-      unsigned dest = instr->definitions[0].physReg();
-      unsigned offset = instr->operands[0].constantValue();
+   if (instr->opcode == aco_opcode::p_constaddr_getpc) {
+      ctx.constaddrs[instr->operands[0].constantValue()].getpc_end = out.size() + 1;
 
-      /* s_getpc_b64 dest[0:1] */
-      uint32_t encoding = (0b101111101 << 23);
-      uint32_t opcode = ctx.opcode[(int)aco_opcode::s_getpc_b64];
-      if (opcode >= 55 && ctx.chip_class <= GFX9) {
-         assert(ctx.chip_class == GFX9 && opcode < 60);
-         opcode = opcode - 4;
-      }
-      encoding |= dest << 16;
-      encoding |= opcode << 8;
-      out.push_back(encoding);
+      instr->opcode = aco_opcode::s_getpc_b64;
+      instr->operands.pop_back();
+   } else if (instr->opcode == aco_opcode::p_constaddr_addlo) {
+      ctx.constaddrs[instr->operands[1].constantValue()].add_literal = out.size() + 1;
 
-      /* s_add_u32 dest[0], dest[0], ... */
-      encoding = (0b10 << 30);
-      encoding |= ctx.opcode[(int)aco_opcode::s_add_u32] << 23;
-      encoding |= dest << 16;
-      encoding |= dest;
-      encoding |= 255 << 8;
-      out.push_back(encoding);
-      ctx.constaddrs.push_back(out.size());
-      out.push_back(offset);
-
-      /* s_addc_u32 dest[1], dest[1], 0 */
-      encoding = (0b10 << 30);
-      encoding |= ctx.opcode[(int)aco_opcode::s_addc_u32] << 23;
-      encoding |= (dest + 1) << 16;
-      encoding |= dest + 1;
-      encoding |= 128 << 8;
-      out.push_back(encoding);
-      return;
+      instr->opcode = aco_opcode::s_add_u32;
+      instr->operands[1] = Operand(0u);
+      instr->operands[1].setFixed(PhysReg(255));
    }
 
    uint32_t opcode = ctx.opcode[(int)instr->opcode];
@@ -428,14 +421,8 @@ void emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction*
       break;
    }
    case Format::MIMG: {
-      unsigned use_nsa = false;
-      unsigned addr_dwords = instr->operands.size() - 3;
-      for (unsigned i = 1; i < addr_dwords; i++) {
-         if (instr->operands[3 + i].physReg() != instr->operands[3].physReg().advance(i * 4))
-            use_nsa = true;
-      }
-      assert(!use_nsa || ctx.chip_class >= GFX10);
-      unsigned nsa_dwords = use_nsa ? DIV_ROUND_UP(addr_dwords - 1, 4) : 0;
+      unsigned nsa_dwords = get_mimg_nsa_dwords(instr);
+      assert(!nsa_dwords || ctx.chip_class >= GFX10);
 
       MIMG_instruction& mimg = instr->mimg();
       uint32_t encoding = (0b111100 << 26);
@@ -479,7 +466,7 @@ void emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction*
       if (nsa_dwords) {
          out.resize(out.size() + nsa_dwords);
          std::vector<uint32_t>::iterator nsa = std::prev(out.end(), nsa_dwords);
-         for (unsigned i = 0; i < addr_dwords - 1; i++)
+         for (unsigned i = 0; i < instr->operands.size() - 4u; i++)
             nsa[i / 4] |= (0xFF & instr->operands[4 + i].physReg().reg()) << (i % 4 * 8);
       }
       break;
@@ -798,14 +785,14 @@ static void insert_code(asm_context& ctx, std::vector<uint32_t>& out, unsigned i
    for (; branch_it != ctx.branches.end(); ++branch_it)
       branch_it->first += insert_count;
 
-   /* Find first constant address after the inserted code */
-   auto caddr_it = std::find_if(ctx.constaddrs.begin(), ctx.constaddrs.end(), [insert_before](const int &caddr_pos) -> bool {
-      return (unsigned)caddr_pos >= insert_before;
-   });
-
-   /* Update the locations of constant addresses */
-   for (; caddr_it != ctx.constaddrs.end(); ++caddr_it)
-      (*caddr_it) += insert_count;
+   /* Update the locations of p_constaddr instructions */
+   for (auto& constaddr : ctx.constaddrs) {
+      constaddr_info& info = constaddr.second;
+      if (info.getpc_end >= insert_before)
+         info.getpc_end += insert_count;
+      if (info.add_literal >= insert_before)
+         info.add_literal += insert_count;
+   }
 }
 
 static void fix_branches_gfx10(asm_context& ctx, std::vector<uint32_t>& out)
@@ -928,8 +915,10 @@ void fix_branches(asm_context& ctx, std::vector<uint32_t>& out)
 
 void fix_constaddrs(asm_context& ctx, std::vector<uint32_t>& out)
 {
-   for (unsigned addr : ctx.constaddrs)
-      out[addr] += (out.size() - addr + 1u) * 4u;
+   for (auto& constaddr : ctx.constaddrs) {
+      constaddr_info& info = constaddr.second;
+      out[info.add_literal] += (out.size() - info.getpc_end) * 4u;
+   }
 }
 
 unsigned emit_program(Program* program,

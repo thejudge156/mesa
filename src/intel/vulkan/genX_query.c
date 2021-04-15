@@ -37,10 +37,10 @@
  *    - GPR 15 for conditional rendering
  */
 #define MI_BUILDER_NUM_ALLOC_GPRS 14
-#define MI_BUILDER_CAN_WRITE_BATCH GEN_GEN >= 8
+#define MI_BUILDER_CAN_WRITE_BATCH GFX_VER >= 8
 #define __gen_get_batch_dwords anv_batch_emit_dwords
 #define __gen_address_offset anv_address_add
-#define __gen_get_batch_address(b, a) anv_address_physical(anv_batch_address(b, a))
+#define __gen_get_batch_address(b, a) anv_batch_address(b, a)
 #include "common/mi_builder.h"
 #include "perf/gen_perf.h"
 #include "perf/gen_perf_mdapi.h"
@@ -65,15 +65,14 @@ VkResult genX(CreateQueryPool)(
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
    const struct anv_physical_device *pdevice = device->physical;
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    const VkQueryPoolPerformanceCreateInfoKHR *perf_query_info = NULL;
    struct gen_perf_counter_pass *counter_pass;
    struct gen_perf_query_info **pass_query;
    uint32_t n_passes = 0;
 #endif
    uint32_t data_offset = 0;
-   struct anv_query_pool *pool;
-   ANV_MULTIALLOC(ma);
+   VK_MULTIALLOC(ma);
    VkResult result;
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO);
@@ -90,7 +89,7 @@ VkResult genX(CreateQueryPool)(
     */
    uint32_t uint64s_per_slot = 0;
 
-   anv_multialloc_add(&ma, &pool, 1);
+   VK_MULTIALLOC_DECL(&ma, struct anv_query_pool, pool, 1);
 
    VkQueryPipelineStatisticFlags pipeline_statistics = 0;
    switch (pCreateInfo->queryType) {
@@ -131,7 +130,7 @@ VkResult genX(CreateQueryPool)(
       uint64s_per_slot += 2 * DIV_ROUND_UP(layout->size, sizeof(uint64_t));
       break;
    }
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
       const struct gen_perf_query_field_layout *layout =
          &pdevice->perf->query_layout;
@@ -142,8 +141,10 @@ VkResult genX(CreateQueryPool)(
                                        perf_query_info->pCounterIndices,
                                        perf_query_info->counterIndexCount,
                                        NULL);
-      anv_multialloc_add(&ma, &counter_pass, perf_query_info->counterIndexCount);
-      anv_multialloc_add(&ma, &pass_query, n_passes);
+      vk_multialloc_add(&ma, &counter_pass, struct gen_perf_counter_pass,
+                             perf_query_info->counterIndexCount);
+      vk_multialloc_add(&ma, &pass_query, struct gen_perf_query_info *,
+                             n_passes);
       uint64s_per_slot = 4 /* availability + small batch */;
       /* Align to the requirement of the layout */
       uint64s_per_slot = align_u32(uint64s_per_slot,
@@ -160,12 +161,10 @@ VkResult genX(CreateQueryPool)(
       assert(!"Invalid query type");
    }
 
-   if (!anv_multialloc_alloc2(&ma, &device->vk.alloc,
-                              pAllocator,
-                              VK_SYSTEM_ALLOCATION_SCOPE_OBJECT))
+   if (!vk_object_multialloc(&device->vk, &ma, pAllocator,
+                             VK_OBJECT_TYPE_QUERY_POOL))
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vk_object_base_init(&device->vk, &pool->base, VK_OBJECT_TYPE_QUERY_POOL);
    pool->type = pCreateInfo->queryType;
    pool->pipeline_statistics = pipeline_statistics;
    pool->stride = uint64s_per_slot * sizeof(uint64_t);
@@ -175,7 +174,7 @@ VkResult genX(CreateQueryPool)(
       pool->data_offset = data_offset;
       pool->snapshot_size = (pool->stride - data_offset) / 2;
    }
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    else if (pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR) {
       pool->pass_size = pool->stride / n_passes;
       pool->data_offset = data_offset;
@@ -214,7 +213,7 @@ VkResult genX(CreateQueryPool)(
    if (result != VK_SUCCESS)
       goto fail;
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    if (pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR) {
       for (uint32_t p = 0; p < pool->n_passes; p++) {
          struct mi_builder b;
@@ -224,7 +223,7 @@ VkResult genX(CreateQueryPool)(
          };
          batch.next = batch.start;
 
-         mi_builder_init(&b, &batch);
+         mi_builder_init(&b, &device->info, &batch);
          mi_store(&b, mi_reg64(ANV_PERF_QUERY_OFFSET_REG),
                       mi_imm(p * pool->pass_size));
          anv_batch_emit(&batch, GENX(MI_BATCH_BUFFER_END), bbe);
@@ -254,11 +253,10 @@ void genX(DestroyQueryPool)(
       return;
 
    anv_device_release_bo(device, pool->bo);
-   vk_object_base_finish(&pool->base);
-   vk_free2(&device->vk.alloc, pAllocator, pool);
+   vk_object_free(&device->vk, pAllocator, pool);
 }
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
 /**
  * VK_KHR_performance_query layout  :
  *
@@ -408,7 +406,7 @@ query_slot(struct anv_query_pool *pool, uint32_t query)
 static bool
 query_is_available(struct anv_query_pool *pool, uint32_t query)
 {
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    if (pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR) {
       for (uint32_t p = 0; p < pool->n_passes; p++) {
          volatile uint64_t *slot =
@@ -526,7 +524,7 @@ VkResult genX(GetQueryPoolResults)(
                uint64_t result = slot[idx * 2 + 2] - slot[idx * 2 + 1];
 
                /* WaDividePSInvocationCountBy4:HSW,BDW */
-               if ((device->info.gen == 8 || device->info.is_haswell) &&
+               if ((device->info.ver == 8 || device->info.is_haswell) &&
                    (1 << stat) == VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT)
                   result >>= 2;
 
@@ -557,7 +555,7 @@ VkResult genX(GetQueryPoolResults)(
          break;
       }
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
          const struct anv_physical_device *pdevice = device->physical;
          assert((flags & (VK_QUERY_RESULT_WITH_AVAILABILITY_BIT |
@@ -626,7 +624,7 @@ emit_ps_depth_count(struct anv_cmd_buffer *cmd_buffer,
       pc.DepthStallEnable        = true;
       pc.Address                 = addr;
 
-      if (GEN_GEN == 9 && cmd_buffer->device->info.gt == 4)
+      if (GFX_VER == 9 && cmd_buffer->device->info.gt == 4)
          pc.CommandStreamerStallEnable = true;
    }
 }
@@ -695,7 +693,7 @@ emit_zero_queries(struct anv_cmd_buffer *cmd_buffer,
       }
       break;
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
       for (uint32_t i = 0; i < num_queries; i++) {
          for (uint32_t p = 0; p < pool->n_passes; p++) {
@@ -746,17 +744,17 @@ void genX(CmdResetQueryPool)(
    case VK_QUERY_TYPE_PIPELINE_STATISTICS:
    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT: {
       struct mi_builder b;
-      mi_builder_init(&b, &cmd_buffer->batch);
+      mi_builder_init(&b, &cmd_buffer->device->info, &cmd_buffer->batch);
 
       for (uint32_t i = 0; i < queryCount; i++)
          emit_query_mi_availability(&b, anv_query_address(pool, firstQuery + i), false);
       break;
    }
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
       struct mi_builder b;
-      mi_builder_init(&b, &cmd_buffer->batch);
+      mi_builder_init(&b, &cmd_buffer->device->info, &cmd_buffer->batch);
 
       for (uint32_t i = 0; i < queryCount; i++) {
          for (uint32_t p = 0; p < pool->n_passes; p++) {
@@ -772,7 +770,7 @@ void genX(CmdResetQueryPool)(
 
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_INTEL: {
       struct mi_builder b;
-      mi_builder_init(&b, &cmd_buffer->batch);
+      mi_builder_init(&b, &cmd_buffer->device->info, &cmd_buffer->batch);
 
       for (uint32_t i = 0; i < queryCount; i++)
          emit_query_mi_availability(&b, anv_query_address(pool, firstQuery + i), false);
@@ -794,7 +792,7 @@ void genX(ResetQueryPool)(
 
    for (uint32_t i = 0; i < queryCount; i++) {
       if (pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR) {
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
          for (uint32_t p = 0; p < pool->n_passes; p++) {
             uint64_t *pass_slot = pool->bo->map +
                khr_perf_query_availability_offset(pool, firstQuery + i, p);
@@ -910,7 +908,7 @@ void genX(CmdBeginQueryIndexedEXT)(
    struct anv_address query_addr = anv_query_address(pool, query);
 
    struct mi_builder b;
-   mi_builder_init(&b, &cmd_buffer->batch);
+   mi_builder_init(&b, &cmd_buffer->device->info, &cmd_buffer->batch);
 
    switch (pool->type) {
    case VK_QUERY_TYPE_OCCLUSION:
@@ -942,7 +940,7 @@ void genX(CmdBeginQueryIndexedEXT)(
       emit_xfb_query(&b, index, anv_address_add(query_addr, 8));
       break;
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
       if (!khr_perf_query_ensure_relocs(cmd_buffer))
          return;
@@ -958,9 +956,9 @@ void genX(CmdBeginQueryIndexedEXT)(
             struct mi_value reg_addr =
                mi_iadd(
                   &b,
-                  mi_imm(gen_canonical_address(pool->bo->offset +
-                                               khr_perf_query_data_offset(pool, query, 0, end) +
-                                               field->location)),
+                  mi_imm(intel_canonical_address(pool->bo->offset +
+                                                 khr_perf_query_data_offset(pool, query, 0, end) +
+                                                 field->location)),
                   mi_reg64(ANV_PERF_QUERY_OFFSET_REG));
             cmd_buffer->self_mod_locations[reloc_idx++] = mi_store_address(&b, reg_addr);
 
@@ -969,9 +967,9 @@ void genX(CmdBeginQueryIndexedEXT)(
                reg_addr =
                   mi_iadd(
                      &b,
-                     mi_imm(gen_canonical_address(pool->bo->offset +
-                                                  khr_perf_query_data_offset(pool, query, 0, end) +
-                                                  field->location + 4)),
+                     mi_imm(intel_canonical_address(pool->bo->offset +
+                                                    khr_perf_query_data_offset(pool, query, 0, end) +
+                                                    field->location + 4)),
                      mi_reg64(ANV_PERF_QUERY_OFFSET_REG));
                cmd_buffer->self_mod_locations[reloc_idx++] = mi_store_address(&b, reg_addr);
             }
@@ -982,7 +980,7 @@ void genX(CmdBeginQueryIndexedEXT)(
          mi_iadd(
             &b,
             mi_imm(
-               gen_canonical_address(
+               intel_canonical_address(
                   pool->bo->offset +
                   khr_perf_query_availability_offset(pool, query, 0 /* pass */))),
             mi_reg64(ANV_PERF_QUERY_OFFSET_REG));
@@ -1087,7 +1085,7 @@ void genX(CmdEndQueryIndexedEXT)(
    struct anv_address query_addr = anv_query_address(pool, query);
 
    struct mi_builder b;
-   mi_builder_init(&b, &cmd_buffer->batch);
+   mi_builder_init(&b, &cmd_buffer->device->info, &cmd_buffer->batch);
 
    switch (pool->type) {
    case VK_QUERY_TYPE_OCCLUSION:
@@ -1124,7 +1122,7 @@ void genX(CmdEndQueryIndexedEXT)(
       emit_query_mi_availability(&b, query_addr, true);
       break;
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
       anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pc) {
          pc.CommandStreamerStallEnable = true;
@@ -1251,7 +1249,7 @@ void genX(CmdWriteTimestamp)(
    assert(pool->type == VK_QUERY_TYPE_TIMESTAMP);
 
    struct mi_builder b;
-   mi_builder_init(&b, &cmd_buffer->batch);
+   mi_builder_init(&b, &cmd_buffer->device->info, &cmd_buffer->batch);
 
    switch (pipelineStage) {
    case VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT:
@@ -1269,7 +1267,7 @@ void genX(CmdWriteTimestamp)(
          pc.PostSyncOperation       = WriteTimestamp;
          pc.Address                 = anv_address_add(query_addr, 8);
 
-         if (GEN_GEN == 9 && cmd_buffer->device->info.gt == 4)
+         if (GFX_VER == 9 && cmd_buffer->device->info.gt == 4)
             pc.CommandStreamerStallEnable = true;
       }
       break;
@@ -1293,9 +1291,7 @@ void genX(CmdWriteTimestamp)(
    }
 }
 
-#if GEN_GEN > 7 || GEN_IS_HASWELL
-
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
+#if GFX_VERx10 >= 75
 
 #define MI_PREDICATE_SRC0    0x2400
 #define MI_PREDICATE_SRC1    0x2408
@@ -1331,8 +1327,6 @@ gpu_write_query_result_cond(struct anv_cmd_buffer *cmd_buffer,
       mi_store_if(b, mi_mem32(res_addr), query_result);
    }
 }
-
-#endif /* GEN_GEN >= 8 || GEN_IS_HASWELL */
 
 static void
 gpu_write_query_result(struct mi_builder *b,
@@ -1372,7 +1366,7 @@ void genX(CmdCopyQueryPoolResults)(
    ANV_FROM_HANDLE(anv_buffer, buffer, destBuffer);
 
    struct mi_builder b;
-   mi_builder_init(&b, &cmd_buffer->batch);
+   mi_builder_init(&b, &cmd_buffer->device->info, &cmd_buffer->batch);
    struct mi_value result;
 
    /* If render target writes are ongoing, request a render target cache flush
@@ -1410,7 +1404,6 @@ void genX(CmdCopyQueryPoolResults)(
       switch (pool->type) {
       case VK_QUERY_TYPE_OCCLUSION:
          result = compute_query_result(&b, anv_address_add(query_addr, 8));
-#if GEN_GEN >= 8 || GEN_IS_HASWELL
          /* Like in the case of vkGetQueryPoolResults, if the query is
           * unavailable and the VK_QUERY_RESULT_PARTIAL_BIT flag is set,
           * conservatively write 0 as the query result. If the
@@ -1423,9 +1416,6 @@ void genX(CmdCopyQueryPoolResults)(
                   0 /* unavailable */, flags, idx, mi_imm(0));
          }
          idx++;
-#else /* GEN_GEN < 8 && !GEN_IS_HASWELL */
-         gpu_write_query_result(&b, dest_addr, flags, idx++, result);
-#endif
          break;
 
       case VK_QUERY_TYPE_PIPELINE_STATISTICS: {
@@ -1437,7 +1427,7 @@ void genX(CmdCopyQueryPoolResults)(
                                                               idx * 16 + 8));
 
             /* WaDividePSInvocationCountBy4:HSW,BDW */
-            if ((cmd_buffer->device->info.gen == 8 ||
+            if ((cmd_buffer->device->info.ver == 8 ||
                  cmd_buffer->device->info.is_haswell) &&
                 (1 << stat) == VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT) {
                result = mi_ushr32_imm(&b, result, 2);
@@ -1461,7 +1451,7 @@ void genX(CmdCopyQueryPoolResults)(
          gpu_write_query_result(&b, dest_addr, flags, 0, result);
          break;
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR:
          unreachable("Copy KHR performance query results not implemented");
          break;

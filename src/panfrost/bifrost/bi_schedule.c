@@ -412,10 +412,17 @@ bi_must_not_last(bi_instr *ins)
         return !bi_is_null(ins->dest[0]) && !bi_is_null(ins->dest[1]);
 }
 
+/* Check for a message-passing instruction. +DISCARD.f32 is special-cased; we
+ * treat it as a message-passing instruction for the purpose of scheduling
+ * despite no passing no logical message. Otherwise invalid encoding faults may
+ * be raised for unknown reasons (possibly an errata).
+ */
+
 ASSERTED static bool
 bi_must_message(bi_instr *ins)
 {
-        return bi_opcode_props[ins->op].message != BIFROST_MESSAGE_NONE;
+        return (bi_opcode_props[ins->op].message != BIFROST_MESSAGE_NONE) ||
+                (ins->op == BI_OPCODE_DISCARD_F32);
 }
 
 static bool
@@ -1304,16 +1311,13 @@ bi_schedule_clause(bi_context *ctx, bi_block *block, struct bi_worklist st)
                 tuple->add = tuple_state.add;
 
                 /* We may have a message, but only one per clause */
-                if (tuple->add) {
-                        enum bifrost_message_type msg =
-                                bi_message_type_for_instr(tuple->add);
-                        assert(!(msg && clause->message_type));
+                if (tuple->add && bi_must_message(tuple->add)) {
+                        assert(!clause_state.message);
+                        clause_state.message = true;
 
-                        if (!clause->message_type) {
-                                clause->message_type = msg;
-                                clause->message = tuple->add;
-                                clause_state.message = true;
-                        }
+                        clause->message_type =
+                                bi_message_type_for_instr(tuple->add);
+                        clause->message = tuple->add;
 
                         switch (tuple->add->op) {
                         case BI_OPCODE_ATEST:
@@ -1654,7 +1658,7 @@ bi_test_units(bi_builder *b)
                 assert(bi_reads_t(load, i));
         }
 
-        bi_instr *blend = bi_blend_to(b, TMP(), TMP(), TMP(), TMP(), TMP());
+        bi_instr *blend = bi_blend_to(b, TMP(), TMP(), TMP(), TMP(), TMP(), 4);
         assert(!bi_can_fma(load));
         assert(bi_can_add(load));
         assert(bi_must_last(blend));

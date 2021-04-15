@@ -69,7 +69,7 @@ Core Mesa environment variables
    specifies a file name for logging all errors, warnings, etc., rather
    than stderr
 ``MESA_TEX_PROG``
-   if set, implement conventional texture env modes with fragment
+   if set, implement conventional texture environment modes with fragment
    programs (intended for developers only)
 ``MESA_TNL_PROG``
    if set, implement conventional vertex transformation operations with
@@ -454,7 +454,7 @@ Softpipe driver environment variables
    ``cs``
       Dump compute shader assembly to stderr
    ``no_rast``
-      rasterization is no-op'd. For profiling purposes.
+      rasterization is disabled. For profiling purposes.
    ``use_llvm``
       the softpipe driver will try to use LLVM JIT for vertex
       shading processing.
@@ -595,10 +595,14 @@ RADV driver environment variables
       disable NGG for GFX10+
    ``nooutoforder``
       disable out-of-order rasterization
+   ``notccompatcmask``
+      disable TC-compat CMASK for MSAA surfaces
    ``nothreadllvm``
       disable LLVM threaded compilation
    ``noumr``
       disable UMR dumps during GPU hang detection (only with RADV_DEBUG=hang)
+   ``novrsflatshading``
+      disable VRS for flat shading (only on GFX10.3+)
    ``preoptir``
       dump LLVM IR before any optimizations
    ``shaders``
@@ -617,8 +621,13 @@ RADV driver environment variables
       initialize all memory allocated in VRAM as zero
 
 ``RADV_FORCE_FAMILY``
-   create a null device to compile shaders without a AMD GPU (e.g.
-   gfx900)
+   create a null device to compile shaders without a AMD GPU (e.g. vega10)
+
+``RADV_FORCE_VRS``
+   allow to force per-pipeline vertex VRS rates on GFX10.3+. This is only
+   forced for pipelines that don't explicitely use VRS or flat shading.
+   The supported values are 2x2, 1x2 and 2x1. Only for testing purposes.
+
 ``RADV_PERFTEST``
    a comma-separated list of named flags, which do various things:
 
@@ -628,8 +637,10 @@ RADV driver environment variables
       enable wave32 for compute shaders (GFX10+)
    ``dccmsaa``
       enable DCC for MSAA images
+   ``dccstores``
+      enable DCC for storage images (for performance testing on GFX10.3 only)
    ``dfsm``
-      enable dfsm
+      enable DFSM
    ``gewave32``
       enable wave32 for vertex/tess/geometry shaders (GFX10+)
    ``localbos``
@@ -663,6 +674,10 @@ RADV driver environment variables
       disable various optimizations
    ``noscheduling``
       disable instructions scheduling
+   ``perfinfo``
+      print information used to calculate some pipeline statistics
+   ``liveinfo``
+      print liveness and register demand information before scheduling
 
 radeonsi driver environment variables
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

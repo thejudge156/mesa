@@ -26,6 +26,7 @@ v3dv_entrypoints = custom_target(
     prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--proto', '--weak',
     '--out-h', '@OUTPUT0@', '--out-c', '@OUTPUT1@', '--prefix', 'v3dv',
   ],
+  depend_files : vk_entrypoints_gen_depend_files,
 )
 
 v3dv_extensions_c = custom_target(
@@ -125,8 +126,6 @@ libvulkan_broadcom = shared_library(
   link_with : [
     libbroadcom_cle,
     libbroadcom_v3d,
-    # For glsl_type_singleton_init_or_ref:
-    libglsl,
     libvulkan_wsi,
   ],
   dependencies : v3dv_deps,

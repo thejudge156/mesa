@@ -743,7 +743,7 @@ tu6_init_hw(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
                    A6XX_RB_CCU_CNTL(.offset = phys_dev->info.a6xx.ccu_offset_bypass));
    cmd->state.ccu_state = TU_CMD_CCU_SYSMEM;
    tu_cs_emit_write_reg(cs, REG_A6XX_RB_UNKNOWN_8E04, 0x00100000);
-   tu_cs_emit_write_reg(cs, REG_A6XX_SP_UNKNOWN_AE04, 0x8);
+   tu_cs_emit_write_reg(cs, REG_A6XX_SP_FLOAT_CNTL, 0);
    tu_cs_emit_write_reg(cs, REG_A6XX_SP_UNKNOWN_AE00, 0);
    tu_cs_emit_write_reg(cs, REG_A6XX_SP_PERFCTR_ENABLE, 0x3f);
    tu_cs_emit_write_reg(cs, REG_A6XX_TPL1_UNKNOWN_B605, 0x44);
@@ -1812,7 +1812,7 @@ void tu_CmdPushDescriptorSetKHR(VkCommandBuffer commandBuffer,
    set->mapped_ptr = set_mem.map;
    set->va = set_mem.iova;
 
-   tu_update_descriptor_sets(tu_descriptor_set_to_handle(set),
+   tu_update_descriptor_sets(cmd->device, tu_descriptor_set_to_handle(set),
                              descriptorWriteCount, pDescriptorWrites, 0, NULL);
 
    tu_CmdBindDescriptorSets(commandBuffer, pipelineBindPoint, _layout, _set,
@@ -1851,7 +1851,7 @@ void tu_CmdPushDescriptorSetWithTemplateKHR(
    set->mapped_ptr = set_mem.map;
    set->va = set_mem.iova;
 
-   tu_update_descriptor_set_with_template(set, descriptorUpdateTemplate, pData);
+   tu_update_descriptor_set_with_template(cmd->device, set, descriptorUpdateTemplate, pData);
 
    tu_CmdBindDescriptorSets(commandBuffer, templ->bind_point, _layout, _set,
                             1, (VkDescriptorSet[]) { tu_descriptor_set_to_handle(set) },
@@ -2964,7 +2964,8 @@ tu_CmdBeginRenderPass2(VkCommandBuffer commandBuffer,
 
    tu6_emit_zs(cmd, cmd->state.subpass, &cmd->draw_cs);
    tu6_emit_mrt(cmd, cmd->state.subpass, &cmd->draw_cs);
-   tu6_emit_msaa(&cmd->draw_cs, cmd->state.subpass->samples);
+   if (cmd->state.subpass->samples)
+      tu6_emit_msaa(&cmd->draw_cs, cmd->state.subpass->samples);
    tu6_emit_render_cntl(cmd, cmd->state.subpass, &cmd->draw_cs, false);
 
    tu_set_input_attachments(cmd, cmd->state.subpass);
@@ -3029,7 +3030,8 @@ tu_CmdNextSubpass2(VkCommandBuffer commandBuffer,
    /* emit mrt/zs/msaa/ubwc state for the subpass that is starting */
    tu6_emit_zs(cmd, cmd->state.subpass, cs);
    tu6_emit_mrt(cmd, cmd->state.subpass, cs);
-   tu6_emit_msaa(cs, cmd->state.subpass->samples);
+   if (cmd->state.subpass->samples)
+      tu6_emit_msaa(cs, cmd->state.subpass->samples);
    tu6_emit_render_cntl(cmd, cmd->state.subpass, cs, false);
 
    tu_set_input_attachments(cmd, cmd->state.subpass);
@@ -3808,15 +3810,19 @@ tu_emit_compute_driver_params(struct tu_cmd_buffer *cmd,
    if (link->constlen <= offset)
       return;
 
+   uint32_t num_consts = MIN2(const_state->num_driver_params,
+                              (link->constlen - offset) * 4);
+
    if (!info->indirect) {
-      uint32_t driver_params[4] = {
+      uint32_t driver_params[8] = {
          [IR3_DP_NUM_WORK_GROUPS_X] = info->blocks[0],
          [IR3_DP_NUM_WORK_GROUPS_Y] = info->blocks[1],
          [IR3_DP_NUM_WORK_GROUPS_Z] = info->blocks[2],
+         [IR3_DP_BASE_GROUP_X] = info->offsets[0],
+         [IR3_DP_BASE_GROUP_Y] = info->offsets[1],
+         [IR3_DP_BASE_GROUP_Z] = info->offsets[2],
       };
 
-      uint32_t num_consts = MIN2(const_state->num_driver_params,
-                                 (link->constlen - offset) * 4);
       assert(num_consts <= ARRAY_SIZE(driver_params));
 
       /* push constants */
@@ -3863,6 +3869,21 @@ tu_emit_compute_driver_params(struct tu_cmd_buffer *cmd,
                   CP_LOAD_STATE6_0_STATE_BLOCK(tu6_stage2shadersb(type)) |
                   CP_LOAD_STATE6_0_NUM_UNIT(1));
       tu_cs_emit_qw(cs, global_iova(cmd, cs_indirect_xyz[0]));
+   }
+
+   /* Zeroing of IR3_DP_BASE_GROUP_X/Y/Z for indirect dispatch */
+   if (info->indirect && num_consts > IR3_DP_BASE_GROUP_X) {
+      assert(num_consts == align(IR3_DP_BASE_GROUP_Z, 4));
+
+      tu_cs_emit_pkt7(cs, tu6_stage2opcode(type), 7);
+      tu_cs_emit(cs, CP_LOAD_STATE6_0_DST_OFF(offset + (IR3_DP_BASE_GROUP_X / 4)) |
+                 CP_LOAD_STATE6_0_STATE_TYPE(ST6_CONSTANTS) |
+                 CP_LOAD_STATE6_0_STATE_SRC(SS6_DIRECT) |
+                 CP_LOAD_STATE6_0_STATE_BLOCK(tu6_stage2shadersb(type)) |
+                 CP_LOAD_STATE6_0_NUM_UNIT(1));
+      tu_cs_emit_qw(cs, 0);
+      for (uint32_t i = 0; i < 4; i++)
+         tu_cs_emit(cs, 0);
    }
 }
 

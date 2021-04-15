@@ -18,6 +18,23 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+# Mesa-local imports in the Python files must be declared here for correct
+# dependency tracking.
+vk_extensions_depend_files = [
+]
+vk_extensions_gen_depend_files = [
+  files('vk_extensions.py'),
+  vk_extensions_depend_files,
+]
+vk_dispatch_table_gen_depend_files = [
+  files('vk_extensions.py'),
+  vk_extensions_depend_files,
+]
+vk_entrypoints_gen_depend_files = [
+  files('vk_dispatch_table_gen.py'),
+  vk_dispatch_table_gen_depend_files,
+]
+
 vk_entrypoints_gen = files('vk_entrypoints_gen.py')
 vk_extensions_gen = files('vk_extensions_gen.py')
 vk_icd_gen = files('vk_icd_gen.py')
@@ -29,6 +46,8 @@ files_vulkan_util = files(
   'vk_debug_report.h',
   'vk_deferred_operation.c',
   'vk_deferred_operation.h',
+  'vk_descriptors.c',
+  'vk_descriptors.h',
   'vk_device.c',
   'vk_device.h',
   'vk_format.c',
@@ -38,6 +57,9 @@ files_vulkan_util = files(
   'vk_object.h',
   'vk_physical_device.c',
   'vk_physical_device.h',
+  'vk_render_pass.c',
+  'vk_shader_module.c',
+  'vk_shader_module.h',
   'vk_util.c',
   'vk_util.h',
 )
@@ -50,6 +72,7 @@ vk_common_entrypoints = custom_target(
     prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--proto', '--weak',
     '--out-h', '@OUTPUT0@', '--out-c', '@OUTPUT1@', '--prefix', 'vk_common',
   ],
+  depend_files : vk_entrypoints_gen_depend_files,
 )
 
 vk_dispatch_table = custom_target(
@@ -60,6 +83,7 @@ vk_dispatch_table = custom_target(
     prog_python, '@INPUT0@', '--xml', '@INPUT1@',
     '--out-c', '@OUTPUT0@', '--out-h', '@OUTPUT1@'
   ],
+  depend_files : vk_dispatch_table_gen_depend_files,
 )
 
 vk_enum_to_str = custom_target(
@@ -80,7 +104,7 @@ vk_extensions = custom_target(
     prog_python, '@INPUT0@', '--xml', '@INPUT1@',
     '--out-c', '@OUTPUT0@', '--out-h', '@OUTPUT1@'
   ],
-  depend_files : files('vk_extensions.py'),
+  depend_files : vk_extensions_gen_depend_files,
 )
 
 libvulkan_util = static_library(
@@ -89,6 +113,8 @@ libvulkan_util = static_library(
    vk_enum_to_str, vk_extensions],
   include_directories : [inc_include, inc_src, inc_gallium],
   dependencies : [vulkan_wsi_deps, idep_mesautil],
+  # For glsl_type_singleton
+  link_with : libcompiler,
   c_args : [vulkan_wsi_args],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,

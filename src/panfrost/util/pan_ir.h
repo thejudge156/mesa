@@ -125,7 +125,9 @@ struct panfrost_compile_inputs {
                 float constants[4];
                 uint64_t bifrost_blend_desc;
         } blend;
+        unsigned sysval_ubo;
         bool shaderdb;
+        bool no_ubo_to_push;
 
         enum pipe_format rt_formats[8];
 };
@@ -184,6 +186,7 @@ struct pan_shader_info {
         bool writes_global;
         uint64_t outputs_written;
 
+        unsigned sampler_count;
         unsigned texture_count;
         unsigned ubo_count;
         unsigned attribute_count;

@@ -138,8 +138,12 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_GetQueryPoolResults(
                *(uint64_t *)dptr = result.u64;
                dptr += 8;
             }
-         } else
-            dptr += stride;
+         } else {
+            if (pool->type == VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT)
+               dptr += 16;
+            else
+               dptr += 8;
+         }
 
       } else {
          if (ready || (flags & VK_QUERY_RESULT_PARTIAL_BIT)) {
@@ -174,7 +178,10 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_GetQueryPoolResults(
                dptr += 4;
             }
          } else
-            dptr += stride;
+            if (pool->type == VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT)
+               dptr += 8;
+            else
+               dptr += 4;
       }
 
       if (flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) {
@@ -185,4 +192,23 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_GetQueryPoolResults(
       }
    }
    return vk_result;
+}
+
+VKAPI_ATTR void VKAPI_CALL lvp_ResetQueryPool(
+   VkDevice                                    _device,
+   VkQueryPool                                 queryPool,
+   uint32_t                                    firstQuery,
+   uint32_t                                    queryCount)
+{
+   LVP_FROM_HANDLE(lvp_device, device, _device);
+   LVP_FROM_HANDLE(lvp_query_pool, pool, queryPool);
+
+   for (uint32_t i = 0; i < queryCount; i++) {
+      uint32_t idx = i + firstQuery;
+
+      if (pool->queries[idx]) {
+         device->queue.ctx->destroy_query(device->queue.ctx, pool->queries[idx]);
+         pool->queries[idx] = NULL;
+      }
+   }
 }

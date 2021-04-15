@@ -64,6 +64,11 @@ struct ir3_info {
 	int8_t   max_reg;   /* highest GPR # used by shader */
 	int8_t   max_half_reg;
 	int16_t  max_const;
+	/* This is the maximum # of waves that can executed at once in one core,
+	 * assuming that they are all executing this shader.
+	 */
+	int8_t   max_waves;
+	bool     double_threadsize;
 	bool     multi_dword_ldp_stp;
 
 	/* number of sync bits: */
@@ -253,6 +258,7 @@ struct ir3_instruction {
 			char comp1, comp2;
 			int  immed;
 			struct ir3_block *target;
+			const char *target_label;
 			brtype_t brtype;
 			unsigned idx;  /* for brac.N */
 		} cat0;

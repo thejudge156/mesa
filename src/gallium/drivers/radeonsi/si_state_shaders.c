@@ -227,6 +227,10 @@ void si_shader_cache_insert_shader(struct si_screen *sscreen, unsigned char ir_s
    void *hw_binary;
    struct hash_entry *entry;
    uint8_t key[CACHE_KEY_SIZE];
+   bool memory_cache_full = sscreen->shader_cache_size >= sscreen->shader_cache_max_size;
+
+   if (!insert_into_disk_cache && memory_cache_full)
+      return;
 
    entry = _mesa_hash_table_search(sscreen->shader_cache, ir_sha1_cache_key);
    if (entry)
@@ -236,16 +240,24 @@ void si_shader_cache_insert_shader(struct si_screen *sscreen, unsigned char ir_s
    if (!hw_binary)
       return;
 
-   if (_mesa_hash_table_insert(sscreen->shader_cache, mem_dup(ir_sha1_cache_key, 20), hw_binary) ==
-       NULL) {
-      FREE(hw_binary);
-      return;
+   if (!memory_cache_full) {
+      if (_mesa_hash_table_insert(sscreen->shader_cache,
+                                  mem_dup(ir_sha1_cache_key, 20),
+                                  hw_binary) == NULL) {
+          FREE(hw_binary);
+          return;
+      }
+      /* The size is stored at the start of the binary */
+      sscreen->shader_cache_size += *(uint32_t*)hw_binary;
    }
 
    if (sscreen->disk_shader_cache && insert_into_disk_cache) {
       disk_cache_compute_key(sscreen->disk_shader_cache, ir_sha1_cache_key, 20, key);
       disk_cache_put(sscreen->disk_shader_cache, key, hw_binary, *((uint32_t *)hw_binary), NULL);
    }
+
+   if (memory_cache_full)
+      FREE(hw_binary);
 }
 
 bool si_shader_cache_load_shader(struct si_screen *sscreen, unsigned char ir_sha1_cache_key[20],
@@ -314,6 +326,9 @@ bool si_init_shader_cache(struct si_screen *sscreen)
    (void)simple_mtx_init(&sscreen->shader_cache_mutex, mtx_plain);
    sscreen->shader_cache =
       _mesa_hash_table_create(NULL, si_shader_cache_key_hash, si_shader_cache_key_equals);
+   sscreen->shader_cache_size = 0;
+   /* Maximum size: 64MB on 32 bits, 1GB else */
+   sscreen->shader_cache_max_size = ((sizeof(void *) == 4) ? 64 : 1024) * 1024 * 1024;
 
    return sscreen->shader_cache != NULL;
 }
@@ -2550,7 +2565,7 @@ static void si_init_shader_selector_async(void *job, int thread_index)
             unsigned semantic = sel->info.output_semantic[i];
             unsigned id;
 
-            if (semantic < VARYING_SLOT_MAX &&
+            if ((semantic <= VARYING_SLOT_VAR31 || semantic >= VARYING_SLOT_VAR0_16BIT) &&
                 semantic != VARYING_SLOT_POS &&
                 semantic != VARYING_SLOT_PSIZ &&
                 semantic != VARYING_SLOT_CLIP_VERTEX &&
@@ -2621,7 +2636,7 @@ void si_get_active_slot_masks(const struct si_shader_info *info, uint64_t *const
    /* two 8-byte images share one 16-byte slot */
    num_images = align(info->base.num_images, 2);
    num_msaa_images = align(util_last_bit(info->base.msaa_images), 2);
-   num_samplers = util_last_bit(info->base.textures_used);
+   num_samplers = BITSET_LAST_BIT(info->base.textures_used);
 
    /* The layout is: sb[last] ... sb[0], cb[0] ... cb[last] */
    start = si_get_shaderbuf_slot(num_shaderbufs - 1);
@@ -2719,7 +2734,7 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
              semantic == VARYING_SLOT_TESS_LEVEL_OUTER ||
              (semantic >= VARYING_SLOT_PATCH0 && semantic < VARYING_SLOT_TESS_MAX)) {
             sel->patch_outputs_written |= 1ull << si_shader_io_get_unique_index_patch(semantic);
-         } else if (semantic < VARYING_SLOT_MAX &&
+         } else if ((semantic <= VARYING_SLOT_VAR31 || semantic >= VARYING_SLOT_VAR0_16BIT) &&
                     semantic != VARYING_SLOT_EDGE) {
             sel->outputs_written |= 1ull << si_shader_io_get_unique_index(semantic, false);
             sel->outputs_written_before_ps |= 1ull
@@ -2792,7 +2807,7 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
       for (i = 0; i < sel->info.num_inputs; i++) {
          unsigned semantic = sel->info.input_semantic[i];
 
-         if (semantic < VARYING_SLOT_MAX &&
+         if ((semantic <= VARYING_SLOT_VAR31 || semantic >= VARYING_SLOT_VAR0_16BIT) &&
              semantic != VARYING_SLOT_PNTC) {
             sel->inputs_read |= 1ull << si_shader_io_get_unique_index(semantic, true);
          }
@@ -3321,7 +3336,8 @@ static void si_delete_shader_selector(struct pipe_context *ctx, void *state)
 }
 
 static unsigned si_get_ps_input_cntl(struct si_context *sctx, struct si_shader *vs,
-                                     unsigned semantic, enum glsl_interp_mode interpolate)
+                                     unsigned semantic, enum glsl_interp_mode interpolate,
+                                     ubyte fp16_lo_hi_mask)
 {
    struct si_shader_info *vsinfo = &vs->selector->info;
    unsigned offset, ps_input_cntl = 0;
@@ -3335,6 +3351,10 @@ static unsigned si_get_ps_input_cntl(struct si_context *sctx, struct si_shader *
        (semantic >= VARYING_SLOT_TEX0 && semantic <= VARYING_SLOT_TEX7 &&
         sctx->sprite_coord_enable & (1 << (semantic - VARYING_SLOT_TEX0)))) {
       ps_input_cntl |= S_028644_PT_SPRITE_TEX(1);
+      if (fp16_lo_hi_mask & 0x1) {
+         ps_input_cntl |= S_028644_FP16_INTERP_MODE(1) |
+                          S_028644_ATTR0_VALID(1);
+      }
    }
 
    int vs_slot = vsinfo->output_semantic_to_slot[semantic];
@@ -3356,6 +3376,16 @@ static unsigned si_get_ps_input_cntl(struct si_context *sctx, struct si_shader *
          }
 
          ps_input_cntl = S_028644_OFFSET(0x20) | S_028644_DEFAULT_VAL(offset);
+      }
+
+      if (fp16_lo_hi_mask && !G_028644_PT_SPRITE_TEX(ps_input_cntl)) {
+         assert(offset <= AC_EXP_PARAM_OFFSET_31 || offset == AC_EXP_PARAM_DEFAULT_VAL_0000);
+
+         ps_input_cntl |= S_028644_FP16_INTERP_MODE(1) |
+                          S_028644_USE_DEFAULT_ATTR1(offset == AC_EXP_PARAM_DEFAULT_VAL_0000) |
+                          S_028644_DEFAULT_VAL_ATTR1(0) |
+                          S_028644_ATTR0_VALID(1) | /* this must be set if FP16_INTERP_MODE is set */
+                          S_028644_ATTR1_VALID(!!(fp16_lo_hi_mask & 0x2));
       }
    } else {
       /* VS output not found. */
@@ -3399,8 +3429,10 @@ static void si_emit_spi_map(struct si_context *sctx)
    for (i = 0; i < psinfo->num_inputs; i++) {
       unsigned semantic = psinfo->input_semantic[i];
       unsigned interpolate = psinfo->input_interpolate[i];
+      ubyte fp16_lo_hi_mask = psinfo->input_fp16_lo_hi_valid[i];
 
-      spi_ps_input_cntl[num_written++] = si_get_ps_input_cntl(sctx, vs, semantic, interpolate);
+      spi_ps_input_cntl[num_written++] = si_get_ps_input_cntl(sctx, vs, semantic, interpolate,
+                                                              fp16_lo_hi_mask);
    }
 
    if (ps->key.part.ps.prolog.color_two_side) {
@@ -3410,7 +3442,8 @@ static void si_emit_spi_map(struct si_context *sctx)
 
          unsigned semantic = VARYING_SLOT_BFC0 + i;
          spi_ps_input_cntl[num_written++] = si_get_ps_input_cntl(sctx, vs, semantic,
-                                                                 psinfo->color_interpolate[i]);
+                                                                 psinfo->color_interpolate[i],
+                                                                 false);
       }
    }
    assert(num_interp == num_written);
@@ -4161,7 +4194,7 @@ bool si_update_shaders(struct si_context *sctx)
       }
    }
 
-   if (sctx->screen->debug_flags & DBG(SQTT)) {
+   if (unlikely(sctx->screen->debug_flags & DBG(SQTT) && sctx->thread_trace)) {
       /* Pretend the bound shaders form a vk pipeline */
       uint32_t pipeline_code_hash = 0;
       uint64_t base_address = ~0;
@@ -4180,10 +4213,10 @@ bool si_update_shaders(struct si_context *sctx)
 
       struct ac_thread_trace_data *thread_trace_data = sctx->thread_trace;
       if (!si_sqtt_pipeline_is_registered(thread_trace_data, pipeline_code_hash)) {
-         si_sqtt_register_pipeline(sctx, pipeline_code_hash, base_address);
+         si_sqtt_register_pipeline(sctx, pipeline_code_hash, base_address, false);
       }
 
-      si_sqtt_describe_pipeline_bind(sctx, pipeline_code_hash);
+      si_sqtt_describe_pipeline_bind(sctx, pipeline_code_hash, 0);
    }
 
    if (si_pm4_state_enabled_and_changed(sctx, ls) || si_pm4_state_enabled_and_changed(sctx, hs) ||

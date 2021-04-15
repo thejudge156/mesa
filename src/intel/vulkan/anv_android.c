@@ -34,7 +34,6 @@
 #include <sync/sync.h>
 
 #include "anv_private.h"
-#include "vk_format_info.h"
 #include "vk_util.h"
 
 static int anv_hal_open(const struct hw_module_t* mod, const char* id, struct hw_device_t** dev);
@@ -104,6 +103,69 @@ anv_hal_close(struct hw_device_t *dev)
 }
 
 #if ANDROID_API_LEVEL >= 26
+#include <vndk/hardware_buffer.h>
+/* See i915_private_android_types.h in minigbm. */
+#define HAL_PIXEL_FORMAT_NV12_Y_TILED_INTEL 0x100
+
+enum {
+   /* Usage bit equal to GRALLOC_USAGE_HW_CAMERA_MASK */
+   AHARDWAREBUFFER_USAGE_CAMERA_MASK = 0x00060000U,
+};
+
+inline VkFormat
+vk_format_from_android(unsigned android_format, unsigned android_usage)
+{
+   switch (android_format) {
+   case AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM:
+      return VK_FORMAT_R8G8B8A8_UNORM;
+   case AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM:
+   case AHARDWAREBUFFER_FORMAT_R8G8B8_UNORM:
+      return VK_FORMAT_R8G8B8_UNORM;
+   case AHARDWAREBUFFER_FORMAT_R5G6B5_UNORM:
+      return VK_FORMAT_R5G6B5_UNORM_PACK16;
+   case AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT:
+      return VK_FORMAT_R16G16B16A16_SFLOAT;
+   case AHARDWAREBUFFER_FORMAT_R10G10B10A2_UNORM:
+      return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+   case AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420:
+   case HAL_PIXEL_FORMAT_NV12_Y_TILED_INTEL:
+      return VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+   case AHARDWAREBUFFER_FORMAT_IMPLEMENTATION_DEFINED:
+      if (android_usage & AHARDWAREBUFFER_USAGE_CAMERA_MASK)
+         return VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+      else
+         return VK_FORMAT_R8G8B8_UNORM;
+   case AHARDWAREBUFFER_FORMAT_BLOB:
+   default:
+      return VK_FORMAT_UNDEFINED;
+   }
+}
+
+static inline unsigned
+android_format_from_vk(unsigned vk_format)
+{
+   switch (vk_format) {
+   case VK_FORMAT_R8G8B8A8_UNORM:
+      return AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+   case VK_FORMAT_R8G8B8_UNORM:
+      return AHARDWAREBUFFER_FORMAT_R8G8B8_UNORM;
+   case VK_FORMAT_R5G6B5_UNORM_PACK16:
+      return AHARDWAREBUFFER_FORMAT_R5G6B5_UNORM;
+   case VK_FORMAT_R16G16B16A16_SFLOAT:
+      return AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT;
+   case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+      return AHARDWAREBUFFER_FORMAT_R10G10B10A2_UNORM;
+   case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM:
+#ifdef HAVE_CROS_GRALLOC
+      return AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420;
+#else
+      return HAL_PIXEL_FORMAT_NV12_Y_TILED_INTEL;
+#endif
+   default:
+      return AHARDWAREBUFFER_FORMAT_BLOB;
+   }
+}
+
 static VkResult
 get_ahw_buffer_format_properties(
    VkDevice device_h,
@@ -503,27 +565,42 @@ anv_image_from_gralloc(VkDevice device_h,
                                                base_info->tiling);
    assert(format != ISL_FORMAT_UNSUPPORTED);
 
-   anv_info.stride = gralloc_info->stride *
-                     (isl_format_get_layout(format)->bpb / 8);
-
    result = anv_image_create(device_h, &anv_info, alloc, &image_h);
    image = anv_image_from_handle(image_h);
    if (result != VK_SUCCESS)
       goto fail_create;
 
-   if (bo->size < image->size) {
+   VkImageMemoryRequirementsInfo2 mem_reqs_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+      .image = image_h,
+   };
+
+   VkMemoryRequirements2 mem_reqs = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+   };
+
+   anv_GetImageMemoryRequirements2(device_h, &mem_reqs_info, &mem_reqs);
+
+   VkDeviceSize aligned_image_size =
+      align_u64(mem_reqs.memoryRequirements.size,
+                mem_reqs.memoryRequirements.alignment);
+
+   if (bo->size < aligned_image_size) {
       result = vk_errorf(device, device, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                          "dma-buf from VkNativeBufferANDROID is too small for "
                          "VkImage: %"PRIu64"B < %"PRIu64"B",
-                         bo->size, image->size);
+                         bo->size, aligned_image_size);
       goto fail_size;
    }
 
+   assert(!image->disjoint);
    assert(image->n_planes == 1);
-   assert(image->planes[0].address.offset == 0);
-
-   image->planes[0].address.bo = bo;
-   image->planes[0].bo_is_owned = true;
+   assert(image->planes[0].primary_surface.memory_range.binding ==
+          ANV_IMAGE_MEMORY_BINDING_MAIN);
+   assert(image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN].address.bo == NULL);
+   assert(image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN].address.offset == 0);
+   image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN].address.bo = bo;
+   image->from_gralloc = true;
 
    /* Don't clobber the out-parameter until success is certain. */
    *out_image_h = image_h;

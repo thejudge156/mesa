@@ -28,6 +28,7 @@
 #include "blorp_priv.h"
 #include "compiler/brw_compiler.h"
 #include "compiler/brw_nir.h"
+#include "dev/gen_debug.h"
 
 const char *
 blorp_shader_type_to_name(enum blorp_shader_type type)
@@ -38,7 +39,7 @@ blorp_shader_type_to_name(enum blorp_shader_type type)
       [BLORP_SHADER_TYPE_CLEAR]               = "BLORP-clear",
       [BLORP_SHADER_TYPE_MCS_PARTIAL_RESOLVE] = "BLORP-mcs-partial-resolve",
       [BLORP_SHADER_TYPE_LAYER_OFFSET_VS]     = "BLORP-layer-offset-vs",
-      [BLORP_SHADER_TYPE_GEN4_SF]             = "BLORP-gen4-sf",
+      [BLORP_SHADER_TYPE_GFX4_SF]             = "BLORP-gfx4-sf",
    };
    assert(type < ARRAY_SIZE(shader_name));
 
@@ -137,7 +138,7 @@ brw_blorp_surface_info_init(struct blorp_context *blorp,
    /* Sandy Bridge and earlier have a limit of a maximum of 512 layers for
     * layered rendering.
     */
-   if (is_render_target && blorp->isl_dev->info->gen <= 6)
+   if (is_render_target && blorp->isl_dev->info->ver <= 6)
       info->view.array_len = MIN2(info->view.array_len, 512);
 
    if (surf->tile_x_sa || surf->tile_y_sa) {
@@ -209,19 +210,25 @@ blorp_compile_fs(struct blorp_context *blorp, void *mem_ctx,
    nir_remove_dead_variables(nir, nir_var_shader_in, NULL);
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
 
-   if (blorp->compiler->devinfo->gen < 6) {
+   if (blorp->compiler->devinfo->ver < 6) {
       if (nir->info.fs.uses_discard)
          wm_key->iz_lookup |= BRW_WM_IZ_PS_KILL_ALPHATEST_BIT;
 
       wm_key->input_slots_valid = nir->info.inputs_read | VARYING_BIT_POS;
    }
 
-   const unsigned *program =
-      brw_compile_fs(compiler, blorp->driver_ctx, mem_ctx, wm_key,
-                     wm_prog_data, nir, -1, -1, -1, false, use_repclear,
-                     NULL, NULL, NULL);
+   struct brw_compile_fs_params params = {
+      .nir = nir,
+      .key = wm_key,
+      .prog_data = wm_prog_data,
 
-   return program;
+      .use_rep_send = use_repclear,
+      .log_data = blorp->driver_ctx,
+
+      .debug_flag = DEBUG_BLORP,
+   };
+
+   return brw_compile_fs(compiler, mem_ctx, &params);
 }
 
 const unsigned *
@@ -247,15 +254,20 @@ blorp_compile_vs(struct blorp_context *blorp, void *mem_ctx,
 
    struct brw_vs_prog_key vs_key = { 0, };
 
-   const unsigned *program =
-      brw_compile_vs(compiler, blorp->driver_ctx, mem_ctx,
-                     &vs_key, vs_prog_data, nir, -1, NULL, NULL);
+   struct brw_compile_vs_params params = {
+      .nir = nir,
+      .key = &vs_key,
+      .prog_data = vs_prog_data,
+      .log_data = blorp->driver_ctx,
 
-   return program;
+      .debug_flag = DEBUG_BLORP,
+   };
+
+   return brw_compile_vs(compiler, mem_ctx, &params);
 }
 
 struct blorp_sf_key {
-   enum blorp_shader_type shader_type; /* Must be BLORP_SHADER_TYPE_GEN4_SF */
+   enum blorp_shader_type shader_type; /* Must be BLORP_SHADER_TYPE_GFX4_SF */
 
    struct brw_sf_prog_key key;
 };
@@ -268,12 +280,12 @@ blorp_ensure_sf_program(struct blorp_batch *batch,
    const struct brw_wm_prog_data *wm_prog_data = params->wm_prog_data;
    assert(params->wm_prog_data);
 
-   /* Gen6+ doesn't need a strips and fans program */
-   if (blorp->compiler->devinfo->gen >= 6)
+   /* Gfx6+ doesn't need a strips and fans program */
+   if (blorp->compiler->devinfo->ver >= 6)
       return true;
 
    struct blorp_sf_key key = {
-      .shader_type = BLORP_SHADER_TYPE_GEN4_SF,
+      .shader_type = BLORP_SHADER_TYPE_GFX4_SF,
    };
 
    /* Everything gets compacted in vertex setup, so we just need a
@@ -388,7 +400,7 @@ blorp_hiz_op(struct blorp_batch *batch, struct blorp_surf *surf,
          /* TODO: What about MSAA? */
          params.depth.surf.logical_level0_px.width = params.x1;
          params.depth.surf.logical_level0_px.height = params.y1;
-      } else if (devinfo->gen >= 8 && devinfo->gen <= 9 &&
+      } else if (devinfo->ver >= 8 && devinfo->ver <= 9 &&
                  op == ISL_AUX_OP_AMBIGUATE) {
          /* On some platforms, it's not enough to just adjust the clear
           * rectangle when the LOD is greater than 0.

@@ -614,7 +614,8 @@ generate_fs_loop(struct gallivm_state *gallivm,
    /* truncate then sign extend. */
    system_values.front_facing = LLVMBuildTrunc(gallivm->builder, facing, LLVMInt1TypeInContext(gallivm->context), "");
    system_values.front_facing = LLVMBuildSExt(gallivm->builder, system_values.front_facing, LLVMInt32TypeInContext(gallivm->context), "");
-
+   system_values.view_index = lp_jit_thread_data_raster_state_view_index(gallivm,
+                                                                         thread_data_ptr);
    if (key->depth.enabled ||
        key->stencil[0].enabled) {
 
@@ -1131,12 +1132,19 @@ generate_fs_loop(struct gallivm_state *gallivm,
             z = interp->pos[2];
          }
       }
+
       /*
        * Clamp according to ARB_depth_clamp semantics.
        */
       if (key->depth_clamp) {
          z = lp_build_depth_clamp(gallivm, builder, type, context_ptr,
                                   thread_data_ptr, z);
+      } else {
+         struct lp_build_context f32_bld;
+         lp_build_context_init(&f32_bld, gallivm, type);
+         z = lp_build_clamp(&f32_bld, z,
+                            lp_build_const_vec(gallivm, type, 0.0),
+                            lp_build_const_vec(gallivm, type, 1.0));
       }
 
       if (s_out != -1 && outputs[s_out][1]) {
@@ -3398,6 +3406,7 @@ dump_fs_variant_key(struct lp_fragment_shader_variant_key *key)
       debug_printf("  .lod_bias_non_zero = %u\n", sampler->lod_bias_non_zero);
       debug_printf("  .apply_min_lod = %u\n", sampler->apply_min_lod);
       debug_printf("  .apply_max_lod = %u\n", sampler->apply_max_lod);
+      debug_printf("  .reduction_mode = %u\n", sampler->reduction_mode);
    }
    for (i = 0; i < key->nr_sampler_views; ++i) {
       const struct lp_static_texture_state *texture = &key->samplers[i].texture_state;
@@ -3977,20 +3986,8 @@ make_variant_key(struct llvmpipe_context *lp,
     * Propagate the depth clamp setting from the rasterizer state.
     * depth_clip == 0 implies depth clamping is enabled.
     *
-    * When clip_halfz is enabled, then always clamp the depth values.
-    *
-    * XXX: This is incorrect for GL, but correct for d3d10 (depth
-    * clamp is always active in d3d10, regardless if depth clip is
-    * enabled or not).
-    * (GL has an always-on [0,1] clamp on fs depth output instead
-    * to ensure the depth values stay in range. Doesn't look like
-    * we do that, though...)
     */
-   if (lp->rasterizer->clip_halfz) {
-      key->depth_clamp = 1;
-   } else {
-      key->depth_clamp = (lp->rasterizer->depth_clip_near == 0) ? 1 : 0;
-   }
+   key->depth_clamp = (lp->rasterizer->depth_clip_near == 0) ? 1 : 0;
 
    /* alpha test only applies if render buffer 0 is non-integer (or does not exist) */
    if (!lp->framebuffer.nr_cbufs ||

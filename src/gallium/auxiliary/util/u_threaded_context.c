@@ -30,6 +30,7 @@
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_upload_mgr.h"
+#include "util/log.h"
 #include "compiler/shader_info.h"
 
 /* 0 = disabled, 1 = assertions, 2 = printfs */
@@ -42,7 +43,7 @@
 #endif
 
 #if TC_DEBUG >= 2
-#define tc_printf printf
+#define tc_printf mesa_logi
 #define tc_asprintf asprintf
 #define tc_strcmp strcmp
 #else
@@ -82,8 +83,24 @@ tc_debug_check(struct threaded_context *tc)
 {
    for (unsigned i = 0; i < TC_MAX_BATCHES; i++) {
       tc_batch_check(&tc->batch_slots[i]);
-      tc_assert(tc->batch_slots[i].pipe == tc->pipe);
+      tc_assert(tc->batch_slots[i].tc == tc);
    }
+}
+
+static void
+tc_set_driver_thread(struct threaded_context *tc)
+{
+#ifndef NDEBUG
+   tc->driver_thread = util_get_thread_id();
+#endif
+}
+
+static void
+tc_clear_driver_thread(struct threaded_context *tc)
+{
+#ifndef NDEBUG
+   memset(&tc->driver_thread, 0, sizeof(tc->driver_thread));
+#endif
 }
 
 /* We don't want to read or write min_index and max_index, because
@@ -148,10 +165,11 @@ static void
 tc_batch_execute(void *job, UNUSED int thread_index)
 {
    struct tc_batch *batch = job;
-   struct pipe_context *pipe = batch->pipe;
+   struct pipe_context *pipe = batch->tc->pipe;
    struct tc_call *last = &batch->call[batch->num_total_call_slots];
 
    tc_batch_check(batch);
+   tc_set_driver_thread(batch->tc);
 
    assert(!batch->token);
 
@@ -210,6 +228,7 @@ tc_batch_execute(void *job, UNUSED int thread_index)
       iter += iter->num_call_slots;
    }
 
+   tc_clear_driver_thread(batch->tc);
    tc_batch_check(batch);
    batch->num_total_call_slots = 0;
 }
@@ -245,7 +264,7 @@ tc_add_sized_call(struct threaded_context *tc, enum tc_call_id id,
                   unsigned num_call_slots)
 {
    struct tc_batch *next = &tc->batch_slots[tc->next];
-
+   assert(num_call_slots <= TC_CALLS_PER_BATCH);
    tc_debug_check(tc);
 
    if (unlikely(next->num_total_call_slots + num_call_slots > TC_CALLS_PER_BATCH)) {
@@ -330,7 +349,7 @@ _tc_sync(struct threaded_context *tc, UNUSED const char *info, UNUSED const char
       p_atomic_inc(&tc->num_syncs);
 
       if (tc_strcmp(func, "tc_destroy") != 0) {
-         tc_printf("sync %s %s\n", func, info);
+         tc_printf("sync %s %s", func, info);
 	  }
    }
 
@@ -544,11 +563,17 @@ tc_get_query_result(struct pipe_context *_pipe,
    struct threaded_context *tc = threaded_context(_pipe);
    struct threaded_query *tq = threaded_query(query);
    struct pipe_context *pipe = tc->pipe;
+   bool flushed = tq->flushed;
 
-   if (!tq->flushed)
+   if (!flushed) {
       tc_sync_msg(tc, wait ? "wait" : "nowait");
+      tc_set_driver_thread(tc);
+   }
 
    bool success = pipe->get_query_result(pipe, query, wait, result);
+
+   if (!flushed)
+      tc_clear_driver_thread(tc);
 
    if (success) {
       tq->flushed = true;
@@ -866,6 +891,31 @@ tc_set_inlinable_constants(struct pipe_context *_pipe,
    p->shader = shader;
    p->num_values = num_values;
    memcpy(p->values, values, num_values * 4);
+}
+
+struct tc_sample_locations {
+   uint16_t size;
+   uint8_t locations[0];
+};
+
+
+static void
+tc_call_set_sample_locations(struct pipe_context *pipe, union tc_payload *payload)
+{
+   struct tc_sample_locations *p = (struct tc_sample_locations *)payload;
+   pipe->set_sample_locations(pipe, p->size, &p->locations[0]);
+}
+
+static void
+tc_set_sample_locations(struct pipe_context *_pipe, size_t size, const uint8_t *locations)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+   struct tc_sample_locations *p = (struct tc_sample_locations *)tc_add_sized_call(tc,
+                                   TC_CALL_set_sample_locations,
+                                   tc_payload_size_to_call_slots(sizeof(struct tc_sample_locations) + size));
+
+   p->size = size;
+   memcpy(&p->locations, locations, size);
 }
 
 struct tc_scissors {
@@ -1319,7 +1369,6 @@ tc_create_stream_output_target(struct pipe_context *_pipe,
    struct threaded_resource *tres = threaded_resource(res);
    struct pipe_stream_output_target *view;
 
-   tc_sync(threaded_context(_pipe));
    util_range_add(&tres->b, &tres->valid_buffer_range, buffer_offset,
                   buffer_offset + buffer_size);
 
@@ -1691,12 +1740,18 @@ tc_transfer_map(struct pipe_context *_pipe,
       tc_sync_msg(tc, resource->target != PIPE_BUFFER ? "  texture" :
                       usage & PIPE_MAP_DISCARD_RANGE ? "  discard_range" :
                       usage & PIPE_MAP_READ ? "  read" : "  staging conflict");
+      tc_set_driver_thread(tc);
    }
 
    tc->bytes_mapped_estimate += box->width;
 
-   return pipe->transfer_map(pipe, tres->latest ? tres->latest : resource,
+   void *ret = pipe->transfer_map(pipe, tres->latest ? tres->latest : resource,
                              level, usage, box, transfer);
+
+   if (!(usage & TC_TRANSFER_MAP_THREADED_UNSYNC))
+      tc_clear_driver_thread(tc);
+
+   return ret;
 }
 
 struct tc_transfer_flush_region {
@@ -1991,8 +2046,10 @@ tc_texture_subdata(struct pipe_context *_pipe,
       struct pipe_context *pipe = tc->pipe;
 
       tc_sync(tc);
+      tc_set_driver_thread(tc);
       pipe->texture_subdata(pipe, resource, level, usage, box, data,
                             stride, layer_stride);
+      tc_clear_driver_thread(tc);
    }
 }
 
@@ -2319,7 +2376,9 @@ out_of_memory:
 
    if (!(flags & PIPE_FLUSH_DEFERRED))
       tc_flush_queries(tc);
+   tc_set_driver_thread(tc);
    pipe->flush(pipe, fence, flags);
+   tc_clear_driver_thread(tc);
 }
 
 static void
@@ -2468,6 +2527,10 @@ tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
       return;
    }
 
+   const int draw_overhead_bytes = offsetof(struct tc_call, payload) + sizeof(struct tc_draw_multi);
+   const int one_draw_payload_bytes = sizeof(((struct tc_draw_multi*)NULL)->slot[0]);
+   const int slots_for_one_draw = DIV_ROUND_UP(draw_overhead_bytes + one_draw_payload_bytes,
+                                               sizeof(struct tc_call));
    /* Multi draw. */
    if (index_size && has_user_indices) {
       struct pipe_resource *buffer = NULL;
@@ -2494,43 +2557,79 @@ tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
       if (unlikely(!buffer))
          return;
 
-      struct tc_draw_multi *p =
-         tc_add_slot_based_call(tc, TC_CALL_draw_multi, tc_draw_multi,
-                                num_draws);
-      memcpy(&p->info, info, DRAW_INFO_SIZE_WITHOUT_INDEXBUF_AND_MIN_MAX_INDEX);
-      p->info.index.resource = buffer;
-      p->num_draws = num_draws;
+      int total_offset = 0;
+      while (num_draws) {
+         struct tc_batch *next = &tc->batch_slots[tc->next];
 
-      /* Upload index buffers. */
-      for (unsigned i = 0, offset = 0; i < num_draws; i++) {
-         unsigned count = draws[i].count;
+         int nb_slots_left = TC_CALLS_PER_BATCH - next->num_total_call_slots;
+         /* If there isn't enough place for one draw, try to fill the next one */
+         if (nb_slots_left < slots_for_one_draw)
+            nb_slots_left = TC_CALLS_PER_BATCH;
+         const int size_left_bytes = nb_slots_left * sizeof(struct tc_call);
 
-         if (!count) {
-            p->slot[i].start = 0;
-            p->slot[i].count = 0;
-            continue;
+         /* How many draws can we fit in the current batch */
+         const int dr = MIN2(num_draws, (size_left_bytes - draw_overhead_bytes) / one_draw_payload_bytes);
+
+         struct tc_draw_multi *p =
+            tc_add_slot_based_call(tc, TC_CALL_draw_multi, tc_draw_multi,
+                                   dr);
+         memcpy(&p->info, info, DRAW_INFO_SIZE_WITHOUT_INDEXBUF_AND_MIN_MAX_INDEX);
+         p->info.index.resource = buffer;
+         p->num_draws = dr;
+
+         /* Upload index buffers. */
+         for (unsigned i = 0, offset = 0; i < dr; i++) {
+            unsigned count = draws[i + total_offset].count;
+
+            if (!count) {
+               p->slot[i].start = 0;
+               p->slot[i].count = 0;
+               continue;
+            }
+
+            unsigned size = count << index_size_shift;
+            memcpy(ptr + offset,
+                   (uint8_t*)info->index.user +
+                   (draws[i + total_offset].start << index_size_shift), size);
+            p->slot[i].start = (buffer_offset + offset) >> index_size_shift;
+            p->slot[i].count = count;
+            offset += size;
          }
 
-         unsigned size = count << index_size_shift;
-         memcpy(ptr + offset,
-                (uint8_t*)info->index.user +
-                (draws[i].start << index_size_shift), size);
-         p->slot[i].start = (buffer_offset + offset) >> index_size_shift;
-         p->slot[i].count = count;
-         offset += size;
+         total_offset += dr;
+         num_draws -= dr;
       }
    } else {
-      /* Non-indexed call or indexed with a real index buffer. */
-      struct tc_draw_multi *p =
-         tc_add_slot_based_call(tc, TC_CALL_draw_multi, tc_draw_multi,
-                                num_draws);
-      if (index_size && !info->take_index_buffer_ownership) {
-         tc_set_resource_reference(&p->info.index.resource,
-                                   info->index.resource);
+      int total_offset = 0;
+      bool take_index_buffer_ownership = info->take_index_buffer_ownership;
+      while (num_draws) {
+         struct tc_batch *next = &tc->batch_slots[tc->next];
+
+         int nb_slots_left = TC_CALLS_PER_BATCH - next->num_total_call_slots;
+         /* If there isn't enough place for one draw, try to fill the next one */
+         if (nb_slots_left < slots_for_one_draw)
+            nb_slots_left = TC_CALLS_PER_BATCH;
+         const int size_left_bytes = nb_slots_left * sizeof(struct tc_call);
+
+         /* How many draws can we fit in the current batch */
+         const int dr = MIN2(num_draws, (size_left_bytes - draw_overhead_bytes) / one_draw_payload_bytes);
+
+         /* Non-indexed call or indexed with a real index buffer. */
+         struct tc_draw_multi *p =
+            tc_add_slot_based_call(tc, TC_CALL_draw_multi, tc_draw_multi,
+                                   dr);
+         if (index_size && !take_index_buffer_ownership) {
+            tc_set_resource_reference(&p->info.index.resource,
+                                      info->index.resource);
+         }
+         take_index_buffer_ownership = false;
+         memcpy(&p->info, info, DRAW_INFO_SIZE_WITHOUT_MIN_MAX_INDEX);
+         p->num_draws = dr;
+         memcpy(p->slot, &draws[total_offset], sizeof(draws[0]) * dr);
+         num_draws -= dr;
+
+         total_offset += dr;
       }
-      memcpy(&p->info, info, DRAW_INFO_SIZE_WITHOUT_MIN_MAX_INDEX);
-      p->num_draws = num_draws;
-      memcpy(p->slot, draws, sizeof(draws[0]) * num_draws);
    }
 }
 
@@ -3034,7 +3133,7 @@ threaded_context_create(struct pipe_context *pipe,
 
    for (unsigned i = 0; i < TC_MAX_BATCHES; i++) {
       tc->batch_slots[i].sentinel = TC_SENTINEL;
-      tc->batch_slots[i].pipe = pipe;
+      tc->batch_slots[i].tc = tc;
       util_queue_fence_init(&tc->batch_slots[i].fence);
    }
 
@@ -3110,6 +3209,7 @@ threaded_context_create(struct pipe_context *pipe,
    CTX_INIT(set_inlinable_constants);
    CTX_INIT(set_framebuffer_state);
    CTX_INIT(set_polygon_stipple);
+   CTX_INIT(set_sample_locations);
    CTX_INIT(set_scissor_states);
    CTX_INIT(set_viewport_states);
    CTX_INIT(set_window_rectangles);
