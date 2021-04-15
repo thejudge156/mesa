@@ -29,8 +29,6 @@
 
 #include "pipe/p_context.h"
 #include "pipe/p_state.h"
-#include "util/u_rect.h"
-#include "util/u_threaded_context.h"
 
 #include "util/slab.h"
 #include "util/list.h"
@@ -80,9 +78,7 @@ zink_so_target(struct pipe_stream_output_target *so_target)
 
 struct zink_context {
    struct pipe_context base;
-   struct threaded_context *tc;
    struct slab_child_pool transfer_pool;
-   struct slab_child_pool transfer_pool_unsync;
    struct blitter_context *blitter;
 
    struct pipe_device_reset_callback reset;

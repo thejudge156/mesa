@@ -29,9 +29,6 @@ struct sw_displaytarget;
 struct zink_batch;
 
 #include "util/u_transfer.h"
-#include "util/u_range.h"
-#include "util/u_dynarray.h"
-#include "util/u_threaded_context.h"
 
 #include <vulkan/vulkan.h>
 
@@ -39,7 +36,7 @@ struct zink_batch;
 #define ZINK_RESOURCE_ACCESS_WRITE 16
 
 struct zink_resource {
-   struct threaded_resource base;
+   struct pipe_resource base;
 
    enum pipe_format internal_format:16;
 
@@ -67,7 +64,7 @@ struct zink_resource {
 };
 
 struct zink_transfer {
-   struct threaded_transfer base;
+   struct pipe_transfer base;
    struct pipe_resource *staging_res;
 };
 
@@ -89,37 +86,5 @@ zink_get_depth_stencil_resources(struct pipe_resource *res,
                                  struct zink_resource **out_s);
 
 void
-zink_resource_setup_transfer_layouts(struct zink_context *ctx, struct zink_resource *src, struct zink_resource *dst);
-
-bool
-zink_resource_has_usage(struct zink_resource *res, enum zink_resource_access usage);
-
-bool
-zink_resource_has_curr_read_usage(struct zink_context *ctx, struct zink_resource *res);
-
-void
-zink_resource_desc_set_add(struct zink_resource *res, struct zink_descriptor_set *zds, unsigned idx);
-
-
-void
-zink_destroy_resource_object(struct zink_screen *screen, struct zink_resource_object *resource_object);
-
-void
-debug_describe_zink_resource_object(char *buf, const struct zink_resource_object *ptr);
-
-static inline void
-zink_resource_object_reference(struct zink_screen *screen,
-                             struct zink_resource_object **dst,
-                             struct zink_resource_object *src)
-{
-   struct zink_resource_object *old_dst = dst ? *dst : NULL;
-
-   if (pipe_reference_described(old_dst ? &old_dst->reference : NULL, &src->reference,
-                                (debug_reference_descriptor)debug_describe_zink_resource_object))
-      zink_destroy_resource_object(screen, old_dst);
-   if (dst) *dst = src;
-}
-
-bool
-zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource *res);
+zink_resource_setup_transfer_layouts(struct zink_batch *batch, struct zink_resource *src, struct zink_resource *dst);
 #endif

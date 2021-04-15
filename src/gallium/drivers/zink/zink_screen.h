@@ -47,8 +47,6 @@ extern uint32_t zink_debug;
 
 struct zink_screen {
    struct pipe_screen base;
-   bool threaded;
-   uint32_t curr_batch; //the current batch id
 
    struct sw_winsys *winsys;
 
@@ -69,7 +67,6 @@ struct zink_screen {
    bool have_triangle_fans;
 
    uint32_t gfx_queue;
-   uint32_t max_queues;
    uint32_t timestamp_valid_bits;
    VkDevice dev;
    VkDebugUtilsMessengerEXT debugUtilsCallbackHandle;
