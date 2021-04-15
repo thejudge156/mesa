@@ -59,7 +59,7 @@ zink_create_surface(struct pipe_context *pctx,
    ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
    ivci.image = res->image;
 
-   switch (pres->target) {
+   switch (res->base.b.target) {
    case PIPE_TEXTURE_1D:
       ivci.viewType = VK_IMAGE_VIEW_TYPE_1D;
       break;
@@ -107,6 +107,7 @@ zink_create_surface(struct pipe_context *pctx,
    ivci.subresourceRange.levelCount = 1;
    ivci.subresourceRange.baseArrayLayer = templ->u.tex.first_layer;
    ivci.subresourceRange.layerCount = 1 + templ->u.tex.last_layer - templ->u.tex.first_layer;
+   ivci.viewType = zink_surface_clamp_viewtype(ivci.viewType, templ->u.tex.first_layer, templ->u.tex.last_layer, res->base.b.array_size);
 
    if (pres->target == PIPE_TEXTURE_CUBE ||
        pres->target == PIPE_TEXTURE_CUBE_ARRAY)

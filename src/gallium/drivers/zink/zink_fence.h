@@ -25,19 +25,32 @@
 #define ZINK_FENCE_H
 
 #include "util/u_inlines.h"
-#include "util/u_dynarray.h"
+#include "util/u_queue.h"
 
 #include <vulkan/vulkan.h>
 
 struct pipe_screen;
 struct zink_screen;
 
-struct zink_fence {
+struct tc_unflushed_batch_token;
+
+struct zink_tc_fence {
    struct pipe_reference reference;
-   unsigned batch_id : 2;
+   struct tc_unflushed_batch_token *tc_token;
+   struct util_queue_fence ready;
+   struct pipe_context *deferred_ctx;
+   uint32_t deferred_id;
+   struct zink_fence *fence;
+   uint32_t batch_id;
+};
+
+struct zink_fence {
    VkFence fence;
-   struct set *active_queries; /* zink_query objects which were active at some point in this batch */
-   struct util_dynarray resources;
+   uint32_t batch_id;
+   simple_mtx_t resource_mtx;
+   struct set *resources; /* resources need access removed asap, so they're on the fence */
+   bool submitted;
+   bool completed;
 };
 
 static inline struct zink_fence *
@@ -46,13 +59,22 @@ zink_fence(struct pipe_fence_handle *pfence)
    return (struct zink_fence *)pfence;
 }
 
-struct zink_fence *
-zink_create_fence(struct pipe_screen *pscreen, struct zink_batch *batch);
+static inline struct zink_tc_fence *
+zink_tc_fence(void *pfence)
+{
+   return (struct zink_tc_fence *)pfence;
+}
+
+struct zink_tc_fence *
+zink_create_tc_fence(void);
+
+struct pipe_fence_handle *
+zink_create_tc_fence_for_tc(struct pipe_context *pctx, struct tc_unflushed_batch_token *tc_token);
 
 void
 zink_fence_reference(struct zink_screen *screen,
-                     struct zink_fence **ptr,
-                     struct zink_fence *fence);
+                     struct zink_tc_fence **ptr,
+                     struct zink_tc_fence *fence);
 
 bool
 zink_fence_finish(struct zink_screen *screen, struct zink_fence *fence,
