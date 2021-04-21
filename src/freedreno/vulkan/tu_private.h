@@ -479,10 +479,7 @@ enum tu_draw_state_group_id
    TU_DRAW_STATE_VI_BINNING,
    TU_DRAW_STATE_RAST,
    TU_DRAW_STATE_BLEND,
-   TU_DRAW_STATE_VS_CONST,
-   TU_DRAW_STATE_HS_CONST,
-   TU_DRAW_STATE_DS_CONST,
-   TU_DRAW_STATE_GS_CONST,
+   TU_DRAW_STATE_SHADER_GEOM_CONST,
    TU_DRAW_STATE_FS_CONST,
    TU_DRAW_STATE_DESC_SETS,
    TU_DRAW_STATE_DESC_SETS_LOAD,
@@ -490,6 +487,7 @@ enum tu_draw_state_group_id
    TU_DRAW_STATE_INPUT_ATTACHMENTS_GMEM,
    TU_DRAW_STATE_INPUT_ATTACHMENTS_SYSMEM,
    TU_DRAW_STATE_LRZ,
+   TU_DRAW_STATE_DEPTH_PLANE,
 
    /* dynamic state related draw states */
    TU_DRAW_STATE_DYNAMIC,
@@ -836,15 +834,24 @@ struct tu_cache_state {
    enum tu_cmd_flush_bits flush_bits;
 };
 
+enum tu_lrz_force_disable_mask {
+   TU_LRZ_FORCE_DISABLE_LRZ = 1 << 0,
+   TU_LRZ_FORCE_DISABLE_WRITE = 1 << 1,
+};
+
+enum tu_lrz_direction {
+   TU_LRZ_UNKNOWN,
+   /* Depth func less/less-than: */
+   TU_LRZ_LESS,
+   /* Depth func greater/greater-than: */
+   TU_LRZ_GREATER,
+};
+
 struct tu_lrz_pipeline
 {
-   bool write : 1;
-   bool invalidate : 1;
-
-   bool enable : 1;
-   bool greater : 1;
-   bool z_test_enable : 1;
-   bool blend_disable_write : 1;
+   uint32_t force_disable_mask;
+   bool fs_has_kill;
+   bool force_late_z;
 };
 
 struct tu_lrz_state
@@ -853,6 +860,7 @@ struct tu_lrz_state
    struct tu_image *image;
    bool valid : 1;
    struct tu_draw_state state;
+   enum tu_lrz_direction prev_direction;
 };
 
 struct tu_cmd_state
@@ -886,7 +894,7 @@ struct tu_cmd_state
    /* saved states to re-emit in TU_CMD_DIRTY_DRAW_STATE case */
    struct tu_draw_state dynamic_state[TU_DYNAMIC_STATE_COUNT];
    struct tu_draw_state vertex_buffers;
-   struct tu_draw_state shader_const[MESA_SHADER_STAGES];
+   struct tu_draw_state shader_const[2];
    struct tu_draw_state desc_sets;
 
    struct tu_draw_state vs_params;
@@ -926,6 +934,8 @@ struct tu_cmd_state
    bool predication_active;
 
    struct tu_lrz_state lrz;
+
+   struct tu_draw_state depth_plane_state;
 };
 
 struct tu_cmd_pool
@@ -1097,6 +1107,7 @@ struct tu_pipeline
    uint32_t gras_su_cntl, gras_su_cntl_mask;
    uint32_t rb_depth_cntl, rb_depth_cntl_mask;
    uint32_t rb_stencil_cntl, rb_stencil_cntl_mask;
+   uint32_t stencil_wrmask;
 
    bool rb_depth_cntl_disable;
 
@@ -1642,5 +1653,8 @@ TU_DEFINE_NONDISP_HANDLE_CASTS(tu_sampler_ycbcr_conversion, VkSamplerYcbcrConver
 
 /* for TU_FROM_HANDLE with both VkFence and VkSemaphore: */
 #define tu_syncobj_from_handle(x) ((struct tu_syncobj*) (uintptr_t) (x))
+
+void
+update_stencil_mask(uint32_t *value, VkStencilFaceFlags face, uint32_t mask);
 
 #endif /* TU_PRIVATE_H */

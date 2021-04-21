@@ -233,13 +233,7 @@ if [ "x$PIGLIT_PROFILES" = "xreplay" ] \
     __MINIO_PATH="$PIGLIT_REPLAY_ARTIFACTS_BASE_URL"
     __MINIO_TRACES_PREFIX="traces"
 
-    ci-fairy minio cp "$RESULTS"/results.json.bz2 \
-        "minio://${MINIO_HOST}${__MINIO_PATH}/${__MINIO_TRACES_PREFIX}/results.json.bz2"
-
     quiet replay_minio_upload_images
-
-    ci-fairy minio cp "$RESULTS"/junit.xml \
-        "minio://${MINIO_HOST}${__MINIO_PATH}/${__MINIO_TRACES_PREFIX}/junit.xml"
 fi
 
 if [ -n "$USE_CASELIST" ]; then
@@ -259,19 +253,17 @@ if diff -q ".gitlab-ci/piglit/$PIGLIT_RESULTS.txt.baseline" $RESULTSFILE; then
     exit 0
 fi
 
-if [ ${PIGLIT_HTML_SUMMARY:-1} -eq 1 ]; then
-    ./piglit summary html --exclude-details=pass \
-        "$RESULTS"/summary "$RESULTS"/results.json.bz2
+./piglit summary html --exclude-details=pass \
+"$RESULTS"/summary "$RESULTS"/results.json.bz2
 
-    if [ "x$PIGLIT_PROFILES" = "xreplay" ]; then
-        find "$RESULTS"/summary -type f -name "*.html" -print0 \
-            | xargs -0 sed -i 's%<img src="file://'"${RESULTS}"'.*-\([0-9a-f]*\)\.png%<img src="https://'"${MINIO_HOST}${PIGLIT_REPLAY_ARTIFACTS_BASE_URL}"'/traces/\1.png%g'
-        find "$RESULTS"/summary -type f -name "*.html" -print0 \
-            | xargs -0 sed -i 's%<img src="file://%<img src="https://'"${MINIO_HOST}${PIGLIT_REPLAY_REFERENCE_IMAGES_BASE_URL}"'/%g'
-    fi
-
-    FAILURE_MESSAGE=$(printf "${FAILURE_MESSAGE}\n%s" "Check the HTML summary for problems at: ${ARTIFACTS_BASE_URL}/results/summary/problems.html")
+if [ "x$PIGLIT_PROFILES" = "xreplay" ]; then
+find "$RESULTS"/summary -type f -name "*.html" -print0 \
+        | xargs -0 sed -i 's%<img src="file://'"${RESULTS}"'.*-\([0-9a-f]*\)\.png%<img src="https://'"${MINIO_HOST}${PIGLIT_REPLAY_ARTIFACTS_BASE_URL}"'/traces/\1.png%g'
+find "$RESULTS"/summary -type f -name "*.html" -print0 \
+        | xargs -0 sed -i 's%<img src="file://%<img src="https://'"${MINIO_HOST}${PIGLIT_REPLAY_REFERENCE_IMAGES_BASE_URL}"'/%g'
 fi
+
+FAILURE_MESSAGE=$(printf "${FAILURE_MESSAGE}\n%s" "Check the HTML summary for problems at: ${ARTIFACTS_BASE_URL}/results/summary/problems.html")
 
 quiet print_red printf "%s\n" "$FAILURE_MESSAGE"
 quiet diff --color=always -u ".gitlab-ci/piglit/$PIGLIT_RESULTS.txt.baseline" $RESULTSFILE

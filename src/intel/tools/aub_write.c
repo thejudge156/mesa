@@ -31,7 +31,7 @@
 
 #include "drm-uapi/i915_drm.h"
 #include "intel_aub.h"
-#include "gen_context.h"
+#include "intel_context.h"
 
 #ifndef ALIGN
 #define ALIGN(x, y) (((x) + (y)-1) & ~((y)-1))
@@ -159,7 +159,7 @@ aub_file_init(struct aub_file *aub, FILE *file, FILE *debug, uint16_t pci_id, co
    aub->verbose_log_file = debug;
    aub->file = file;
    aub->pci_id = pci_id;
-   fail_if(!gen_get_device_info_from_pci_id(pci_id, &aub->devinfo),
+   fail_if(!intel_get_device_info_from_pci_id(pci_id, &aub->devinfo),
            "failed to identify chipset=0x%x\n", pci_id);
    aub->addr_bits = aub->devinfo.ver >= 8 ? 48 : 32;
 
@@ -461,18 +461,18 @@ engine_from_engine_class(enum drm_i915_gem_engine_class engine_class)
 }
 
 static void
-get_context_init(const struct gen_device_info *devinfo,
-                 const struct gen_context_parameters *params,
+get_context_init(const struct intel_device_info *devinfo,
+                 const struct intel_context_parameters *params,
                  enum drm_i915_gem_engine_class engine_class,
                  uint32_t *data,
                  uint32_t *size)
 {
-   static const gen_context_init_t gfx8_contexts[] = {
+   static const intel_context_init_t gfx8_contexts[] = {
       [I915_ENGINE_CLASS_RENDER] = gfx8_render_context_init,
       [I915_ENGINE_CLASS_COPY] = gfx8_blitter_context_init,
       [I915_ENGINE_CLASS_VIDEO] = gfx8_video_context_init,
    };
-   static const gen_context_init_t gfx10_contexts[] = {
+   static const intel_context_init_t gfx10_contexts[] = {
       [I915_ENGINE_CLASS_RENDER] = gfx10_render_context_init,
       [I915_ENGINE_CLASS_COPY] = gfx10_blitter_context_init,
       [I915_ENGINE_CLASS_VIDEO] = gfx10_video_context_init,
@@ -553,7 +553,7 @@ write_engine_execlist_setup(struct aub_file *aub,
       dword_out(aub, 0);
 
    /* CONTEXT */
-   struct gen_context_parameters params = {
+   struct intel_context_parameters params = {
       .ring_addr = hw_ctx->ring_addr,
       .ring_size = RING_SIZE,
       .pml4_addr = aub->pml4.phys_addr,

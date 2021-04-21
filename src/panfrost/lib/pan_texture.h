@@ -201,11 +201,10 @@ panfrost_texture_offset(const struct pan_image_layout *layout,
 struct pan_blendable_format {
         enum mali_color_buffer_internal_format internal;
         enum mali_mfbd_color_format writeback;
+        mali_pixel_format bifrost;
 };
 
-struct pan_blendable_format
-panfrost_blend_format(enum pipe_format format);
-
+extern const struct pan_blendable_format panfrost_blendable_formats[PIPE_FORMAT_COUNT];
 extern const struct panfrost_format panfrost_pipe_format_v6[PIPE_FORMAT_COUNT];
 extern const struct panfrost_format panfrost_pipe_format_v7[PIPE_FORMAT_COUNT];
 
@@ -252,8 +251,7 @@ panfrost_bifrost_swizzle(unsigned components)
 
 unsigned
 panfrost_format_to_bifrost_blend(const struct panfrost_device *dev,
-                                 const struct util_format_description *desc,
-                                 bool dither);
+                                 enum pipe_format format);
 
 struct pan_pool;
 struct pan_scoreboard;

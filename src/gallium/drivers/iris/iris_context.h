@@ -30,7 +30,7 @@
 #include "util/u_debug.h"
 #include "util/u_threaded_context.h"
 #include "intel/blorp/blorp.h"
-#include "intel/dev/gen_debug.h"
+#include "intel/dev/intel_debug.h"
 #include "intel/common/intel_l3_config.h"
 #include "intel/compiler/brw_compiler.h"
 #include "iris_batch.h"
@@ -336,6 +336,7 @@ enum pipe_control_flags
 #define PIPE_CONTROL_CACHE_FLUSH_BITS \
    (PIPE_CONTROL_DEPTH_CACHE_FLUSH |  \
     PIPE_CONTROL_DATA_CACHE_FLUSH |   \
+    PIPE_CONTROL_TILE_CACHE_FLUSH |   \
     PIPE_CONTROL_RENDER_TARGET_FLUSH)
 
 #define PIPE_CONTROL_CACHE_INVALIDATE_BITS  \
@@ -661,7 +662,7 @@ struct iris_context {
       struct iris_bo *scratch_bos[1 << 4][MESA_SHADER_STAGES];
    } shaders;
 
-   struct gen_perf_context *perf_ctx;
+   struct intel_perf_context *perf_ctx;
 
    /** Frame number for debug prints */
    uint32_t frame;
@@ -812,8 +813,6 @@ struct iris_context {
    if (unlikely(dbg))                                  \
       pipe_debug_message(dbg, PERF_INFO, __VA_ARGS__); \
 } while(0)
-
-double get_time(void);
 
 struct pipe_context *
 iris_create_context(struct pipe_screen *screen, void *priv, unsigned flags);
@@ -984,7 +983,6 @@ void iris_postdraw_update_resolve_tracking(struct iris_context *ice,
                                            struct iris_batch *batch);
 void iris_cache_flush_for_render(struct iris_batch *batch,
                                  struct iris_bo *bo,
-                                 enum isl_format format,
                                  enum isl_aux_usage aux_usage);
 int iris_get_driver_query_info(struct pipe_screen *pscreen, unsigned index,
                                struct pipe_driver_query_info *info);

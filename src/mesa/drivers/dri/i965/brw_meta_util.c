@@ -285,7 +285,7 @@ brw_is_color_fast_clear_compatible(struct brw_context *brw,
                                    const struct brw_mipmap_tree *mt,
                                    const union gl_color_union *color)
 {
-   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   const struct intel_device_info *devinfo = &brw->screen->devinfo;
    const struct gl_context *ctx = &brw->ctx;
 
    /* If we're mapping the render format to a different format than the
@@ -348,7 +348,7 @@ brw_meta_convert_fast_clear_color(const struct brw_context *brw,
    switch (_mesa_get_format_base_format(mt->format)) {
    case GL_INTENSITY:
       override_color.u32[3] = override_color.u32[0];
-      /* fallthrough */
+      FALLTHROUGH;
    case GL_LUMINANCE:
    case GL_LUMINANCE_ALPHA:
       override_color.u32[1] = override_color.u32[0];

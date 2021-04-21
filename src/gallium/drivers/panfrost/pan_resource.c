@@ -103,6 +103,13 @@ panfrost_resource_from_handle(struct pipe_screen *pscreen,
         }
 
         rsc->image.data.bo = panfrost_bo_import(dev, whandle->handle);
+        /* Sometimes an import can fail e.g. on an invalid buffer fd, out of
+         * memory space to mmap it etc.
+         */
+        if (!rsc->image.data.bo) {
+                ralloc_free(rsc);
+                return NULL;
+        }
         if (rsc->image.layout.crc_mode == PAN_IMAGE_CRC_OOB)
                 rsc->image.crc.bo = panfrost_bo_create(dev, rsc->image.layout.crc_size, 0);
 
@@ -732,6 +739,7 @@ pan_alloc_staging(struct panfrost_context *ctx, struct panfrost_resource *rsc,
         }
         tmpl.last_level = 0;
         tmpl.bind |= PIPE_BIND_LINEAR;
+        tmpl.bind &= ~(PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT | PIPE_BIND_SHARED);
 
         struct pipe_resource *pstaging =
                 pctx->screen->resource_create(pctx->screen, &tmpl);
@@ -824,6 +832,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
         /* We don't have s/w routines for AFBC, so use a staging texture */
         if (drm_is_afbc(rsrc->image.layout.modifier)) {
                 struct panfrost_resource *staging = pan_alloc_staging(ctx, rsrc, level, box);
+                assert(staging);
 
                 /* Staging resources have one LOD: level 0. Query the strides
                  * on this LOD.

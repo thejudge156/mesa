@@ -161,6 +161,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_DEMOTE_TO_HELPER_INVOCATION:
    case PIPE_CAP_PREFER_REAL_BUFFER_IN_CONSTBUF0:
    case PIPE_CAP_COMPUTE_SHADER_DERIVATIVES:
+   case PIPE_CAP_TGSI_ATOMINC_WRAP:
       return 1;
 
    case PIPE_CAP_GLSL_ZERO_INIT:
@@ -228,7 +229,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
    case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
    case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
-      return LLVM_VERSION_MAJOR < 9 && !sscreen->info.has_unaligned_shader_loads;
+      return 0;
 
    case PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE:
       /* Gfx8 (Polaris11) hangs, so don't enable this on Gfx8 and older chips. */
@@ -337,8 +338,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return sscreen->info.pci_dev;
    case PIPE_CAP_PCI_FUNCTION:
       return sscreen->info.pci_func;
-   case PIPE_CAP_TGSI_ATOMINC_WRAP:
-      return LLVM_VERSION_MAJOR >= 10;
 
    default:
       return u_pipe_screen_get_param_defaults(pscreen, param);
@@ -710,7 +709,7 @@ static unsigned get_max_threads_per_block(struct si_screen *screen, enum pipe_sh
    if (ir_type == PIPE_SHADER_IR_NATIVE)
       return 256;
 
-   /* LLVM 10 only supports 1024 threads per block. */
+   /* LLVM only supports 1024 threads per block. */
    return 1024;
 }
 

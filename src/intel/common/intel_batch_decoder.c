@@ -30,7 +30,7 @@
 
 void
 intel_batch_decode_ctx_init(struct intel_batch_decode_ctx *ctx,
-                            const struct gen_device_info *devinfo,
+                            const struct intel_device_info *devinfo,
                             FILE *fp, enum intel_batch_decode_flags flags,
                             const char *xml_path,
                             struct intel_batch_decode_bo (*get_bo)(void *,
@@ -65,7 +65,7 @@ intel_batch_decode_ctx_finish(struct intel_batch_decode_ctx *ctx)
 
 #define CSI "\e["
 #define RED_COLOR    CSI "31m"
-#define BLUE_HEADER  CSI "0;44m"
+#define BLUE_HEADER  CSI "0;44m" CSI "1;37m"
 #define GREEN_HEADER CSI "1;42m"
 #define NORMAL       CSI "0m"
 

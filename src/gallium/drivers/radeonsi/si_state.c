@@ -2169,6 +2169,9 @@ static bool si_is_format_supported(struct pipe_screen *screen, enum pipe_format 
         !sscreen->info.has_3d_cube_border_color_mipmap)
       return false;
 
+   if (util_format_get_num_planes(format) >= 2)
+      return false;
+
    if (MAX2(1, sample_count) < MAX2(1, storage_sample_count))
       return false;
 
@@ -2600,32 +2603,29 @@ static void si_dec_framebuffer_counters(const struct pipe_framebuffer_state *sta
    }
 }
 
+void si_mark_display_dcc_dirty(struct si_context *sctx, struct si_texture *tex)
+{
+   if (!tex->surface.display_dcc_offset || tex->displayable_dcc_dirty)
+      return;
+
+   if (!(tex->buffer.external_usage & PIPE_HANDLE_USAGE_EXPLICIT_FLUSH)) {
+      struct hash_entry *entry = _mesa_hash_table_search(sctx->dirty_implicit_resources, tex);
+      if (!entry) {
+         struct pipe_resource *dummy = NULL;
+         pipe_resource_reference(&dummy, &tex->buffer.b.b);
+         _mesa_hash_table_insert(sctx->dirty_implicit_resources, tex, tex);
+      }
+   }
+   tex->displayable_dcc_dirty = true;
+}
+
 static void si_update_display_dcc_dirty(struct si_context *sctx)
 {
    const struct pipe_framebuffer_state *state = &sctx->framebuffer.state;
-   struct si_surface *surf;
-   struct si_texture *tex;
-   int i;
 
-   for (i = 0; i < state->nr_cbufs; i++) {
-      if (!state->cbufs[i])
-         continue;
-
-      surf = (struct si_surface *)state->cbufs[i];
-      tex = (struct si_texture *)surf->base.texture;
-
-      if (!tex->surface.display_dcc_offset || tex->displayable_dcc_dirty)
-         continue;
-
-      if (!(tex->buffer.external_usage & PIPE_HANDLE_USAGE_EXPLICIT_FLUSH)) {
-         struct hash_entry *entry = _mesa_hash_table_search(sctx->dirty_implicit_resources, tex);
-         if (!entry) {
-            struct pipe_resource *dummy = NULL;
-            pipe_resource_reference(&dummy, &tex->buffer.b.b);
-            _mesa_hash_table_insert(sctx->dirty_implicit_resources, tex, tex);
-         }
-      }
-      tex->displayable_dcc_dirty = true;
+   for (unsigned i = 0; i < state->nr_cbufs; i++) {
+      if (state->cbufs[i])
+         si_mark_display_dcc_dirty(sctx, (struct si_texture *)state->cbufs[i]->texture);
    }
 }
 
@@ -3751,8 +3751,8 @@ static void gfx10_make_texture_descriptor(
       }
 
       if (tex->upgraded_depth && !is_stencil) {
-         assert(img_format == V_008F0C_IMG_FORMAT_32_FLOAT);
-         img_format = V_008F0C_IMG_FORMAT_32_FLOAT_CLAMP;
+         assert(img_format == V_008F0C_GFX10_FORMAT_32_FLOAT);
+         img_format = V_008F0C_GFX10_FORMAT_32_FLOAT_CLAMP;
       }
    } else {
       util_format_compose_swizzles(desc->swizzle, state_swizzle, swizzle);
@@ -3816,43 +3816,43 @@ static void gfx10_make_texture_descriptor(
 #define FMASK(s, f) (((unsigned)(MAX2(1, s)) * 16) + (MAX2(1, f)))
       switch (FMASK(res->nr_samples, res->nr_storage_samples)) {
       case FMASK(2, 1):
-         format = V_008F0C_IMG_FORMAT_FMASK8_S2_F1;
+         format = V_008F0C_GFX10_FORMAT_FMASK8_S2_F1;
          break;
       case FMASK(2, 2):
-         format = V_008F0C_IMG_FORMAT_FMASK8_S2_F2;
+         format = V_008F0C_GFX10_FORMAT_FMASK8_S2_F2;
          break;
       case FMASK(4, 1):
-         format = V_008F0C_IMG_FORMAT_FMASK8_S4_F1;
+         format = V_008F0C_GFX10_FORMAT_FMASK8_S4_F1;
          break;
       case FMASK(4, 2):
-         format = V_008F0C_IMG_FORMAT_FMASK8_S4_F2;
+         format = V_008F0C_GFX10_FORMAT_FMASK8_S4_F2;
          break;
       case FMASK(4, 4):
-         format = V_008F0C_IMG_FORMAT_FMASK8_S4_F4;
+         format = V_008F0C_GFX10_FORMAT_FMASK8_S4_F4;
          break;
       case FMASK(8, 1):
-         format = V_008F0C_IMG_FORMAT_FMASK8_S8_F1;
+         format = V_008F0C_GFX10_FORMAT_FMASK8_S8_F1;
          break;
       case FMASK(8, 2):
-         format = V_008F0C_IMG_FORMAT_FMASK16_S8_F2;
+         format = V_008F0C_GFX10_FORMAT_FMASK16_S8_F2;
          break;
       case FMASK(8, 4):
-         format = V_008F0C_IMG_FORMAT_FMASK32_S8_F4;
+         format = V_008F0C_GFX10_FORMAT_FMASK32_S8_F4;
          break;
       case FMASK(8, 8):
-         format = V_008F0C_IMG_FORMAT_FMASK32_S8_F8;
+         format = V_008F0C_GFX10_FORMAT_FMASK32_S8_F8;
          break;
       case FMASK(16, 1):
-         format = V_008F0C_IMG_FORMAT_FMASK16_S16_F1;
+         format = V_008F0C_GFX10_FORMAT_FMASK16_S16_F1;
          break;
       case FMASK(16, 2):
-         format = V_008F0C_IMG_FORMAT_FMASK32_S16_F2;
+         format = V_008F0C_GFX10_FORMAT_FMASK32_S16_F2;
          break;
       case FMASK(16, 4):
-         format = V_008F0C_IMG_FORMAT_FMASK64_S16_F4;
+         format = V_008F0C_GFX10_FORMAT_FMASK64_S16_F4;
          break;
       case FMASK(16, 8):
-         format = V_008F0C_IMG_FORMAT_FMASK64_S16_F8;
+         format = V_008F0C_GFX10_FORMAT_FMASK64_S16_F8;
          break;
       default:
          unreachable("invalid nr_samples");
@@ -4455,8 +4455,7 @@ static void *si_create_sampler_state(struct pipe_context *ctx,
    struct si_sampler_state *rstate = CALLOC_STRUCT(si_sampler_state);
    unsigned max_aniso = sscreen->force_aniso >= 0 ? sscreen->force_aniso : state->max_anisotropy;
    unsigned max_aniso_ratio = si_tex_aniso_filter(max_aniso);
-   bool trunc_coord = !sscreen->options.no_trunc_coord &&
-                      state->min_img_filter == PIPE_TEX_FILTER_NEAREST &&
+   bool trunc_coord = state->min_img_filter == PIPE_TEX_FILTER_NEAREST &&
                       state->mag_img_filter == PIPE_TEX_FILTER_NEAREST &&
                       state->compare_mode == PIPE_TEX_COMPARE_NONE;
    union pipe_color_union clamped_border_color;

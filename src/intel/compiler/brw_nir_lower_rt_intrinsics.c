@@ -46,7 +46,7 @@ build_leaf_is_procedural(nir_builder *b, struct brw_nir_rt_mem_hit_defs *hit)
 
 static void
 lower_rt_intrinsics_impl(nir_function_impl *impl,
-                         const struct gen_device_info *devinfo)
+                         const struct intel_device_info *devinfo)
 {
    nir_builder build;
    nir_builder_init(&build, impl);
@@ -72,7 +72,7 @@ lower_rt_intrinsics_impl(nir_function_impl *impl,
                               stage == MESA_SHADER_CLOSEST_HIT);
       brw_nir_rt_load_mem_ray(b, &object_ray_in,
                               BRW_RT_BVH_LEVEL_OBJECT);
-      /* Fall through */
+      FALLTHROUGH;
 
    case MESA_SHADER_MISS:
       brw_nir_rt_load_mem_ray(b, &world_ray_in,
@@ -400,7 +400,7 @@ lower_rt_intrinsics_impl(nir_function_impl *impl,
  */
 void
 brw_nir_lower_rt_intrinsics(nir_shader *nir,
-                            const struct gen_device_info *devinfo)
+                            const struct intel_device_info *devinfo)
 {
    nir_foreach_function(function, nir) {
       if (function->impl)

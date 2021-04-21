@@ -311,7 +311,7 @@ create_ici(struct zink_screen *screen, const struct pipe_resource *templ, unsign
    case PIPE_TEXTURE_CUBE:
    case PIPE_TEXTURE_CUBE_ARRAY:
       ici.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-      /* fall-through */
+      FALLTHROUGH;
    case PIPE_TEXTURE_2D:
    case PIPE_TEXTURE_2D_ARRAY:
    case PIPE_TEXTURE_RECT:
@@ -1003,8 +1003,17 @@ zink_transfer_map(struct pipe_context *pctx,
 
          if (usage & PIPE_MAP_READ) {
             zink_transfer_copy_bufimage(ctx, staging_res, res, trans);
+            /* TODO: remove for wsi */
+            struct zink_resource *scanout = NULL;
+            if (res->scanout_obj) {
+               scanout = ctx->flush_res;
+               ctx->flush_res = res;
+            }
             /* need to wait for rendering to finish */
             zink_fence_wait(pctx);
+            /* TODO: remove for wsi */
+            if (res->scanout_obj)
+               ctx->flush_res = scanout;
          }
 
          ptr = base = map_resource(screen, staging_res);
@@ -1019,10 +1028,19 @@ zink_transfer_map(struct pipe_context *pctx,
          if (zink_resource_has_usage(res, ZINK_RESOURCE_ACCESS_READ))
             resource_sync_reads(ctx, res);
          if (zink_resource_has_usage(res, ZINK_RESOURCE_ACCESS_RW)) {
+            /* TODO: remove for wsi */
+            struct zink_resource *scanout = NULL;
+            if (res->scanout_obj) {
+               scanout = ctx->flush_res;
+               ctx->flush_res = res;
+            }
             if (usage & PIPE_MAP_READ)
                resource_sync_writes_from_batch_usage(ctx, res);
             else
                zink_fence_wait(pctx);
+            /* TODO: remove for wsi */
+            if (res->scanout_obj)
+               ctx->flush_res = scanout;
          }
          VkImageSubresource isr = {
             res->aspect,

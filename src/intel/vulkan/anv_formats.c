@@ -468,7 +468,8 @@ anv_format_has_npot_plane(const struct anv_format *anv_format) {
  * _cannot_ check for compatibility).
  */
 struct anv_format_plane
-anv_get_format_plane(const struct gen_device_info *devinfo, VkFormat vk_format,
+anv_get_format_plane(const struct intel_device_info *devinfo,
+                     VkFormat vk_format,
                      VkImageAspectFlagBits aspect, VkImageTiling tiling)
 {
    const struct anv_format *format = anv_get_format(vk_format);
@@ -542,7 +543,7 @@ anv_get_format_plane(const struct gen_device_info *devinfo, VkFormat vk_format,
 // Format capabilities
 
 VkFormatFeatureFlags
-anv_get_image_format_features(const struct gen_device_info *devinfo,
+anv_get_image_format_features(const struct intel_device_info *devinfo,
                               VkFormat vk_format,
                               const struct anv_format *anv_format,
                               VkImageTiling vk_tiling,
@@ -779,7 +780,7 @@ anv_get_image_format_features(const struct gen_device_info *devinfo,
 }
 
 static VkFormatFeatureFlags
-get_buffer_format_features(const struct gen_device_info *devinfo,
+get_buffer_format_features(const struct intel_device_info *devinfo,
                            VkFormat vk_format,
                            const struct anv_format *anv_format)
 {
@@ -823,7 +824,7 @@ get_drm_format_modifier_properties_list(const struct anv_physical_device *physic
                                         VkFormat vk_format,
                                         VkDrmFormatModifierPropertiesListEXT *list)
 {
-   const struct gen_device_info *devinfo = &physical_device->info;
+   const struct intel_device_info *devinfo = &physical_device->info;
    const struct anv_format *anv_format = anv_get_format(vk_format);
 
    VK_OUTARRAY_MAKE(out, list->pDrmFormatModifierProperties,
@@ -857,7 +858,7 @@ void anv_GetPhysicalDeviceFormatProperties(
     VkFormatProperties*                         pFormatProperties)
 {
    ANV_FROM_HANDLE(anv_physical_device, physical_device, physicalDevice);
-   const struct gen_device_info *devinfo = &physical_device->info;
+   const struct intel_device_info *devinfo = &physical_device->info;
    const struct anv_format *anv_format = anv_get_format(vk_format);
 
    *pFormatProperties = (VkFormatProperties) {
@@ -908,7 +909,7 @@ anv_get_image_format_properties(
    uint32_t maxArraySize;
    VkSampleCountFlags sampleCounts;
    struct anv_instance *instance = physical_device->instance;
-   const struct gen_device_info *devinfo = &physical_device->info;
+   const struct intel_device_info *devinfo = &physical_device->info;
    const struct anv_format *format = anv_get_format(info->format);
    const struct isl_drm_modifier_info *isl_mod_info = NULL;
    const VkImageFormatListCreateInfo *format_list_info =
@@ -1371,6 +1372,15 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
        */
       switch (external_info->handleType) {
       case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
+
+         /* Disable stencil export, there are issues. */
+         if (vk_format_aspects(base_info->format) & VK_IMAGE_ASPECT_STENCIL_BIT) {
+            result = vk_errorfi(instance, &physical_device->vk.base,
+                                VK_ERROR_FORMAT_NOT_SUPPORTED,
+                                "External stencil buffers are not supported yet");
+            goto fail;
+         }
+
          if (external_props) {
             if (tiling_has_explicit_layout) {
                /* With an explicit memory layout, we don't care which type of fd
@@ -1433,7 +1443,7 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
             external_props->externalMemoryProperties = android_image_props;
             break;
          }
-      /* fallthrough - if ahw not supported */
+         FALLTHROUGH; /* If ahw not supported */
       default:
          /* From the Vulkan 1.0.42 spec:
           *
@@ -1526,7 +1536,7 @@ void anv_GetPhysicalDeviceExternalBufferProperties(
          pExternalBufferProperties->externalMemoryProperties = android_buffer_props;
          return;
       }
-      /* fallthrough if ahw not supported */
+      FALLTHROUGH; /* If ahw not supported */
    default:
       goto unsupported;
    }

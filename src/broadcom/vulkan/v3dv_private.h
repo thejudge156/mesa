@@ -326,6 +326,17 @@ broadcom_shader_stage_to_gl(broadcom_shader_stage stage)
    }
 }
 
+static inline const char *
+broadcom_shader_stage_name(broadcom_shader_stage stage)
+{
+   switch(stage) {
+   case BROADCOM_SHADER_VERTEX_BIN:
+      return "MESA_SHADER_VERTEX_BIN";
+   default:
+      return gl_shader_stage_name(broadcom_shader_stage_to_gl(stage));
+   }
+}
+
 struct v3dv_pipeline_cache {
    struct vk_object_base base;
 
@@ -924,6 +935,7 @@ struct v3dv_job {
     */
    struct set *bos;
    uint32_t bo_count;
+   uint64_t bo_handle_mask;
 
    struct v3dv_bo *tile_alloc;
    struct v3dv_bo *tile_state;
@@ -998,7 +1010,10 @@ void v3dv_job_init(struct v3dv_job *job,
                    struct v3dv_cmd_buffer *cmd_buffer,
                    int32_t subpass_idx);
 void v3dv_job_destroy(struct v3dv_job *job);
+
 void v3dv_job_add_bo(struct v3dv_job *job, struct v3dv_bo *bo);
+void v3dv_job_add_bo_unchecked(struct v3dv_job *job, struct v3dv_bo *bo);
+
 void v3dv_job_emit_binning_flush(struct v3dv_job *job);
 void v3dv_job_start_frame(struct v3dv_job *job,
                           uint32_t width,
@@ -1043,7 +1058,10 @@ struct v3dv_cmd_buffer_state {
    struct v3dv_cmd_pipeline_state compute;
 
    struct v3dv_dynamic_state dynamic;
+
    uint32_t dirty;
+   VkShaderStageFlagBits dirty_descriptor_stages;
+   VkShaderStageFlagBits dirty_push_constants_stages;
 
    /* Current clip window. We use this to check whether we have an active
     * scissor, since in that case we can't use TLB clears and need to fallback
@@ -1126,10 +1144,13 @@ struct v3dv_cmd_buffer_state {
          struct v3dv_end_query_cpu_job_info *states;
       } end;
 
-      /* This is not NULL if we have an active query, that is, we have called
-       * vkCmdBeginQuery but not vkCmdEndQuery.
+      /* This BO is not NULL if we have an active query, that is, we have
+       * called vkCmdBeginQuery but not vkCmdEndQuery.
        */
-      struct v3dv_bo *active_query;
+      struct {
+         struct v3dv_bo *bo;
+         uint32_t offset;
+      } active_query;
    } query;
 };
 
@@ -1190,13 +1211,20 @@ struct v3dv_combined_image_sampler_descriptor {
 struct v3dv_query {
    bool maybe_available;
    union {
-      struct v3dv_bo *bo; /* Used by GPU queries (occlusion) */
-      uint64_t value; /* Used by CPU queries (timestamp) */
+      /* Used by GPU queries (occlusion) */
+      struct {
+         struct v3dv_bo *bo;
+         uint32_t offset;
+      };
+      /* Used by CPU queries (timestamp) */
+      uint64_t value;
    };
 };
 
 struct v3dv_query_pool {
    struct vk_object_base base;
+
+   struct v3dv_bo *bo; /* Only used with GPU queries (occlusion) */
 
    VkQueryType query_type;
    uint32_t query_count;
@@ -1633,6 +1661,13 @@ v3dv_pipeline_combined_index_key_unpack(uint32_t combined_index_key,
       *sampler_index = sampler;
 }
 
+struct v3dv_descriptor_maps {
+   struct v3dv_descriptor_map ubo_map;
+   struct v3dv_descriptor_map ssbo_map;
+   struct v3dv_descriptor_map sampler_map;
+   struct v3dv_descriptor_map texture_map;
+};
+
 /* The structure represents data shared between different objects, like the
  * pipeline and the pipeline cache, so we ref count it to know when it should
  * be freed.
@@ -1642,11 +1677,7 @@ struct v3dv_pipeline_shared_data {
 
    unsigned char sha1_key[20];
 
-   struct v3dv_descriptor_map ubo_map;
-   struct v3dv_descriptor_map ssbo_map;
-   struct v3dv_descriptor_map sampler_map;
-   struct v3dv_descriptor_map texture_map;
-
+   struct v3dv_descriptor_maps *maps[BROADCOM_SHADER_STAGES];
    struct v3dv_shader_variant *variants[BROADCOM_SHADER_STAGES];
 
    struct v3dv_bo *assembly_bo;

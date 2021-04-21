@@ -190,7 +190,7 @@ isl_mocs(const struct isl_device *dev, isl_surf_usage_flags_t usage,
 
 void
 isl_device_init(struct isl_device *dev,
-                const struct gen_device_info *info,
+                const struct intel_device_info *info,
                 bool has_bit6_swizzling)
 {
    /* Gfx8+ don't have bit6 swizzling, ensure callsite is not confused. */
@@ -1810,7 +1810,7 @@ isl_surf_get_hiz_surf(const struct isl_device *dev,
          assert(ISL_GFX_VER(dev) == 5);
          unreachable("This should work, but is untested");
       }
-      /* Fall through */
+      FALLTHROUGH;
    case ISL_FORMAT_R16_UNORM:
    case ISL_FORMAT_R32_FLOAT:
       break;
@@ -1819,7 +1819,7 @@ isl_surf_get_hiz_surf(const struct isl_device *dev,
          assert(isl_surf_usage_is_depth_and_stencil(surf->usage));
          unreachable("This should work, but is untested");
       }
-      /* Fall through */
+      FALLTHROUGH;
    default:
       return false;
    }
@@ -2793,7 +2793,7 @@ isl_surf_get_depth_format(const struct isl_device *dev,
 }
 
 bool
-isl_swizzle_supports_rendering(const struct gen_device_info *devinfo,
+isl_swizzle_supports_rendering(const struct intel_device_info *devinfo,
                                struct isl_swizzle swizzle)
 {
    if (devinfo->is_haswell) {

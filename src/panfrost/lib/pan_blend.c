@@ -143,7 +143,7 @@ pan_blend_can_fixed_function(const struct panfrost_device *dev,
                 return false;
 
         /* Not all formats can be blended by fixed-function hardware */
-        if (!panfrost_blend_format(rt_state->format).internal)
+        if (!panfrost_blendable_formats[rt_state->format].internal)
                 return false;
 
         if (!rt_state->equation.blend_enable)
@@ -245,7 +245,7 @@ to_panfrost_function(enum blend_func blend_func,
                         break;
                 case BLEND_FUNC_REVERSE_SUBTRACT:
                         function->negate_b = true;
-                        /* fall-through */
+                        FALLTHROUGH;
                 case BLEND_FUNC_SUBTRACT:
                         function->b = MALI_BLEND_OPERAND_B_SRC_MINUS_DEST;
                         break;
@@ -614,7 +614,7 @@ pan_blend_get_bifrost_desc(const struct panfrost_device *dev,
                 }
 
                 cfg.fixed_function.conversion.memory_format =
-                         panfrost_format_to_bifrost_blend(dev, desc, true);
+                         panfrost_format_to_bifrost_blend(dev, fmt);
         }
 
         return res;

@@ -28,7 +28,7 @@
 #include "blorp_priv.h"
 #include "compiler/brw_compiler.h"
 #include "compiler/brw_nir.h"
-#include "dev/gen_debug.h"
+#include "dev/intel_debug.h"
 
 const char *
 blorp_shader_type_to_name(enum blorp_shader_type type)
@@ -335,7 +335,7 @@ blorp_hiz_op(struct blorp_batch *batch, struct blorp_surf *surf,
              uint32_t level, uint32_t start_layer, uint32_t num_layers,
              enum isl_aux_op op)
 {
-   const struct gen_device_info *devinfo = batch->blorp->isl_dev->info;
+   const struct intel_device_info *devinfo = batch->blorp->isl_dev->info;
 
    struct blorp_params params;
    blorp_params_init(&params);

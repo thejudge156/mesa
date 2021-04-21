@@ -1013,22 +1013,6 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
                   sscreen->options.enable_sam,
                   sscreen->options.disable_sam);
 
-   /* Older LLVM have buggy v_pk_* instructions. */
-   if (!sscreen->info.has_packed_math_16bit || LLVM_VERSION_MAJOR < 11)
-      sscreen->options.fp16 = false;
-
-   if (sscreen->info.chip_class == GFX10_3 && LLVM_VERSION_MAJOR < 11) {
-      fprintf(stderr, "radeonsi: GFX 10.3 requires LLVM 11 or higher\n");
-      FREE(sscreen);
-      return NULL;
-   }
-
-   if (sscreen->info.chip_class == GFX10 && LLVM_VERSION_MAJOR < 9) {
-      fprintf(stderr, "radeonsi: Navi family support requires LLVM 9 or higher\n");
-      FREE(sscreen);
-      return NULL;
-   }
-
    if (sscreen->info.chip_class >= GFX9) {
       sscreen->se_tile_repeat = 32 * sscreen->info.max_se;
    } else {
@@ -1282,9 +1266,7 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
              sscreen->pbb_persistent_states_per_bin <= 32);
    }
 
-   /* While it would be nice not to have this flag, we are constrained
-    * by the reality that LLVM 9.0 has buggy VGPR indexing on GFX9.
-    */
+   /* LLVM doesn't support VGPR indexing on GFX9. */
    sscreen->llvm_has_working_vgpr_indexing = sscreen->info.chip_class != GFX9;
 
    (void)simple_mtx_init(&sscreen->shader_parts_mutex, mtx_plain);

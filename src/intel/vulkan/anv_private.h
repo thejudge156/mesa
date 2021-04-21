@@ -48,7 +48,7 @@
 #include "common/intel_gem.h"
 #include "common/intel_l3_config.h"
 #include "common/intel_measure.h"
-#include "dev/gen_device_info.h"
+#include "dev/intel_device_info.h"
 #include "blorp/blorp.h"
 #include "compiler/brw_compiler.h"
 #include "util/bitset.h"
@@ -84,9 +84,9 @@ struct anv_image_view;
 struct anv_instance;
 
 struct intel_aux_map_context;
-struct gen_perf_config;
-struct gen_perf_counter_pass;
-struct gen_perf_query_result;
+struct intel_perf_config;
+struct intel_perf_counter_pass;
+struct intel_perf_query_result;
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_icd.h>
@@ -95,7 +95,7 @@ struct gen_perf_query_result;
 #include "anv_entrypoints.h"
 #include "isl/isl.h"
 
-#include "dev/gen_debug.h"
+#include "dev/intel_debug.h"
 #define MESA_LOG_TAG "MESA-INTEL"
 #include "util/log.h"
 #include "wsi_common.h"
@@ -891,7 +891,7 @@ struct anv_physical_device {
        uint8_t                                  device;
        uint8_t                                  function;
     }                                           pci_info;
-    struct gen_device_info                      info;
+    struct intel_device_info                      info;
     /** Amount of "GPU memory" we want to advertise
      *
      * Clearly, this value is bogus since Intel is a UMA architecture.  On
@@ -903,7 +903,7 @@ struct anv_physical_device {
     bool                                        supports_48bit_addresses;
     struct brw_compiler *                       compiler;
     struct isl_device                           isl_dev;
-    struct gen_perf_config *                    perf;
+    struct intel_perf_config *                    perf;
     /*
      * Number of commands required to implement a performance query begin +
      * end.
@@ -1182,7 +1182,7 @@ struct anv_device {
 
     struct anv_physical_device *                physical;
     bool                                        no_hw;
-    struct gen_device_info                      info;
+    struct intel_device_info                      info;
     struct isl_device                           isl_dev;
     int                                         context_id;
     int                                         fd;
@@ -1256,7 +1256,7 @@ struct anv_device {
 
     const struct intel_l3_config                *l3_config;
 
-    struct gen_debug_block_frame                *debug_frame_desc;
+    struct intel_debug_block_frame              *debug_frame_desc;
 };
 
 static inline struct anv_instance *
@@ -3338,7 +3338,17 @@ struct anv_graphics_pipeline {
 
    uint32_t                                     batch_data[512];
 
+   /* States that are part of batch_data and should be not emitted
+    * dynamically.
+    */
+   anv_cmd_dirty_mask_t                         static_state_mask;
+
+   /* States that need to be reemitted in cmd_buffer_flush_dynamic_state().
+    * This might cover more than the dynamic states specified at pipeline
+    * creation.
+    */
    anv_cmd_dirty_mask_t                         dynamic_state_mask;
+
    struct anv_dynamic_state                     dynamic_state;
 
    uint32_t                                     topology;
@@ -3533,7 +3543,7 @@ anv_image_aspect_to_plane(VkImageAspectFlags image_aspects,
    case VK_IMAGE_ASPECT_STENCIL_BIT:
       if ((image_aspects & VK_IMAGE_ASPECT_DEPTH_BIT) == 0)
          return 0;
-      /* Fall-through */
+      FALLTHROUGH;
    case VK_IMAGE_ASPECT_PLANE_1_BIT:
       return 1;
    case VK_IMAGE_ASPECT_PLANE_2_BIT:
@@ -3574,17 +3584,18 @@ anv_get_format_planes(VkFormat vk_format)
 }
 
 struct anv_format_plane
-anv_get_format_plane(const struct gen_device_info *devinfo, VkFormat vk_format,
+anv_get_format_plane(const struct intel_device_info *devinfo,
+                     VkFormat vk_format,
                      VkImageAspectFlagBits aspect, VkImageTiling tiling);
 
 static inline enum isl_format
-anv_get_isl_format(const struct gen_device_info *devinfo, VkFormat vk_format,
+anv_get_isl_format(const struct intel_device_info *devinfo, VkFormat vk_format,
                    VkImageAspectFlags aspect, VkImageTiling tiling)
 {
    return anv_get_format_plane(devinfo, vk_format, aspect, tiling).isl_format;
 }
 
-bool anv_formats_ccs_e_compatible(const struct gen_device_info *devinfo,
+bool anv_formats_ccs_e_compatible(const struct intel_device_info *devinfo,
                                   VkImageCreateFlags create_flags,
                                   VkFormat vk_format,
                                   VkImageTiling vk_tiling,
@@ -3901,7 +3912,7 @@ anv_image_get_compression_state_addr(const struct anv_device *device,
 
 /* Returns true if a HiZ-enabled depth buffer can be sampled from. */
 static inline bool
-anv_can_sample_with_hiz(const struct gen_device_info * const devinfo,
+anv_can_sample_with_hiz(const struct intel_device_info * const devinfo,
                         const struct anv_image *image)
 {
    if (!(image->aspects & VK_IMAGE_ASPECT_DEPTH_BIT))
@@ -4016,20 +4027,20 @@ anv_image_copy_to_shadow(struct anv_cmd_buffer *cmd_buffer,
                          uint32_t base_layer, uint32_t layer_count);
 
 enum isl_aux_state ATTRIBUTE_PURE
-anv_layout_to_aux_state(const struct gen_device_info * const devinfo,
+anv_layout_to_aux_state(const struct intel_device_info * const devinfo,
                         const struct anv_image *image,
                         const VkImageAspectFlagBits aspect,
                         const VkImageLayout layout);
 
 enum isl_aux_usage ATTRIBUTE_PURE
-anv_layout_to_aux_usage(const struct gen_device_info * const devinfo,
+anv_layout_to_aux_usage(const struct intel_device_info * const devinfo,
                         const struct anv_image *image,
                         const VkImageAspectFlagBits aspect,
                         const VkImageUsageFlagBits usage,
                         const VkImageLayout layout);
 
 enum anv_fast_clear_type ATTRIBUTE_PURE
-anv_layout_to_fast_clear_type(const struct gen_device_info * const devinfo,
+anv_layout_to_fast_clear_type(const struct intel_device_info * const devinfo,
                               const struct anv_image * const image,
                               const VkImageAspectFlagBits aspect,
                               const VkImageLayout layout);
@@ -4189,7 +4200,7 @@ anv_sanitize_image_offset(const VkImageType imageType,
 }
 
 VkFormatFeatureFlags
-anv_get_image_format_features(const struct gen_device_info *devinfo,
+anv_get_image_format_features(const struct intel_device_info *devinfo,
                               VkFormat vk_format,
                               const struct anv_format *anv_format,
                               VkImageTiling vk_tiling,
@@ -4382,9 +4393,9 @@ struct anv_query_pool {
    uint32_t                                     data_offset;
    uint32_t                                     snapshot_size;
    uint32_t                                     n_counters;
-   struct gen_perf_counter_pass                *counter_pass;
+   struct intel_perf_counter_pass                *counter_pass;
    uint32_t                                     n_passes;
-   struct gen_perf_query_info                 **pass_query;
+   struct intel_perf_query_info                 **pass_query;
 };
 
 static inline uint32_t khr_perf_query_preamble_offset(const struct anv_query_pool *pool,
@@ -4413,7 +4424,7 @@ anv_device_entrypoint_is_enabled(int index, uint32_t core_version,
                                  const struct vk_device_extension_table *device);
 
 const struct vk_device_dispatch_table *
-anv_get_device_dispatch_table(const struct gen_device_info *devinfo);
+anv_get_device_dispatch_table(const struct intel_device_info *devinfo);
 
 static inline uint32_t
 anv_get_subpass_id(const struct anv_cmd_state * const cmd_state)
@@ -4433,16 +4444,16 @@ anv_get_subpass_id(const struct anv_cmd_state * const cmd_state)
 struct anv_performance_configuration_intel {
    struct vk_object_base      base;
 
-   struct gen_perf_registers *register_config;
+   struct intel_perf_registers *register_config;
 
    uint64_t                   config_id;
 };
 
 void anv_physical_device_init_perf(struct anv_physical_device *device, int fd);
 void anv_device_perf_init(struct anv_device *device);
-void anv_perf_write_pass_results(struct gen_perf_config *perf,
+void anv_perf_write_pass_results(struct intel_perf_config *perf,
                                  struct anv_query_pool *pool, uint32_t pass,
-                                 const struct gen_perf_query_result *accumulated_results,
+                                 const struct intel_perf_query_result *accumulated_results,
                                  union VkPerformanceCounterResultKHR *results);
 
 #define ANV_FROM_HANDLE(__anv_type, __name, __handle) \

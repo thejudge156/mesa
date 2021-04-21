@@ -260,7 +260,7 @@ create_cov(struct ir3_context *ctx, struct ir3_instruction *src,
 		ir3_COV(ctx->block, src, src_type, dst_type);
 
 	if (op == nir_op_f2f16 || op == nir_op_f2f16_rtne)
-		cov->regs[0]->flags |= IR3_REG_EVEN;
+		cov->cat1.round = ROUND_EVEN;
 
 	return cov;
 }
@@ -399,7 +399,9 @@ emit_alu(struct ir3_context *ctx, nir_alu_instr *alu)
 		/* i2b1 will appear when translating from nir_load_ubo or
 		 * nir_intrinsic_load_ssbo, where any non-zero value is true.
 		 */
-		dst[0] = ir3_CMPS_S(b, src[0], 0, create_immed(b, 0), 0);
+		dst[0] = ir3_CMPS_S(b,
+				src[0], 0,
+				create_immed_typed(b, 0, bs[0] == 16 ? TYPE_U16 : TYPE_U32), 0);
 		dst[0]->cat2.condition = IR3_COND_NE;
 		break;
 
@@ -568,6 +570,10 @@ emit_alu(struct ir3_context *ctx, nir_alu_instr *alu)
 		break;
 	case nir_op_imad24_ir3:
 		dst[0] = ir3_MAD_S24(b, src[0], 0, src[1], 0, src[2], 0);
+		break;
+	case nir_op_imul:
+		compile_assert(ctx, nir_dest_bit_size(alu->dest.dest) == 16);
+		dst[0] = ir3_MUL_S24(b, src[0], 0, src[1], 0);
 		break;
 	case nir_op_imul24:
 		dst[0] = ir3_MUL_S24(b, src[0], 0, src[1], 0);
@@ -1883,7 +1889,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		break;
 	case nir_intrinsic_load_sample_id:
 		ctx->so->per_samp = true;
-		/* fall-thru */
+		FALLTHROUGH;
 	case nir_intrinsic_load_sample_id_no_per_sample:
 		if (!ctx->samp_id) {
 			ctx->samp_id = create_sysval_input(ctx, SYSTEM_VALUE_SAMPLE_ID, 0x1);
@@ -1950,10 +1956,17 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		}
 		break;
 	case nir_intrinsic_discard_if:
-	case nir_intrinsic_discard: {
+	case nir_intrinsic_discard:
+	case nir_intrinsic_demote:
+	case nir_intrinsic_demote_if:
+	case nir_intrinsic_terminate:
+	case nir_intrinsic_terminate_if:
+	{
 		struct ir3_instruction *cond, *kill;
 
-		if (intr->intrinsic == nir_intrinsic_discard_if) {
+		if (intr->intrinsic == nir_intrinsic_discard_if ||
+			intr->intrinsic == nir_intrinsic_demote_if ||
+			intr->intrinsic == nir_intrinsic_terminate_if) {
 			/* conditional discard: */
 			src = ir3_get_src(ctx, &intr->src[0]);
 			cond = src[0];
@@ -1970,7 +1983,13 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		cond->regs[0]->num = regid(REG_P0, 0);
 		cond->regs[0]->flags &= ~IR3_REG_SSA;
 
-		kill = ir3_KILL(b, cond, 0);
+		if (intr->intrinsic == nir_intrinsic_demote ||
+			intr->intrinsic == nir_intrinsic_demote_if) {
+			kill = ir3_DEMOTE(b, cond, 0);
+		} else {
+			kill = ir3_KILL(b, cond, 0);
+		}
+
 		/* Side-effects should not be moved on a different side of the kill */
 		kill->barrier_class = IR3_BARRIER_IMAGE_W | IR3_BARRIER_BUFFER_W;
 		kill->barrier_conflict = IR3_BARRIER_IMAGE_W | IR3_BARRIER_BUFFER_W;
@@ -2337,7 +2356,7 @@ emit_tex(struct ir3_context *ctx, nir_tex_instr *tex)
 			ctx->so->num_sampler_prefetch++;
 			break;
 		}
-		/* fallthru */
+		FALLTHROUGH;
 	case nir_texop_tex:      opc = has_lod ? OPC_SAML : OPC_SAM; break;
 	case nir_texop_txb:      opc = OPC_SAMB;     break;
 	case nir_texop_txl:      opc = OPC_SAML;     break;
@@ -3267,7 +3286,7 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		case VARYING_SLOT_PRIMITIVE_ID:
 		case VARYING_SLOT_GS_VERTEX_FLAGS_IR3:
 			debug_assert(ctx->so->type == MESA_SHADER_GEOMETRY);
-			/* fall through */
+			FALLTHROUGH;
 		case VARYING_SLOT_COL0:
 		case VARYING_SLOT_COL1:
 		case VARYING_SLOT_BFC0:

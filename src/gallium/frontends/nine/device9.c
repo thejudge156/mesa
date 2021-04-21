@@ -45,6 +45,7 @@
 #include "pipe/p_screen.h"
 #include "pipe/p_context.h"
 #include "pipe/p_config.h"
+#include "util/macros.h"
 #include "util/u_math.h"
 #include "util/u_inlines.h"
 #include "util/u_hash_table.h"
@@ -95,7 +96,7 @@ static void nine_setup_fpu(void)
     WARN_ONCE("FPU setup not supported on non-x86 platforms\n");
 }
 
-static void nine_setup_set_fpu(uint16_t)
+static void nine_setup_set_fpu(UNUSED uint16_t val)
 {
     WARN_ONCE("FPU setup not supported on non-x86 platforms\n");
 }
@@ -847,16 +848,13 @@ NineDevice9_SetCursorProperties( struct NineDevice9 *This,
     {
         D3DLOCKED_RECT lock;
         HRESULT hr;
-        const struct util_format_unpack_description *unpack =
-            util_format_unpack_description(surf->base.info.format);
-        assert(unpack);
 
         hr = NineSurface9_LockRect(surf, &lock, NULL, D3DLOCK_READONLY);
         if (FAILED(hr))
             ret_err("Failed to map cursor source image.\n",
                     D3DERR_DRIVERINTERNALERROR);
 
-        unpack->unpack_rgba_8unorm(ptr, transfer->stride,
+        util_format_unpack_rgba_8unorm_rect(surf->base.info.format, ptr, transfer->stride,
                                    lock.pBits, lock.Pitch,
                                    This->cursor.w, This->cursor.h);
 
@@ -864,7 +862,8 @@ NineDevice9_SetCursorProperties( struct NineDevice9 *This,
             void *data = lock.pBits;
             /* SetCursor assumes 32x32 argb with pitch 128 */
             if (lock.Pitch != 128) {
-                unpack->unpack_rgba_8unorm(This->cursor.hw_upload_temp, 128,
+                util_format_unpack_rgba_8unorm_rect(surf->base.info.format,
+                                           This->cursor.hw_upload_temp, 128,
                                            lock.pBits, lock.Pitch,
                                            32, 32);
                 data = This->cursor.hw_upload_temp;

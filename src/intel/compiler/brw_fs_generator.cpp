@@ -54,7 +54,7 @@ brw_file_from_reg(fs_reg *reg)
 }
 
 static struct brw_reg
-brw_reg_from_fs_reg(const struct gen_device_info *devinfo, fs_inst *inst,
+brw_reg_from_fs_reg(const struct intel_device_info *devinfo, fs_inst *inst,
                     fs_reg *reg, bool compressed)
 {
    struct brw_reg brw_reg;
@@ -62,7 +62,7 @@ brw_reg_from_fs_reg(const struct gen_device_info *devinfo, fs_inst *inst,
    switch (reg->file) {
    case MRF:
       assert((reg->nr & ~BRW_MRF_COMPR4) < BRW_MAX_MRF(devinfo->ver));
-      /* Fallthrough */
+      FALLTHROUGH;
    case VGRF:
       if (reg->stride == 0) {
          brw_reg = brw_vec1_reg(brw_file_from_reg(reg), reg->nr, 0);
@@ -550,8 +550,8 @@ fs_generator::generate_mov_indirect(fs_inst *inst,
 
       if (type_sz(reg.type) > 4 &&
           ((devinfo->ver == 7 && !devinfo->is_haswell) ||
-           devinfo->is_cherryview || gen_device_info_is_9lp(devinfo) ||
-           !devinfo->has_64bit_float)) {
+           devinfo->is_cherryview || intel_device_info_is_9lp(devinfo) ||
+           !devinfo->has_64bit_float || devinfo->verx10 >= 125)) {
          /* IVB has an issue (which we found empirically) where it reads two
           * address register components per channel for indirectly addressed
           * 64-bit sources.
@@ -715,7 +715,7 @@ fs_generator::generate_shuffle(fs_inst *inst,
 
          if (type_sz(src.type) > 4 &&
              ((devinfo->ver == 7 && !devinfo->is_haswell) ||
-              devinfo->is_cherryview || gen_device_info_is_9lp(devinfo) ||
+              devinfo->is_cherryview || intel_device_info_is_9lp(devinfo) ||
               !devinfo->has_64bit_float)) {
             /* IVB has an issue (which we found empirically) where it reads
              * two address register components per channel for indirectly
@@ -889,9 +889,14 @@ fs_generator::generate_cs_terminate(fs_inst *inst, struct brw_reg payload)
    if (devinfo->ver < 12)
       brw_set_src1(p, insn, brw_imm_ud(0u));
 
-   /* Terminate a compute shader by sending a message to the thread spawner.
+   /* For XeHP and newer send a message to the message gateway to terminate a
+    * compute shader. For older devices, a message is sent to the thread
+    * spawner.
     */
-   brw_inst_set_sfid(devinfo, insn, BRW_SFID_THREAD_SPAWNER);
+   if (devinfo->verx10 >= 125)
+      brw_inst_set_sfid(devinfo, insn, BRW_SFID_MESSAGE_GATEWAY);
+   else
+      brw_inst_set_sfid(devinfo, insn, BRW_SFID_THREAD_SPAWNER);
    brw_inst_set_mlen(devinfo, insn, 1);
    brw_inst_set_rlen(devinfo, insn, 0);
    brw_inst_set_eot(devinfo, insn, inst->eot);
@@ -2260,6 +2265,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
       case SHADER_OPCODE_INT_QUOTIENT:
       case SHADER_OPCODE_INT_REMAINDER:
       case SHADER_OPCODE_POW:
+         assert(devinfo->verx10 < 125);
          assert(inst->conditional_mod == BRW_CONDITIONAL_NONE);
          if (devinfo->ver >= 6) {
             assert(inst->mlen == 0);
@@ -2532,7 +2538,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          struct brw_reg strided = stride(suboffset(src[0], component),
                                          vstride, width, 0);
          if (type_sz(src[0].type) > 4 &&
-             (devinfo->is_cherryview || gen_device_info_is_9lp(devinfo) ||
+             (devinfo->is_cherryview || intel_device_info_is_9lp(devinfo) ||
               !devinfo->has_64bit_float)) {
             /* IVB has an issue (which we found empirically) where it reads
              * two address register components per channel for indirectly

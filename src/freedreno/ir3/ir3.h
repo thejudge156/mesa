@@ -108,8 +108,6 @@ struct ir3_register {
 		IR3_REG_SNEG   = 0x100,
 		IR3_REG_SABS   = 0x200,
 		IR3_REG_BNOT   = 0x400,
-		IR3_REG_EVEN   = 0x800,
-		IR3_REG_POS_INF= 0x1000,
 		/* (ei) flag, end-input?  Set on last bary, presumably to signal
 		 * that the shader needs no more input:
 		 */
@@ -264,6 +262,7 @@ struct ir3_instruction {
 		} cat0;
 		struct {
 			type_t src_type, dst_type;
+			round_t round;
 		} cat1;
 		struct {
 			enum {
@@ -669,9 +668,9 @@ static inline bool is_flow(struct ir3_instruction *instr)
 	return (opc_cat(instr->opc) == 0);
 }
 
-static inline bool is_kill(struct ir3_instruction *instr)
+static inline bool is_kill_or_demote(struct ir3_instruction *instr)
 {
-	return instr->opc == OPC_KILL;
+	return instr->opc == OPC_KILL || instr->opc == OPC_DEMOTE;
 }
 
 static inline bool is_nop(struct ir3_instruction *instr)
@@ -1592,6 +1591,7 @@ ir3_##name(struct ir3_block *block,                                      \
 INSTR1(B)
 INSTR0(JUMP)
 INSTR1(KILL)
+INSTR1(DEMOTE)
 INSTR0(END)
 INSTR0(CHSH)
 INSTR0(CHMASK)

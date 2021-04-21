@@ -33,7 +33,7 @@
 #include "util/half_float.h"
 
 bool
-brw_has_jip(const struct gen_device_info *devinfo, enum opcode opcode)
+brw_has_jip(const struct intel_device_info *devinfo, enum opcode opcode)
 {
    if (devinfo->ver < 6)
       return false;
@@ -48,7 +48,7 @@ brw_has_jip(const struct gen_device_info *devinfo, enum opcode opcode)
 }
 
 bool
-brw_has_uip(const struct gen_device_info *devinfo, enum opcode opcode)
+brw_has_uip(const struct intel_device_info *devinfo, enum opcode opcode)
 {
    if (devinfo->ver < 6)
       return false;
@@ -61,7 +61,7 @@ brw_has_uip(const struct gen_device_info *devinfo, enum opcode opcode)
 }
 
 static bool
-has_branch_ctrl(const struct gen_device_info *devinfo, enum opcode opcode)
+has_branch_ctrl(const struct intel_device_info *devinfo, enum opcode opcode)
 {
    if (devinfo->ver < 8)
       return false;
@@ -90,7 +90,7 @@ is_send(unsigned opcode)
 }
 
 static bool
-is_split_send(UNUSED const struct gen_device_info *devinfo, unsigned opcode)
+is_split_send(UNUSED const struct intel_device_info *devinfo, unsigned opcode)
 {
    if (devinfo->ver >= 12)
       return is_send(opcode);
@@ -391,7 +391,7 @@ static const char *const dp_rc_msg_type_gfx9[16] = {
 };
 
 static const char *const *
-dp_rc_msg_type(const struct gen_device_info *devinfo)
+dp_rc_msg_type(const struct intel_device_info *devinfo)
 {
    return (devinfo->ver >= 9 ? dp_rc_msg_type_gfx9 :
            devinfo->ver >= 7 ? dp_rc_msg_type_gfx7 :
@@ -676,7 +676,7 @@ control(FILE *file, const char *name, const char *const ctrl[],
 }
 
 static int
-print_opcode(FILE *file, const struct gen_device_info *devinfo,
+print_opcode(FILE *file, const struct intel_device_info *devinfo,
              enum opcode id)
 {
    const struct opcode_desc *desc = brw_opcode_desc(devinfo, id);
@@ -751,7 +751,7 @@ reg(FILE *file, unsigned _reg_file, unsigned _reg_nr)
 }
 
 static int
-dest(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
+dest(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
 {
    enum brw_reg_type type = brw_inst_dst_type(devinfo, inst);
    unsigned elem_size = brw_reg_type_to_size(type);
@@ -831,7 +831,8 @@ dest(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
 }
 
 static int
-dest_3src(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
+dest_3src(FILE *file, const struct intel_device_info *devinfo,
+          const brw_inst *inst)
 {
    bool is_align1 = brw_inst_3src_access_mode(devinfo, inst) == BRW_ALIGN_1;
    int err = 0;
@@ -895,7 +896,7 @@ src_align1_region(FILE *file,
 
 static int
 src_da1(FILE *file,
-        const struct gen_device_info *devinfo,
+        const struct intel_device_info *devinfo,
         unsigned opcode,
         enum brw_reg_type type, unsigned _reg_file,
         unsigned _vert_stride, unsigned _width, unsigned _horiz_stride,
@@ -925,7 +926,7 @@ src_da1(FILE *file,
 
 static int
 src_ia1(FILE *file,
-        const struct gen_device_info *devinfo,
+        const struct intel_device_info *devinfo,
         unsigned opcode,
         enum brw_reg_type type,
         int _addr_imm,
@@ -978,7 +979,7 @@ src_swizzle(FILE *file, unsigned swiz)
 
 static int
 src_da16(FILE *file,
-         const struct gen_device_info *devinfo,
+         const struct intel_device_info *devinfo,
          unsigned opcode,
          enum brw_reg_type type,
          unsigned _reg_file,
@@ -1017,7 +1018,7 @@ src_da16(FILE *file,
 }
 
 static enum brw_vertical_stride
-vstride_from_align1_3src_vstride(const struct gen_device_info *devinfo,
+vstride_from_align1_3src_vstride(const struct intel_device_info *devinfo,
                                  enum gfx10_align1_3src_vertical_stride vstride)
 {
    switch (vstride) {
@@ -1102,7 +1103,8 @@ implied_width(enum brw_vertical_stride _vert_stride,
 }
 
 static int
-src0_3src(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
+src0_3src(FILE *file, const struct intel_device_info *devinfo,
+          const brw_inst *inst)
 {
    int err = 0;
    unsigned reg_nr, subreg_nr;
@@ -1188,7 +1190,8 @@ src0_3src(FILE *file, const struct gen_device_info *devinfo, const brw_inst *ins
 }
 
 static int
-src1_3src(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
+src1_3src(FILE *file, const struct intel_device_info *devinfo,
+          const brw_inst *inst)
 {
    int err = 0;
    unsigned reg_nr, subreg_nr;
@@ -1261,7 +1264,8 @@ src1_3src(FILE *file, const struct gen_device_info *devinfo, const brw_inst *ins
 }
 
 static int
-src2_3src(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
+src2_3src(FILE *file, const struct intel_device_info *devinfo,
+          const brw_inst *inst)
 {
    int err = 0;
    unsigned reg_nr, subreg_nr;
@@ -1348,7 +1352,7 @@ src2_3src(FILE *file, const struct gen_device_info *devinfo, const brw_inst *ins
 }
 
 static int
-imm(FILE *file, const struct gen_device_info *devinfo, enum brw_reg_type type,
+imm(FILE *file, const struct intel_device_info *devinfo, enum brw_reg_type type,
     const brw_inst *inst)
 {
    switch (type) {
@@ -1417,7 +1421,7 @@ imm(FILE *file, const struct gen_device_info *devinfo, enum brw_reg_type type,
 
 static int
 src_sends_da(FILE *file,
-             const struct gen_device_info *devinfo,
+             const struct intel_device_info *devinfo,
              enum brw_reg_type type,
              enum brw_reg_file _reg_file,
              unsigned _reg_nr,
@@ -1437,7 +1441,7 @@ src_sends_da(FILE *file,
 
 static int
 src_sends_ia(FILE *file,
-             const struct gen_device_info *devinfo,
+             const struct intel_device_info *devinfo,
              enum brw_reg_type type,
              int _addr_imm,
              unsigned _addr_subreg_nr)
@@ -1455,7 +1459,7 @@ src_sends_ia(FILE *file,
 
 static int
 src_send_desc_ia(FILE *file,
-                 const struct gen_device_info *devinfo,
+                 const struct intel_device_info *devinfo,
                  unsigned _addr_subreg_nr)
 {
    string(file, "a0");
@@ -1467,7 +1471,7 @@ src_send_desc_ia(FILE *file,
 }
 
 static int
-src0(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
+src0(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
 {
    if (is_split_send(devinfo, brw_inst_opcode(devinfo, inst))) {
       if (devinfo->ver >= 12) {
@@ -1544,7 +1548,7 @@ src0(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
 }
 
 static int
-src1(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
+src1(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
 {
    if (is_split_send(devinfo, brw_inst_opcode(devinfo, inst))) {
       return src_sends_da(file,
@@ -1606,7 +1610,8 @@ src1(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
 }
 
 static int
-qtr_ctrl(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
+qtr_ctrl(FILE *file, const struct intel_device_info *devinfo,
+         const brw_inst *inst)
 {
    int qtr_ctl = brw_inst_qtr_control(devinfo, inst);
    int exec_size = 1 << brw_inst_exec_size(devinfo, inst);
@@ -1640,12 +1645,18 @@ qtr_ctrl(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst
 }
 
 static int
-swsb(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
+swsb(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
 {
-   const struct tgl_swsb swsb = tgl_swsb_decode(brw_inst_opcode(devinfo, inst),
-                                                brw_inst_swsb(devinfo, inst));
+   const enum opcode opcode = brw_inst_opcode(devinfo, inst);
+   const uint8_t x = brw_inst_swsb(devinfo, inst);
+   const struct tgl_swsb swsb = tgl_swsb_decode(devinfo, opcode, x);
    if (swsb.regdist)
-      format(file, " @%d", swsb.regdist);
+      format(file, " %s@%d",
+             (swsb.pipe == TGL_PIPE_FLOAT ? "F" :
+              swsb.pipe == TGL_PIPE_INT ? "I" :
+              swsb.pipe == TGL_PIPE_LONG ? "L" :
+              swsb.pipe == TGL_PIPE_ALL ? "A"  : "" ),
+             swsb.regdist);
    if (swsb.mode)
       format(file, " $%d%s", swsb.sbid,
              (swsb.mode & TGL_SBID_SET ? "" :
@@ -1655,7 +1666,7 @@ swsb(FILE *file, const struct gen_device_info *devinfo, const brw_inst *inst)
 
 #ifdef DEBUG
 static __attribute__((__unused__)) int
-brw_disassemble_imm(const struct gen_device_info *devinfo,
+brw_disassemble_imm(const struct intel_device_info *devinfo,
                     uint32_t dw3, uint32_t dw2, uint32_t dw1, uint32_t dw0)
 {
    brw_inst inst;
@@ -1666,7 +1677,7 @@ brw_disassemble_imm(const struct gen_device_info *devinfo,
 #endif
 
 static void
-write_label(FILE *file, const struct gen_device_info *devinfo,
+write_label(FILE *file, const struct intel_device_info *devinfo,
             const struct brw_label *root_label,
             int offset, int jump)
 {
@@ -1681,7 +1692,7 @@ write_label(FILE *file, const struct gen_device_info *devinfo,
 }
 
 int
-brw_disassemble_inst(FILE *file, const struct gen_device_info *devinfo,
+brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
                      const brw_inst *inst, bool is_compacted,
                      int offset, const struct brw_label *root_label)
 {
@@ -2066,7 +2077,7 @@ brw_disassemble_inst(FILE *file, const struct gen_device_info *devinfo,
                case HSW_DATAPORT_DC_PORT1_TYPED_ATOMIC_OP:
                case HSW_DATAPORT_DC_PORT1_ATOMIC_COUNTER_OP:
                   format(file, "SIMD%d,", (msg_ctrl & (1 << 4)) ? 8 : 16);
-                  /* fallthrough */
+                  FALLTHROUGH;
                case HSW_DATAPORT_DC_PORT1_UNTYPED_ATOMIC_OP_SIMD4X2:
                case HSW_DATAPORT_DC_PORT1_TYPED_ATOMIC_OP_SIMD4X2:
                case HSW_DATAPORT_DC_PORT1_ATOMIC_COUNTER_OP_SIMD4X2:

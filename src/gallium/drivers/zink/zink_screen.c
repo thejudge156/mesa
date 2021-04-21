@@ -251,6 +251,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CLEAR_SCISSORED:
    case PIPE_CAP_INVALIDATE_BUFFER:
    case PIPE_CAP_PREFER_REAL_BUFFER_IN_CONSTBUF0:
+   case PIPE_CAP_PACKED_UNIFORMS:
       return 1;
 
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
@@ -431,6 +432,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return screen->info.props.limits.minTexelGatherOffset;
    case PIPE_CAP_MAX_TEXTURE_GATHER_OFFSET:
       return screen->info.props.limits.maxTexelGatherOffset;
+
+   case PIPE_CAP_SAMPLER_REDUCTION_MINMAX_ARB:
+      return screen->vk_version >= VK_MAKE_VERSION(1,2,0) || screen->info.have_EXT_sampler_filter_minmax;
 
    case PIPE_CAP_TGSI_FS_FINE_DERIVATIVE:
       return 1;
@@ -748,10 +752,9 @@ zink_get_shader_param(struct pipe_screen *pscreen,
       return (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_TGSI);
 
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-      if (screen->info.have_KHR_vulkan_memory_model &&
-          (screen->info.feats.features.shaderStorageImageExtendedFormats ||
+      if (screen->info.feats.features.shaderStorageImageExtendedFormats ||
           (screen->info.feats.features.shaderStorageImageWriteWithoutFormat &&
-           screen->info.feats.features.shaderStorageImageReadWithoutFormat)))
+           screen->info.feats.features.shaderStorageImageReadWithoutFormat))
          return MIN2(screen->info.props.limits.maxPerStageDescriptorStorageImages,
                      PIPE_MAX_SHADER_IMAGES);
       return 0;
@@ -875,6 +878,9 @@ zink_is_format_supported(struct pipe_screen *pscreen,
       if (bind & PIPE_BIND_SAMPLER_VIEW &&
          !(props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
             return false;
+
+      if (bind & PIPE_BIND_SAMPLER_REDUCTION_MINMAX)
+         return props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
 
       if ((bind & PIPE_BIND_SAMPLER_VIEW) || (bind & PIPE_BIND_RENDER_TARGET)) {
          /* if this is a 3-component texture, force gallium to give us 4 components by rejecting this one */
@@ -1437,7 +1443,8 @@ check_base_requirements(struct zink_screen *screen)
        !screen->info.feats.features.shaderClipDistance ||
        !(screen->info.feats12.scalarBlockLayout ||
          screen->info.have_EXT_scalar_block_layout) ||
-       !screen->info.have_KHR_maintenance1) {
+       !screen->info.have_KHR_maintenance1 ||
+       !screen->info.have_EXT_custom_border_color) {
       fprintf(stderr, "WARNING: The Vulkan device doesn't support "
               "the base Zink requirements, some incorrect rendering "
               "might occur\n");

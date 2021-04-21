@@ -358,7 +358,7 @@ panfrost_emit_bifrost_blend(struct panfrost_batch *batch,
                                  */
                                 cfg.bifrost.internal.fixed_function.num_comps = 4;
                                 cfg.bifrost.internal.fixed_function.conversion.memory_format =
-                                        panfrost_format_to_bifrost_blend(dev, format_desc, true);
+                                        panfrost_format_to_bifrost_blend(dev, format);
                                 cfg.bifrost.internal.fixed_function.conversion.register_format =
                                         bifrost_blend_type_from_nir(fs->info.bifrost.blend[i].type);
                                 cfg.bifrost.internal.fixed_function.rt = i;
@@ -448,11 +448,16 @@ panfrost_prepare_bifrost_fs_state(struct panfrost_context *ctx,
                                        fs->bo ? fs->bo->ptr.gpu : 0,
                                        state);
 
-                bool no_blend = true;
+                /* Track if any colour buffer is reused across draws, either
+                 * from reading it directly, or from failing to write it */
+                bool blend_reads_dest = false;
+                unsigned rt_mask = 0;
 
                 for (unsigned i = 0; i < ctx->pipe_framebuffer.nr_cbufs; ++i) {
-                        no_blend &= (!blend[i].load_dest || blend[i].no_colour)
-                                || (!ctx->pipe_framebuffer.cbufs[i]);
+                        if (ctx->pipe_framebuffer.cbufs[i]) {
+                                rt_mask |= (1 << i);
+                                blend_reads_dest |= blend[i].load_dest;
+                        }
                 }
 
                 state->properties.bifrost.allow_forward_pixel_to_kill =
@@ -461,8 +466,12 @@ panfrost_prepare_bifrost_fs_state(struct panfrost_context *ctx,
                         !fs->info.fs.writes_coverage &&
                         !fs->info.fs.can_discard &&
                         !fs->info.fs.outputs_read &&
+                        !(rt_mask & ~fs->info.outputs_written) &&
                         !alpha_to_coverage &&
-                        no_blend;
+                        !blend_reads_dest;
+
+                state->properties.bifrost.allow_forward_pixel_to_be_killed =
+                        !fs->info.fs.sidefx;
         }
 }
 
@@ -2258,7 +2267,7 @@ panfrost_emit_tls(struct panfrost_batch *batch)
         struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
 
         /* Emitted with the FB descriptor on Midgard. */
-        if (!pan_is_bifrost(dev))
+        if (!pan_is_bifrost(dev) && batch->framebuffer.gpu)
                 return;
 
         struct panfrost_bo *tls_bo =

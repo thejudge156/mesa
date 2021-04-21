@@ -270,10 +270,7 @@ extern void __glXParseExtensionOverride(struct glx_screen *psc,
 extern void __IndirectGlParseExtensionOverride(struct glx_screen *psc,
                                                const char *override);
 extern void __glXCalculateUsableGLExtensions(struct glx_context *gc,
-                                             const char *server_string,
-                                             int major_version,
-                                             int minor_version);
-extern void __glXGetGLVersion(int *major_version, int *minor_version);
+                                             const char *server_string);
 extern char *__glXGetClientGLExtensionString(void);
 
 extern GLboolean __glExtensionBitIsEnabled(struct glx_context *gc,
@@ -282,12 +279,6 @@ extern GLboolean __glExtensionBitIsEnabled(struct glx_context *gc,
 extern void
 __glXEnableDirectExtension(struct glx_screen *psc, const char *name);
 
-/* Source-level backwards compatibility with old drivers. They won't
- * find the respective functions, though. 
- */
-typedef void (*PFNGLXENABLEEXTENSIONPROC) (const char *name,
-                                           GLboolean force_client);
-typedef void (*PFNGLXDISABLEEXTENSIONPROC) (const char *name);
 
 /* GLX_ALIAS should be used for functions with a non-void return type.
    GLX_ALIAS_VOID is for functions with a void return type. */

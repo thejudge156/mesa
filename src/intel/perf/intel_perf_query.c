@@ -25,17 +25,18 @@
 
 #include "common/intel_gem.h"
 
-#include "dev/gen_debug.h"
-#include "dev/gen_device_info.h"
+#include "dev/intel_debug.h"
+#include "dev/intel_device_info.h"
 
-#include "perf/gen_perf.h"
-#include "perf/gen_perf_mdapi.h"
-#include "perf/gen_perf_private.h"
-#include "perf/gen_perf_query.h"
-#include "perf/gen_perf_regs.h"
+#include "perf/intel_perf.h"
+#include "perf/intel_perf_mdapi.h"
+#include "perf/intel_perf_private.h"
+#include "perf/intel_perf_query.h"
+#include "perf/intel_perf_regs.h"
 
 #include "drm-uapi/i915_drm.h"
 
+#include "util/compiler.h"
 #include "util/u_math.h"
 
 #define FILE_DEBUG_FLAG DEBUG_PERFMON
@@ -189,9 +190,9 @@ struct oa_sample_buf {
  * applications may expect to allocate enough objects to be able to
  * query around all draw calls in a frame.
  */
-struct gen_perf_query_object
+struct intel_perf_query_object
 {
-   const struct gen_perf_query_info *queryinfo;
+   const struct intel_perf_query_info *queryinfo;
 
    /* See query->kind to know which state below is in use... */
    union {
@@ -236,7 +237,7 @@ struct gen_perf_query_object
          /**
           * Accumulated OA results between begin and end of the query.
           */
-         struct gen_perf_query_result result;
+         struct intel_perf_query_result result;
       } oa;
 
       struct {
@@ -249,13 +250,13 @@ struct gen_perf_query_object
    };
 };
 
-struct gen_perf_context {
-   struct gen_perf_config *perf;
+struct intel_perf_context {
+   struct intel_perf_config *perf;
 
    void * mem_ctx; /* ralloc context */
    void * ctx;  /* driver context (eg, brw_context) */
    void * bufmgr;
-   const struct gen_device_info *devinfo;
+   const struct intel_device_info *devinfo;
 
    uint32_t hw_ctx;
    int drm_fd;
@@ -303,7 +304,7 @@ struct gen_perf_context {
     * These may be active, or have already ended.  However, the
     * results have not been requested.
     */
-   struct gen_perf_query_object **unaccumulated;
+   struct intel_perf_query_object **unaccumulated;
    int unaccumulated_elements;
    int unaccumulated_array_size;
 
@@ -316,7 +317,7 @@ struct gen_perf_context {
 };
 
 static bool
-inc_n_users(struct gen_perf_context *perf_ctx)
+inc_n_users(struct intel_perf_context *perf_ctx)
 {
    if (perf_ctx->n_oa_users == 0 &&
        intel_ioctl(perf_ctx->oa_stream_fd, I915_PERF_IOCTL_ENABLE, 0) < 0)
@@ -329,7 +330,7 @@ inc_n_users(struct gen_perf_context *perf_ctx)
 }
 
 static void
-dec_n_users(struct gen_perf_context *perf_ctx)
+dec_n_users(struct intel_perf_context *perf_ctx)
 {
    /* Disabling the i915 perf stream will effectively disable the OA
     * counters.  Note it's important to be sure there are no outstanding
@@ -345,27 +346,27 @@ dec_n_users(struct gen_perf_context *perf_ctx)
 }
 
 static void
-gen_perf_close(struct gen_perf_context *perfquery,
-               const struct gen_perf_query_info *query)
+intel_perf_close(struct intel_perf_context *perfquery,
+                 const struct intel_perf_query_info *query)
 {
    if (perfquery->oa_stream_fd != -1) {
       close(perfquery->oa_stream_fd);
       perfquery->oa_stream_fd = -1;
    }
-   if (query->kind == GEN_PERF_QUERY_TYPE_RAW) {
-      struct gen_perf_query_info *raw_query =
-         (struct gen_perf_query_info *) query;
+   if (query->kind == INTEL_PERF_QUERY_TYPE_RAW) {
+      struct intel_perf_query_info *raw_query =
+         (struct intel_perf_query_info *) query;
       raw_query->oa_metrics_set_id = 0;
    }
 }
 
 static bool
-gen_perf_open(struct gen_perf_context *perf_ctx,
-              int metrics_set_id,
-              int report_format,
-              int period_exponent,
-              int drm_fd,
-              uint32_t ctx_id)
+intel_perf_open(struct intel_perf_context *perf_ctx,
+                int metrics_set_id,
+                int report_format,
+                int period_exponent,
+                int drm_fd,
+                uint32_t ctx_id)
 {
    uint64_t properties[DRM_I915_PERF_PROP_MAX * 2];
    uint32_t p = 0;
@@ -389,7 +390,7 @@ gen_perf_open(struct gen_perf_context *perf_ctx,
    properties[p++] = period_exponent;
 
    /* SSEU configuration */
-   if (gen_perf_has_global_sseu(perf_ctx->perf)) {
+   if (intel_perf_has_global_sseu(perf_ctx->perf)) {
       properties[p++] = DRM_I915_PERF_PROP_GLOBAL_SSEU;
       properties[p++] = to_user_pointer(&perf_ctx->perf->sseu);
    }
@@ -418,16 +419,16 @@ gen_perf_open(struct gen_perf_context *perf_ctx,
 }
 
 static uint64_t
-get_metric_id(struct gen_perf_config *perf,
-              const struct gen_perf_query_info *query)
+get_metric_id(struct intel_perf_config *perf,
+              const struct intel_perf_query_info *query)
 {
    /* These queries are know not to ever change, their config ID has been
     * loaded upon the first query creation. No need to look them up again.
     */
-   if (query->kind == GEN_PERF_QUERY_TYPE_OA)
+   if (query->kind == INTEL_PERF_QUERY_TYPE_OA)
       return query->oa_metrics_set_id;
 
-   assert(query->kind == GEN_PERF_QUERY_TYPE_RAW);
+   assert(query->kind == INTEL_PERF_QUERY_TYPE_RAW);
 
    /* Raw queries can be reprogrammed up by an external application/library.
     * When a raw query is used for the first time it's id is set to a value !=
@@ -440,8 +441,8 @@ get_metric_id(struct gen_perf_config *perf,
       return query->oa_metrics_set_id;
    }
 
-   struct gen_perf_query_info *raw_query = (struct gen_perf_query_info *)query;
-   if (!gen_perf_load_metric_id(perf, query->guid,
+   struct intel_perf_query_info *raw_query = (struct intel_perf_query_info *)query;
+   if (!intel_perf_load_metric_id(perf, query->guid,
                                 &raw_query->oa_metrics_set_id)) {
       DBG("Unable to read query guid=%s ID, falling back to test config\n", query->guid);
       raw_query->oa_metrics_set_id = perf->fallback_raw_oa_metric;
@@ -453,7 +454,7 @@ get_metric_id(struct gen_perf_config *perf,
 }
 
 static struct oa_sample_buf *
-get_free_sample_buf(struct gen_perf_context *perf_ctx)
+get_free_sample_buf(struct intel_perf_context *perf_ctx)
 {
    struct exec_node *node = exec_list_pop_head(&perf_ctx->free_sample_buffers);
    struct oa_sample_buf *buf;
@@ -472,7 +473,7 @@ get_free_sample_buf(struct gen_perf_context *perf_ctx)
 }
 
 static void
-reap_old_sample_buffers(struct gen_perf_context *perf_ctx)
+reap_old_sample_buffers(struct intel_perf_context *perf_ctx)
 {
    struct exec_node *tail_node =
       exec_list_get_tail(&perf_ctx->sample_buffers);
@@ -496,7 +497,7 @@ reap_old_sample_buffers(struct gen_perf_context *perf_ctx)
 }
 
 static void
-free_sample_bufs(struct gen_perf_context *perf_ctx)
+free_sample_bufs(struct intel_perf_context *perf_ctx)
 {
    foreach_list_typed_safe(struct oa_sample_buf, buf, link,
                            &perf_ctx->free_sample_buffers)
@@ -506,13 +507,13 @@ free_sample_bufs(struct gen_perf_context *perf_ctx)
 }
 
 
-struct gen_perf_query_object *
-gen_perf_new_query(struct gen_perf_context *perf_ctx, unsigned query_index)
+struct intel_perf_query_object *
+intel_perf_new_query(struct intel_perf_context *perf_ctx, unsigned query_index)
 {
-   const struct gen_perf_query_info *query =
+   const struct intel_perf_query_info *query =
       &perf_ctx->perf->queries[query_index];
-   struct gen_perf_query_object *obj =
-      calloc(1, sizeof(struct gen_perf_query_object));
+   struct intel_perf_query_object *obj =
+      calloc(1, sizeof(struct intel_perf_query_object));
 
    if (!obj)
       return NULL;
@@ -524,18 +525,18 @@ gen_perf_new_query(struct gen_perf_context *perf_ctx, unsigned query_index)
 }
 
 int
-gen_perf_active_queries(struct gen_perf_context *perf_ctx,
-                        const struct gen_perf_query_info *query)
+intel_perf_active_queries(struct intel_perf_context *perf_ctx,
+                          const struct intel_perf_query_info *query)
 {
    assert(perf_ctx->n_active_oa_queries == 0 || perf_ctx->n_active_pipeline_stats_queries == 0);
 
    switch (query->kind) {
-   case GEN_PERF_QUERY_TYPE_OA:
-   case GEN_PERF_QUERY_TYPE_RAW:
+   case INTEL_PERF_QUERY_TYPE_OA:
+   case INTEL_PERF_QUERY_TYPE_RAW:
       return perf_ctx->n_active_oa_queries;
       break;
 
-   case GEN_PERF_QUERY_TYPE_PIPELINE:
+   case INTEL_PERF_QUERY_TYPE_PIPELINE:
       return perf_ctx->n_active_pipeline_stats_queries;
       break;
 
@@ -545,36 +546,36 @@ gen_perf_active_queries(struct gen_perf_context *perf_ctx,
    }
 }
 
-const struct gen_perf_query_info*
-gen_perf_query_info(const struct gen_perf_query_object *query)
+const struct intel_perf_query_info*
+intel_perf_query_info(const struct intel_perf_query_object *query)
 {
    return query->queryinfo;
 }
 
-struct gen_perf_context *
-gen_perf_new_context(void *parent)
+struct intel_perf_context *
+intel_perf_new_context(void *parent)
 {
-   struct gen_perf_context *ctx = rzalloc(parent, struct gen_perf_context);
+   struct intel_perf_context *ctx = rzalloc(parent, struct intel_perf_context);
    if (! ctx)
       fprintf(stderr, "%s: failed to alloc context\n", __func__);
    return ctx;
 }
 
-struct gen_perf_config *
-gen_perf_config(struct gen_perf_context *ctx)
+struct intel_perf_config *
+intel_perf_config(struct intel_perf_context *ctx)
 {
    return ctx->perf;
 }
 
 void
-gen_perf_init_context(struct gen_perf_context *perf_ctx,
-                      struct gen_perf_config *perf_cfg,
-                      void * mem_ctx, /* ralloc context */
-                      void * ctx,  /* driver context (eg, brw_context) */
-                      void * bufmgr,  /* eg brw_bufmgr */
-                      const struct gen_device_info *devinfo,
-                      uint32_t hw_ctx,
-                      int drm_fd)
+intel_perf_init_context(struct intel_perf_context *perf_ctx,
+                        struct intel_perf_config *perf_cfg,
+                        void * mem_ctx, /* ralloc context */
+                        void * ctx,  /* driver context (eg, brw_context) */
+                        void * bufmgr,  /* eg brw_bufmgr */
+                        const struct intel_device_info *devinfo,
+                        uint32_t hw_ctx,
+                        int drm_fd)
 {
    perf_ctx->perf = perf_cfg;
    perf_ctx->mem_ctx = mem_ctx;
@@ -585,7 +586,7 @@ gen_perf_init_context(struct gen_perf_context *perf_ctx,
    perf_ctx->devinfo = devinfo;
 
    perf_ctx->unaccumulated =
-      ralloc_array(mem_ctx, struct gen_perf_query_object *, 2);
+      ralloc_array(mem_ctx, struct intel_perf_query_object *, 2);
    perf_ctx->unaccumulated_elements = 0;
    perf_ctx->unaccumulated_array_size = 2;
 
@@ -612,8 +613,8 @@ gen_perf_init_context(struct gen_perf_context *perf_ctx,
  * MI_REPORT_PERF_COUNT has landed in query->oa.bo.
  */
 static void
-add_to_unaccumulated_query_list(struct gen_perf_context *perf_ctx,
-                                struct gen_perf_query_object *obj)
+add_to_unaccumulated_query_list(struct intel_perf_context *perf_ctx,
+                                struct intel_perf_query_object *obj)
 {
    if (perf_ctx->unaccumulated_elements >=
        perf_ctx->unaccumulated_array_size)
@@ -621,7 +622,7 @@ add_to_unaccumulated_query_list(struct gen_perf_context *perf_ctx,
       perf_ctx->unaccumulated_array_size *= 1.5;
       perf_ctx->unaccumulated =
          reralloc(perf_ctx->mem_ctx, perf_ctx->unaccumulated,
-                  struct gen_perf_query_object *,
+                  struct intel_perf_query_object *,
                   perf_ctx->unaccumulated_array_size);
    }
 
@@ -633,18 +634,18 @@ add_to_unaccumulated_query_list(struct gen_perf_context *perf_ctx,
  * pipeline statistics for the performance query object.
  */
 static void
-snapshot_statistics_registers(struct gen_perf_context *ctx,
-                              struct gen_perf_query_object *obj,
+snapshot_statistics_registers(struct intel_perf_context *ctx,
+                              struct intel_perf_query_object *obj,
                               uint32_t offset_in_bytes)
 {
-   struct gen_perf_config *perf = ctx->perf;
-   const struct gen_perf_query_info *query = obj->queryinfo;
+   struct intel_perf_config *perf = ctx->perf;
+   const struct intel_perf_query_info *query = obj->queryinfo;
    const int n_counters = query->n_counters;
 
    for (int i = 0; i < n_counters; i++) {
-      const struct gen_perf_query_counter *counter = &query->counters[i];
+      const struct intel_perf_query_counter *counter = &query->counters[i];
 
-      assert(counter->data_type == GEN_PERF_COUNTER_DATA_TYPE_UINT64);
+      assert(counter->data_type == INTEL_PERF_COUNTER_DATA_TYPE_UINT64);
 
       perf->vtbl.store_register_mem(ctx->ctx, obj->pipeline_stats.bo,
                                     counter->pipeline_stat.reg, 8,
@@ -653,29 +654,29 @@ snapshot_statistics_registers(struct gen_perf_context *ctx,
 }
 
 static void
-snapshot_query_layout(struct gen_perf_context *perf_ctx,
-                      struct gen_perf_query_object *query,
+snapshot_query_layout(struct intel_perf_context *perf_ctx,
+                      struct intel_perf_query_object *query,
                       bool end_snapshot)
 {
-   struct gen_perf_config *perf_cfg = perf_ctx->perf;
-   const struct gen_perf_query_field_layout *layout = &perf_cfg->query_layout;
+   struct intel_perf_config *perf_cfg = perf_ctx->perf;
+   const struct intel_perf_query_field_layout *layout = &perf_cfg->query_layout;
    uint32_t offset = end_snapshot ? align(layout->size, layout->alignment) : 0;
 
    for (uint32_t f = 0; f < layout->n_fields; f++) {
-      const struct gen_perf_query_field *field =
+      const struct intel_perf_query_field *field =
          &layout->fields[end_snapshot ? f : (layout->n_fields - 1 - f)];
 
       switch (field->type) {
-      case GEN_PERF_QUERY_FIELD_TYPE_MI_RPC:
+      case INTEL_PERF_QUERY_FIELD_TYPE_MI_RPC:
          perf_cfg->vtbl.emit_mi_report_perf_count(perf_ctx->ctx, query->oa.bo,
                                                   offset + field->location,
                                                   query->oa.begin_report_id +
                                                   (end_snapshot ? 1 : 0));
          break;
-      case GEN_PERF_QUERY_FIELD_TYPE_SRM_PERFCNT:
-      case GEN_PERF_QUERY_FIELD_TYPE_SRM_RPSTAT:
-      case GEN_PERF_QUERY_FIELD_TYPE_SRM_OA_B:
-      case GEN_PERF_QUERY_FIELD_TYPE_SRM_OA_C:
+      case INTEL_PERF_QUERY_FIELD_TYPE_SRM_PERFCNT:
+      case INTEL_PERF_QUERY_FIELD_TYPE_SRM_RPSTAT:
+      case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_B:
+      case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_C:
          perf_cfg->vtbl.store_register_mem(perf_ctx->ctx, query->oa.bo,
                                            field->mmio_offset, field->size,
                                            offset + field->location);
@@ -687,11 +688,11 @@ snapshot_query_layout(struct gen_perf_context *perf_ctx,
 }
 
 bool
-gen_perf_begin_query(struct gen_perf_context *perf_ctx,
-                     struct gen_perf_query_object *query)
+intel_perf_begin_query(struct intel_perf_context *perf_ctx,
+                       struct intel_perf_query_object *query)
 {
-   struct gen_perf_config *perf_cfg = perf_ctx->perf;
-   const struct gen_perf_query_info *queryinfo = query->queryinfo;
+   struct intel_perf_config *perf_cfg = perf_ctx->perf;
+   const struct intel_perf_query_info *queryinfo = query->queryinfo;
 
    /* XXX: We have to consider that the command parser unit that parses batch
     * buffer commands and is used to capture begin/end counter snapshots isn't
@@ -734,8 +735,8 @@ gen_perf_begin_query(struct gen_perf_context *perf_ctx,
    perf_cfg->vtbl.emit_stall_at_pixel_scoreboard(perf_ctx->ctx);
 
    switch (queryinfo->kind) {
-   case GEN_PERF_QUERY_TYPE_OA:
-   case GEN_PERF_QUERY_TYPE_RAW: {
+   case INTEL_PERF_QUERY_TYPE_OA:
+   case INTEL_PERF_QUERY_TYPE_RAW: {
 
       /* Opening an i915 perf stream implies exclusive access to the OA unit
        * which will generate counter reports for a specific counter set with a
@@ -753,12 +754,12 @@ gen_perf_begin_query(struct gen_perf_context *perf_ctx,
                 perf_ctx->current_oa_metrics_set_id, metric_id);
             return false;
          } else
-            gen_perf_close(perf_ctx, queryinfo);
+            intel_perf_close(perf_ctx, queryinfo);
       }
 
       /* If the OA counters aren't already on, enable them. */
       if (perf_ctx->oa_stream_fd == -1) {
-         const struct gen_device_info *devinfo = perf_ctx->devinfo;
+         const struct intel_device_info *devinfo = perf_ctx->devinfo;
 
          /* The period_exponent gives a sampling period as follows:
           *   sample_period = timestamp_period * 2^(period_exponent + 1)
@@ -770,7 +771,7 @@ gen_perf_begin_query(struct gen_perf_context *perf_ctx,
           * which reads a counter that increments by the number of clock
           * cycles multiplied by the number of EUs. It can be calculated as:
           *
-          * 2^(number of bits in A counter) / (n_eus * max_gen_freq * 2)
+          * 2^(number of bits in A counter) / (n_eus * max_intel_freq * 2)
           *
           * (E.g. 40 EUs @ 1GHz = ~53ms)
           *
@@ -812,7 +813,7 @@ gen_perf_begin_query(struct gen_perf_context *perf_ctx,
          DBG("OA sampling exponent: %i ~= %"PRIu64"ms\n", period_exponent,
              prev_sample_period / 1000000ul);
 
-         if (!gen_perf_open(perf_ctx, metric_id, queryinfo->oa_format,
+         if (!intel_perf_open(perf_ctx, metric_id, queryinfo->oa_format,
                             period_exponent, perf_ctx->drm_fd,
                             perf_ctx->hw_ctx))
             return false;
@@ -865,14 +866,14 @@ gen_perf_begin_query(struct gen_perf_context *perf_ctx,
        */
       buf->refcount++;
 
-      gen_perf_query_result_clear(&query->oa.result);
+      intel_perf_query_result_clear(&query->oa.result);
       query->oa.results_accumulated = false;
 
       add_to_unaccumulated_query_list(perf_ctx, query);
       break;
    }
 
-   case GEN_PERF_QUERY_TYPE_PIPELINE:
+   case INTEL_PERF_QUERY_TYPE_PIPELINE:
       if (query->pipeline_stats.bo) {
          perf_cfg->vtbl.bo_unreference(query->pipeline_stats.bo);
          query->pipeline_stats.bo = NULL;
@@ -898,10 +899,10 @@ gen_perf_begin_query(struct gen_perf_context *perf_ctx,
 }
 
 void
-gen_perf_end_query(struct gen_perf_context *perf_ctx,
-                   struct gen_perf_query_object *query)
+intel_perf_end_query(struct intel_perf_context *perf_ctx,
+                     struct intel_perf_query_object *query)
 {
-   struct gen_perf_config *perf_cfg = perf_ctx->perf;
+   struct intel_perf_config *perf_cfg = perf_ctx->perf;
 
    /* Ensure that the work associated with the queried commands will have
     * finished before taking our query end counter readings.
@@ -912,8 +913,8 @@ gen_perf_end_query(struct gen_perf_context *perf_ctx,
    perf_cfg->vtbl.emit_stall_at_pixel_scoreboard(perf_ctx->ctx);
 
    switch (query->queryinfo->kind) {
-   case GEN_PERF_QUERY_TYPE_OA:
-   case GEN_PERF_QUERY_TYPE_RAW:
+   case INTEL_PERF_QUERY_TYPE_OA:
+   case INTEL_PERF_QUERY_TYPE_RAW:
 
       /* NB: It's possible that the query will have already been marked
        * as 'accumulated' if an error was seen while reading samples
@@ -931,7 +932,7 @@ gen_perf_end_query(struct gen_perf_context *perf_ctx,
        */
       break;
 
-   case GEN_PERF_QUERY_TYPE_PIPELINE:
+   case INTEL_PERF_QUERY_TYPE_PIPELINE:
       snapshot_statistics_registers(perf_ctx, query,
                                     STATS_BO_END_OFFSET_BYTES);
       --perf_ctx->n_active_pipeline_stats_queries;
@@ -950,7 +951,7 @@ enum OaReadStatus {
 };
 
 static enum OaReadStatus
-read_oa_samples_until(struct gen_perf_context *perf_ctx,
+read_oa_samples_until(struct intel_perf_context *perf_ctx,
                       uint32_t start_timestamp,
                       uint32_t end_timestamp)
 {
@@ -1021,14 +1022,14 @@ read_oa_samples_until(struct gen_perf_context *perf_ctx,
  * or an error arises.
  */
 static bool
-read_oa_samples_for_query(struct gen_perf_context *perf_ctx,
-                          struct gen_perf_query_object *query,
+read_oa_samples_for_query(struct intel_perf_context *perf_ctx,
+                          struct intel_perf_query_object *query,
                           void *current_batch)
 {
    uint32_t *start;
    uint32_t *last;
    uint32_t *end;
-   struct gen_perf_config *perf_cfg = perf_ctx->perf;
+   struct intel_perf_config *perf_cfg = perf_ctx->perf;
 
    /* We need the MI_REPORT_PERF_COUNT to land before we can start
     * accumulate. */
@@ -1055,8 +1056,7 @@ read_oa_samples_for_query(struct gen_perf_context *perf_ctx,
    /* Read the reports until the end timestamp. */
    switch (read_oa_samples_until(perf_ctx, start[1], end[1])) {
    case OA_READ_STATUS_ERROR:
-      /* Fallthrough and let accumulate_oa_reports() deal with the
-       * error. */
+      FALLTHROUGH; /* Let accumulate_oa_reports() deal with the error. */
    case OA_READ_STATUS_FINISHED:
       return true;
    case OA_READ_STATUS_UNFINISHED:
@@ -1068,20 +1068,20 @@ read_oa_samples_for_query(struct gen_perf_context *perf_ctx,
 }
 
 void
-gen_perf_wait_query(struct gen_perf_context *perf_ctx,
-                    struct gen_perf_query_object *query,
-                    void *current_batch)
+intel_perf_wait_query(struct intel_perf_context *perf_ctx,
+                      struct intel_perf_query_object *query,
+                      void *current_batch)
 {
-   struct gen_perf_config *perf_cfg = perf_ctx->perf;
+   struct intel_perf_config *perf_cfg = perf_ctx->perf;
    struct brw_bo *bo = NULL;
 
    switch (query->queryinfo->kind) {
-   case GEN_PERF_QUERY_TYPE_OA:
-   case GEN_PERF_QUERY_TYPE_RAW:
+   case INTEL_PERF_QUERY_TYPE_OA:
+   case INTEL_PERF_QUERY_TYPE_RAW:
       bo = query->oa.bo;
       break;
 
-   case GEN_PERF_QUERY_TYPE_PIPELINE:
+   case INTEL_PERF_QUERY_TYPE_PIPELINE:
       bo = query->pipeline_stats.bo;
       break;
 
@@ -1103,21 +1103,21 @@ gen_perf_wait_query(struct gen_perf_context *perf_ctx,
 }
 
 bool
-gen_perf_is_query_ready(struct gen_perf_context *perf_ctx,
-                        struct gen_perf_query_object *query,
-                        void *current_batch)
+intel_perf_is_query_ready(struct intel_perf_context *perf_ctx,
+                          struct intel_perf_query_object *query,
+                          void *current_batch)
 {
-   struct gen_perf_config *perf_cfg = perf_ctx->perf;
+   struct intel_perf_config *perf_cfg = perf_ctx->perf;
 
    switch (query->queryinfo->kind) {
-   case GEN_PERF_QUERY_TYPE_OA:
-   case GEN_PERF_QUERY_TYPE_RAW:
+   case INTEL_PERF_QUERY_TYPE_OA:
+   case INTEL_PERF_QUERY_TYPE_RAW:
       return (query->oa.results_accumulated ||
               (query->oa.bo &&
                !perf_cfg->vtbl.batch_references(current_batch, query->oa.bo) &&
                !perf_cfg->vtbl.bo_busy(query->oa.bo)));
 
-   case GEN_PERF_QUERY_TYPE_PIPELINE:
+   case INTEL_PERF_QUERY_TYPE_PIPELINE:
       return (query->pipeline_stats.bo &&
               !perf_cfg->vtbl.batch_references(current_batch, query->pipeline_stats.bo) &&
               !perf_cfg->vtbl.bo_busy(query->pipeline_stats.bo));
@@ -1137,8 +1137,8 @@ gen_perf_is_query_ready(struct gen_perf_context *perf_ctx,
  * results.
  */
 static void
-drop_from_unaccumulated_query_list(struct gen_perf_context *perf_ctx,
-                                   struct gen_perf_query_object *query)
+drop_from_unaccumulated_query_list(struct intel_perf_context *perf_ctx,
+                                   struct intel_perf_query_object *query)
 {
    for (int i = 0; i < perf_ctx->unaccumulated_elements; i++) {
       if (perf_ctx->unaccumulated[i] == query) {
@@ -1177,10 +1177,10 @@ drop_from_unaccumulated_query_list(struct gen_perf_context *perf_ctx,
  * best with new queries.
  */
 static void
-discard_all_queries(struct gen_perf_context *perf_ctx)
+discard_all_queries(struct intel_perf_context *perf_ctx)
 {
    while (perf_ctx->unaccumulated_elements) {
-      struct gen_perf_query_object *query = perf_ctx->unaccumulated[0];
+      struct intel_perf_query_object *query = perf_ctx->unaccumulated[0];
 
       query->oa.results_accumulated = true;
       drop_from_unaccumulated_query_list(perf_ctx, query);
@@ -1191,7 +1191,7 @@ discard_all_queries(struct gen_perf_context *perf_ctx)
 
 /* Looks for the validity bit of context ID (dword 2) of an OA report. */
 static bool
-oa_report_ctx_id_valid(const struct gen_device_info *devinfo,
+oa_report_ctx_id_valid(const struct intel_device_info *devinfo,
                        const uint32_t *report)
 {
    assert(devinfo->ver >= 8);
@@ -1219,10 +1219,10 @@ oa_report_ctx_id_valid(const struct gen_device_info *devinfo,
  * contexts running on the system.
  */
 static void
-accumulate_oa_reports(struct gen_perf_context *perf_ctx,
-                      struct gen_perf_query_object *query)
+accumulate_oa_reports(struct intel_perf_context *perf_ctx,
+                      struct intel_perf_query_object *query)
 {
-   const struct gen_device_info *devinfo = perf_ctx->devinfo;
+   const struct intel_device_info *devinfo = perf_ctx->devinfo;
    uint32_t *start;
    uint32_t *last;
    uint32_t *end;
@@ -1287,7 +1287,7 @@ accumulate_oa_reports(struct gen_perf_context *perf_ctx,
             /* Ignore reports that come before the start marker.
              * (Note: takes care to allow overflow of 32bit timestamps)
              */
-            if (gen_device_info_timebase_scale(devinfo,
+            if (intel_device_info_timebase_scale(devinfo,
                                                report[1] - start[1]) > 5000000000) {
                continue;
             }
@@ -1295,7 +1295,7 @@ accumulate_oa_reports(struct gen_perf_context *perf_ctx,
             /* Ignore reports that come after the end marker.
              * (Note: takes care to allow overflow of 32bit timestamps)
              */
-            if (gen_device_info_timebase_scale(devinfo,
+            if (intel_device_info_timebase_scale(devinfo,
                                                report[1] - end[1]) <= 5000000000) {
                goto end;
             }
@@ -1337,7 +1337,7 @@ accumulate_oa_reports(struct gen_perf_context *perf_ctx,
             }
 
             if (add) {
-               gen_perf_query_result_accumulate(&query->oa.result,
+               intel_perf_query_result_accumulate(&query->oa.result,
                                                 query->queryinfo,
                                                 devinfo,
                                                 last, report);
@@ -1367,7 +1367,7 @@ accumulate_oa_reports(struct gen_perf_context *perf_ctx,
 
 end:
 
-   gen_perf_query_result_accumulate(&query->oa.result, query->queryinfo,
+   intel_perf_query_result_accumulate(&query->oa.result, query->queryinfo,
                                     devinfo, last, end);
 
    query->oa.results_accumulated = true;
@@ -1382,18 +1382,18 @@ error:
 }
 
 void
-gen_perf_delete_query(struct gen_perf_context *perf_ctx,
-                      struct gen_perf_query_object *query)
+intel_perf_delete_query(struct intel_perf_context *perf_ctx,
+                        struct intel_perf_query_object *query)
 {
-   struct gen_perf_config *perf_cfg = perf_ctx->perf;
+   struct intel_perf_config *perf_cfg = perf_ctx->perf;
 
    /* We can assume that the frontend waits for a query to complete
     * before ever calling into here, so we don't have to worry about
     * deleting an in-flight query object.
     */
    switch (query->queryinfo->kind) {
-   case GEN_PERF_QUERY_TYPE_OA:
-   case GEN_PERF_QUERY_TYPE_RAW:
+   case INTEL_PERF_QUERY_TYPE_OA:
+   case INTEL_PERF_QUERY_TYPE_RAW:
       if (query->oa.bo) {
          if (!query->oa.results_accumulated) {
             drop_from_unaccumulated_query_list(perf_ctx, query);
@@ -1407,7 +1407,7 @@ gen_perf_delete_query(struct gen_perf_context *perf_ctx,
       query->oa.results_accumulated = false;
       break;
 
-   case GEN_PERF_QUERY_TYPE_PIPELINE:
+   case INTEL_PERF_QUERY_TYPE_PIPELINE:
       if (query->pipeline_stats.bo) {
          perf_cfg->vtbl.bo_unreference(query->pipeline_stats.bo);
          query->pipeline_stats.bo = NULL;
@@ -1425,38 +1425,38 @@ gen_perf_delete_query(struct gen_perf_context *perf_ctx,
     */
    if (--perf_ctx->n_query_instances == 0) {
       free_sample_bufs(perf_ctx);
-      gen_perf_close(perf_ctx, query->queryinfo);
+      intel_perf_close(perf_ctx, query->queryinfo);
    }
 
    free(query);
 }
 
 static int
-get_oa_counter_data(struct gen_perf_context *perf_ctx,
-                    struct gen_perf_query_object *query,
+get_oa_counter_data(struct intel_perf_context *perf_ctx,
+                    struct intel_perf_query_object *query,
                     size_t data_size,
                     uint8_t *data)
 {
-   struct gen_perf_config *perf_cfg = perf_ctx->perf;
-   const struct gen_perf_query_info *queryinfo = query->queryinfo;
+   struct intel_perf_config *perf_cfg = perf_ctx->perf;
+   const struct intel_perf_query_info *queryinfo = query->queryinfo;
    int n_counters = queryinfo->n_counters;
    int written = 0;
 
    for (int i = 0; i < n_counters; i++) {
-      const struct gen_perf_query_counter *counter = &queryinfo->counters[i];
+      const struct intel_perf_query_counter *counter = &queryinfo->counters[i];
       uint64_t *out_uint64;
       float *out_float;
-      size_t counter_size = gen_perf_query_counter_get_size(counter);
+      size_t counter_size = intel_perf_query_counter_get_size(counter);
 
       if (counter_size) {
          switch (counter->data_type) {
-         case GEN_PERF_COUNTER_DATA_TYPE_UINT64:
+         case INTEL_PERF_COUNTER_DATA_TYPE_UINT64:
             out_uint64 = (uint64_t *)(data + counter->offset);
             *out_uint64 =
                counter->oa_counter_read_uint64(perf_cfg, queryinfo,
                                                &query->oa.result);
             break;
-         case GEN_PERF_COUNTER_DATA_TYPE_FLOAT:
+         case INTEL_PERF_COUNTER_DATA_TYPE_FLOAT:
             out_float = (float *)(data + counter->offset);
             *out_float =
                counter->oa_counter_read_float(perf_cfg, queryinfo,
@@ -1476,14 +1476,14 @@ get_oa_counter_data(struct gen_perf_context *perf_ctx,
 }
 
 static int
-get_pipeline_stats_data(struct gen_perf_context *perf_ctx,
-                        struct gen_perf_query_object *query,
+get_pipeline_stats_data(struct intel_perf_context *perf_ctx,
+                        struct intel_perf_query_object *query,
                         size_t data_size,
                         uint8_t *data)
 
 {
-   struct gen_perf_config *perf_cfg = perf_ctx->perf;
-   const struct gen_perf_query_info *queryinfo = query->queryinfo;
+   struct intel_perf_config *perf_cfg = perf_ctx->perf;
+   const struct intel_perf_query_info *queryinfo = query->queryinfo;
    int n_counters = queryinfo->n_counters;
    uint8_t *p = data;
 
@@ -1491,7 +1491,7 @@ get_pipeline_stats_data(struct gen_perf_context *perf_ctx,
    uint64_t *end = start + (STATS_BO_END_OFFSET_BYTES / sizeof(uint64_t));
 
    for (int i = 0; i < n_counters; i++) {
-      const struct gen_perf_query_counter *counter = &queryinfo->counters[i];
+      const struct intel_perf_query_counter *counter = &queryinfo->counters[i];
       uint64_t value = end[i] - start[i];
 
       if (counter->pipeline_stat.numerator !=
@@ -1510,19 +1510,19 @@ get_pipeline_stats_data(struct gen_perf_context *perf_ctx,
 }
 
 void
-gen_perf_get_query_data(struct gen_perf_context *perf_ctx,
-                        struct gen_perf_query_object *query,
-                        void *current_batch,
-                        int data_size,
-                        unsigned *data,
-                        unsigned *bytes_written)
+intel_perf_get_query_data(struct intel_perf_context *perf_ctx,
+                          struct intel_perf_query_object *query,
+                          void *current_batch,
+                          int data_size,
+                          unsigned *data,
+                          unsigned *bytes_written)
 {
-   struct gen_perf_config *perf_cfg = perf_ctx->perf;
+   struct intel_perf_config *perf_cfg = perf_ctx->perf;
    int written = 0;
 
    switch (query->queryinfo->kind) {
-   case GEN_PERF_QUERY_TYPE_OA:
-   case GEN_PERF_QUERY_TYPE_RAW:
+   case INTEL_PERF_QUERY_TYPE_OA:
+   case INTEL_PERF_QUERY_TYPE_RAW:
       if (!query->oa.results_accumulated) {
          /* Due to the sampling frequency of the OA buffer by the i915-perf
           * driver, there can be a 5ms delay between the Mesa seeing the query
@@ -1537,7 +1537,7 @@ gen_perf_get_query_data(struct gen_perf_context *perf_ctx,
 
          uint32_t *begin_report = query->oa.map;
          uint32_t *end_report = query->oa.map + perf_cfg->query_layout.size;
-         gen_perf_query_result_accumulate_fields(&query->oa.result,
+         intel_perf_query_result_accumulate_fields(&query->oa.result,
                                                  query->queryinfo,
                                                  perf_ctx->devinfo,
                                                  begin_report,
@@ -1549,18 +1549,18 @@ gen_perf_get_query_data(struct gen_perf_context *perf_ctx,
          perf_cfg->vtbl.bo_unmap(query->oa.bo);
          query->oa.map = NULL;
       }
-      if (query->queryinfo->kind == GEN_PERF_QUERY_TYPE_OA) {
+      if (query->queryinfo->kind == INTEL_PERF_QUERY_TYPE_OA) {
          written = get_oa_counter_data(perf_ctx, query, data_size, (uint8_t *)data);
       } else {
-         const struct gen_device_info *devinfo = perf_ctx->devinfo;
+         const struct intel_device_info *devinfo = perf_ctx->devinfo;
 
-         written = gen_perf_query_result_write_mdapi((uint8_t *)data, data_size,
+         written = intel_perf_query_result_write_mdapi((uint8_t *)data, data_size,
                                                      devinfo, query->queryinfo,
                                                      &query->oa.result);
       }
       break;
 
-   case GEN_PERF_QUERY_TYPE_PIPELINE:
+   case INTEL_PERF_QUERY_TYPE_PIPELINE:
       written = get_pipeline_stats_data(perf_ctx, query, data_size, (uint8_t *)data);
       break;
 
@@ -1574,26 +1574,26 @@ gen_perf_get_query_data(struct gen_perf_context *perf_ctx,
 }
 
 void
-gen_perf_dump_query_count(struct gen_perf_context *perf_ctx)
+intel_perf_dump_query_count(struct intel_perf_context *perf_ctx)
 {
    DBG("Queries: (Open queries = %d, OA users = %d)\n",
        perf_ctx->n_active_oa_queries, perf_ctx->n_oa_users);
 }
 
 void
-gen_perf_dump_query(struct gen_perf_context *ctx,
-                    struct gen_perf_query_object *obj,
-                    void *current_batch)
+intel_perf_dump_query(struct intel_perf_context *ctx,
+                      struct intel_perf_query_object *obj,
+                      void *current_batch)
 {
    switch (obj->queryinfo->kind) {
-   case GEN_PERF_QUERY_TYPE_OA:
-   case GEN_PERF_QUERY_TYPE_RAW:
+   case INTEL_PERF_QUERY_TYPE_OA:
+   case INTEL_PERF_QUERY_TYPE_RAW:
       DBG("BO: %-4s OA data: %-10s %-15s\n",
           obj->oa.bo ? "yes," : "no,",
-          gen_perf_is_query_ready(ctx, obj, current_batch) ? "ready," : "not ready,",
+          intel_perf_is_query_ready(ctx, obj, current_batch) ? "ready," : "not ready,",
           obj->oa.results_accumulated ? "accumulated" : "not accumulated");
       break;
-   case GEN_PERF_QUERY_TYPE_PIPELINE:
+   case INTEL_PERF_QUERY_TYPE_PIPELINE:
       DBG("BO: %-4s\n",
           obj->pipeline_stats.bo ? "yes" : "no");
       break;

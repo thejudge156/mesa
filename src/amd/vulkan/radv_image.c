@@ -939,13 +939,13 @@ gfx10_make_texture_descriptor(struct radv_device *device, struct radv_image *ima
 
          switch (image->info.samples) {
          case 2:
-            format = V_008F0C_IMG_FORMAT_FMASK8_S2_F2;
+            format = V_008F0C_GFX10_FORMAT_FMASK8_S2_F2;
             break;
          case 4:
-            format = V_008F0C_IMG_FORMAT_FMASK8_S4_F4;
+            format = V_008F0C_GFX10_FORMAT_FMASK8_S4_F4;
             break;
          case 8:
-            format = V_008F0C_IMG_FORMAT_FMASK32_S8_F8;
+            format = V_008F0C_GFX10_FORMAT_FMASK32_S8_F8;
             break;
          default:
             unreachable("invalid nr_samples");
@@ -1658,7 +1658,8 @@ radv_image_create(VkDevice _device, const struct radv_image_create_info *create_
 static void
 radv_image_view_make_descriptor(struct radv_image_view *iview, struct radv_device *device,
                                 VkFormat vk_format, const VkComponentMapping *components,
-                                bool is_storage_image, bool disable_compression, unsigned plane_id,
+                                bool is_storage_image, bool disable_compression,
+                                bool enable_compression, unsigned plane_id,
                                 unsigned descriptor_plane_id)
 {
    struct radv_image *image = iview->image;
@@ -1699,7 +1700,7 @@ radv_image_view_make_descriptor(struct radv_image_view *iview, struct radv_devic
    }
 
    bool enable_write_compression = radv_image_use_dcc_image_stores(device, image);
-   if (is_storage_image && !enable_write_compression)
+   if (is_storage_image && !(enable_write_compression || enable_compression))
       disable_compression = true;
    si_set_mutable_tex_desc_fields(device, image, base_level_info, plane_id, iview->base_mip,
                                   iview->base_mip, blk_w, is_stencil, is_storage_image,
@@ -1780,6 +1781,7 @@ radv_image_view_init(struct radv_image_view *iview, struct radv_device *device,
 {
    RADV_FROM_HANDLE(radv_image, image, pCreateInfo->image);
    const VkImageSubresourceRange *range = &pCreateInfo->subresourceRange;
+   uint32_t plane_count = 1;
 
    switch (image->type) {
    case VK_IMAGE_TYPE_1D:
@@ -1795,13 +1797,9 @@ radv_image_view_init(struct radv_image_view *iview, struct radv_device *device,
       unreachable("bad VkImageType");
    }
    iview->image = image;
-   iview->bo = image->bo;
    iview->type = pCreateInfo->viewType;
    iview->plane_id = radv_plane_from_aspect(pCreateInfo->subresourceRange.aspectMask);
    iview->aspect_mask = pCreateInfo->subresourceRange.aspectMask;
-   iview->multiple_planes = vk_format_get_plane_count(image->vk_format) > 1 &&
-                            iview->aspect_mask == VK_IMAGE_ASPECT_COLOR_BIT;
-
    iview->base_layer = range->baseArrayLayer;
    iview->layer_count = radv_get_layerCount(image, range);
    iview->base_mip = range->baseMipLevel;
@@ -1897,14 +1895,21 @@ radv_image_view_init(struct radv_image_view *iview, struct radv_device *device,
 
    iview->support_fast_clear = radv_image_view_can_fast_clear(device, iview);
 
+   if (vk_format_get_plane_count(image->vk_format) > 1 &&
+       iview->aspect_mask == VK_IMAGE_ASPECT_COLOR_BIT) {
+      plane_count = vk_format_get_plane_count(iview->vk_format);
+   }
+
    bool disable_compression = extra_create_info ? extra_create_info->disable_compression : false;
-   for (unsigned i = 0;
-        i < (iview->multiple_planes ? vk_format_get_plane_count(image->vk_format) : 1); ++i) {
+   bool enable_compression = extra_create_info ? extra_create_info->enable_compression : false;
+   for (unsigned i = 0; i < plane_count; ++i) {
       VkFormat format = vk_format_get_plane_format(iview->vk_format, i);
       radv_image_view_make_descriptor(iview, device, format, &pCreateInfo->components, false,
-                                      disable_compression, iview->plane_id + i, i);
+                                      disable_compression, enable_compression, iview->plane_id + i,
+                                      i);
       radv_image_view_make_descriptor(iview, device, format, &pCreateInfo->components, true,
-                                      disable_compression, iview->plane_id + i, i);
+                                      disable_compression, enable_compression, iview->plane_id + i,
+                                      i);
    }
 }
 
@@ -1992,8 +1997,17 @@ bool
 radv_layout_fmask_compressed(const struct radv_device *device, const struct radv_image *image,
                              VkImageLayout layout, unsigned queue_mask)
 {
-   return radv_image_has_fmask(image) && layout != VK_IMAGE_LAYOUT_GENERAL &&
-          queue_mask == (1u << RADV_QUEUE_GENERAL);
+   if (!radv_image_has_fmask(image))
+      return false;
+
+   /* Don't compress compute transfer dst because image stores ignore FMASK and it needs to be
+    * expanded before.
+    */
+   if ((layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL || layout == VK_IMAGE_LAYOUT_GENERAL) &&
+       (queue_mask & (1u << RADV_QUEUE_COMPUTE)))
+      return false;
+
+   return layout != VK_IMAGE_LAYOUT_GENERAL;
 }
 
 unsigned

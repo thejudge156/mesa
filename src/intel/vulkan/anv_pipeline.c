@@ -348,7 +348,7 @@ void anv_DestroyPipeline(
    vk_free2(&device->vk.alloc, pAllocator, pipeline);
 }
 
-static const uint32_t vk_to_gen_primitive_type[] = {
+static const uint32_t vk_to_intel_primitive_type[] = {
    [VK_PRIMITIVE_TOPOLOGY_POINT_LIST]                    = _3DPRIM_POINTLIST,
    [VK_PRIMITIVE_TOPOLOGY_LINE_LIST]                     = _3DPRIM_LINELIST,
    [VK_PRIMITIVE_TOPOLOGY_LINE_STRIP]                    = _3DPRIM_LINESTRIP,
@@ -362,7 +362,7 @@ static const uint32_t vk_to_gen_primitive_type[] = {
 };
 
 static void
-populate_sampler_prog_key(const struct gen_device_info *devinfo,
+populate_sampler_prog_key(const struct intel_device_info *devinfo,
                           struct brw_sampler_prog_key_data *key)
 {
    /* Almost all multisampled textures are compressed.  The only time when we
@@ -392,7 +392,7 @@ populate_sampler_prog_key(const struct gen_device_info *devinfo,
 }
 
 static void
-populate_base_prog_key(const struct gen_device_info *devinfo,
+populate_base_prog_key(const struct intel_device_info *devinfo,
                        VkPipelineShaderStageCreateFlags flags,
                        bool robust_buffer_acccess,
                        struct brw_base_prog_key *key)
@@ -408,7 +408,7 @@ populate_base_prog_key(const struct gen_device_info *devinfo,
 }
 
 static void
-populate_vs_prog_key(const struct gen_device_info *devinfo,
+populate_vs_prog_key(const struct intel_device_info *devinfo,
                      VkPipelineShaderStageCreateFlags flags,
                      bool robust_buffer_acccess,
                      struct brw_vs_prog_key *key)
@@ -423,7 +423,7 @@ populate_vs_prog_key(const struct gen_device_info *devinfo,
 }
 
 static void
-populate_tcs_prog_key(const struct gen_device_info *devinfo,
+populate_tcs_prog_key(const struct intel_device_info *devinfo,
                       VkPipelineShaderStageCreateFlags flags,
                       bool robust_buffer_acccess,
                       unsigned input_vertices,
@@ -437,7 +437,7 @@ populate_tcs_prog_key(const struct gen_device_info *devinfo,
 }
 
 static void
-populate_tes_prog_key(const struct gen_device_info *devinfo,
+populate_tes_prog_key(const struct intel_device_info *devinfo,
                       VkPipelineShaderStageCreateFlags flags,
                       bool robust_buffer_acccess,
                       struct brw_tes_prog_key *key)
@@ -448,7 +448,7 @@ populate_tes_prog_key(const struct gen_device_info *devinfo,
 }
 
 static void
-populate_gs_prog_key(const struct gen_device_info *devinfo,
+populate_gs_prog_key(const struct intel_device_info *devinfo,
                      VkPipelineShaderStageCreateFlags flags,
                      bool robust_buffer_acccess,
                      struct brw_gs_prog_key *key)
@@ -459,7 +459,7 @@ populate_gs_prog_key(const struct gen_device_info *devinfo,
 }
 
 static void
-populate_wm_prog_key(const struct gen_device_info *devinfo,
+populate_wm_prog_key(const struct intel_device_info *devinfo,
                      VkPipelineShaderStageCreateFlags flags,
                      bool robust_buffer_acccess,
                      const struct anv_subpass *subpass,
@@ -516,7 +516,7 @@ populate_wm_prog_key(const struct gen_device_info *devinfo,
 }
 
 static void
-populate_cs_prog_key(const struct gen_device_info *devinfo,
+populate_cs_prog_key(const struct intel_device_info *devinfo,
                      VkPipelineShaderStageCreateFlags flags,
                      bool robust_buffer_acccess,
                      const VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT *rss_info,
@@ -1275,7 +1275,7 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
                                stages[stage].spec_info,
                                stages[stage].shader_sha1);
 
-      const struct gen_device_info *devinfo = &pipeline->base.device->info;
+      const struct intel_device_info *devinfo = &pipeline->base.device->info;
       switch (stage) {
       case MESA_SHADER_VERTEX:
          populate_vs_prog_key(devinfo, sinfo->flags,
@@ -1743,7 +1743,7 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
          const unsigned chunk_size = 16;
          const unsigned shared_size = ALIGN(stage.nir->info.shared_size, chunk_size);
          assert(shared_size <=
-                calculate_gen_slm_size(compiler->devinfo->ver, stage.nir->info.shared_size));
+                intel_calculate_slm_size(compiler->devinfo->ver, stage.nir->info.shared_size));
 
          NIR_PASS_V(stage.nir, nir_zero_initialize_shared_memory,
                     shared_size, chunk_size);
@@ -2049,9 +2049,9 @@ copy_non_dynamic_state(struct anv_graphics_pipeline *pipeline,
       }
    }
 
+   const VkPipelineMultisampleStateCreateInfo *ms_info =
+      pCreateInfo->pMultisampleState;
    if (states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS) {
-      const VkPipelineMultisampleStateCreateInfo *ms_info =
-         pCreateInfo->pMultisampleState;
       const VkPipelineSampleLocationsStateCreateInfoEXT *sl_info = ms_info ?
          vk_find_struct_const(ms_info, PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT) : NULL;
 
@@ -2064,20 +2064,27 @@ copy_non_dynamic_state(struct anv_graphics_pipeline *pipeline,
             dynamic->sample_locations.locations[i].x = positions[i].x;
             dynamic->sample_locations.locations[i].y = positions[i].y;
          }
-
-      } else {
-         dynamic->sample_locations.samples =
-            ms_info ? ms_info->rasterizationSamples : 1;
-         const struct intel_sample_position *positions =
-            intel_get_sample_positions(dynamic->sample_locations.samples);
-         for (uint32_t i = 0; i < dynamic->sample_locations.samples; i++) {
-            dynamic->sample_locations.locations[i].x = positions[i].x;
-            dynamic->sample_locations.locations[i].y = positions[i].y;
-         }
+      }
+   }
+   /* Ensure we always have valid values for sample_locations. */
+   if (pipeline->base.device->vk.enabled_extensions.EXT_sample_locations &&
+       dynamic->sample_locations.samples == 0) {
+      dynamic->sample_locations.samples =
+         ms_info ? ms_info->rasterizationSamples : 1;
+      const struct intel_sample_position *positions =
+         intel_get_sample_positions(dynamic->sample_locations.samples);
+      for (uint32_t i = 0; i < dynamic->sample_locations.samples; i++) {
+         dynamic->sample_locations.locations[i].x = positions[i].x;
+         dynamic->sample_locations.locations[i].y = positions[i].y;
       }
    }
 
    pipeline->dynamic_state_mask = states;
+
+   /* For now that only state that can be either dynamic or baked in the
+    * pipeline is the sample location.
+    */
+   pipeline->static_state_mask = states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS;
 }
 
 static void
@@ -2146,7 +2153,7 @@ anv_pipeline_validate_create_info(const VkGraphicsPipelineCreateInfo *info)
 void
 anv_pipeline_setup_l3_config(struct anv_pipeline *pipeline, bool needs_slm)
 {
-   const struct gen_device_info *devinfo = &pipeline->device->info;
+   const struct intel_device_info *devinfo = &pipeline->device->info;
 
    const struct intel_l3_weights w =
       intel_get_default_l3_weights(devinfo, true, needs_slm);
@@ -2283,7 +2290,7 @@ anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline,
    if (anv_pipeline_has_stage(pipeline, MESA_SHADER_TESS_EVAL))
       pipeline->topology = _3DPRIM_PATCHLIST(tess_info->patchControlPoints);
    else
-      pipeline->topology = vk_to_gen_primitive_type[ia_info->topology];
+      pipeline->topology = vk_to_intel_primitive_type[ia_info->topology];
 
    return VK_SUCCESS;
 }

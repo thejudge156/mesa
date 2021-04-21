@@ -23,8 +23,8 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef GEN_DEBUG_H
-#define GEN_DEBUG_H
+#ifndef INTEL_DEBUG_H
+#define INTEL_DEBUG_H
 
 #include <stdint.h>
 #include "compiler/shader_enums.h"
@@ -34,7 +34,7 @@
 extern "C" {
 #endif
 /**
- * \file gen_debug.h
+ * \file intel_debug.h
  *
  * Basic INTEL_DEBUG environment variable handling.  This file defines the
  * list of debugging flags, as well as some macros for handling them.
@@ -131,32 +131,32 @@ extern void brw_process_intel_debug_variable(void);
  * can fill those in for debug purposes.
  */
 
-enum gen_debug_block_type {
+enum intel_debug_block_type {
    /* End of the debug blocks */
-   GEN_DEBUG_BLOCK_TYPE_END = 1,
+   INTEL_DEBUG_BLOCK_TYPE_END = 1,
 
-   /* Driver identifier (struct gen_debug_block_driver) */
-   GEN_DEBUG_BLOCK_TYPE_DRIVER,
+   /* Driver identifier (struct intel_debug_block_driver) */
+   INTEL_DEBUG_BLOCK_TYPE_DRIVER,
 
-   /* Frame identifier (struct gen_debug_block_frame) */
-   GEN_DEBUG_BLOCK_TYPE_FRAME,
+   /* Frame identifier (struct intel_debug_block_frame) */
+   INTEL_DEBUG_BLOCK_TYPE_FRAME,
 
    /* Internal, never to be written out */
-   GEN_DEBUG_BLOCK_TYPE_MAX,
+   INTEL_DEBUG_BLOCK_TYPE_MAX,
 };
 
-struct gen_debug_block_base {
-   uint32_t type; /* enum gen_debug_block_type */
+struct intel_debug_block_base {
+   uint32_t type; /* enum intel_debug_block_type */
    uint32_t length; /* inclusive of this structure size */
 };
 
-struct gen_debug_block_driver {
-   struct gen_debug_block_base base;
+struct intel_debug_block_driver {
+   struct intel_debug_block_base base;
    uint8_t description[];
 };
 
-struct gen_debug_block_frame {
-   struct gen_debug_block_base base;
+struct intel_debug_block_frame {
+   struct intel_debug_block_base base;
    uint64_t frame_id;
 };
 
@@ -169,10 +169,10 @@ extern uint32_t intel_debug_write_identifiers(void *output,
 
 extern void *intel_debug_get_identifier_block(void *buffer,
                                               uint32_t buffer_size,
-                                              enum gen_debug_block_type type);
+                                              enum intel_debug_block_type type);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* GEN_DEBUG_H */
+#endif /* INTEL_DEBUG_H */

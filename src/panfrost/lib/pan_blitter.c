@@ -163,7 +163,15 @@ pan_blitter_prepare_bifrost_rsd(const struct panfrost_device *dev,
                 rsd->properties.bifrost.pixel_kill_operation =
                         MALI_PIXEL_KILL_FORCE_EARLY;
         }
-        rsd->properties.bifrost.allow_forward_pixel_to_kill = true;
+
+        /* We can only allow blit shader fragments to kill if they write all
+         * colour outputs. This is true for our colour (non-Z/S) blit shaders,
+         * but obviously not true for Z/S shaders. However, blit shaders
+         * otherwise lack side effects, so other fragments may kill them. */
+
+        rsd->properties.bifrost.allow_forward_pixel_to_kill = !(z || s);
+        rsd->properties.bifrost.allow_forward_pixel_to_be_killed = true;
+
         rsd->preload.fragment.coverage = true;
         rsd->preload.fragment.sample_mask_id = ms;
 }
@@ -240,9 +248,6 @@ pan_blitter_emit_bifrost_blend(const struct panfrost_device *dev,
                                         blit_shader->blend_ret_offsets[rt];
                         }
                 } else {
-                        const struct util_format_description *format_desc =
-                                util_format_description(iview->format);
-
                         cfg.bifrost.equation.rgb.a = MALI_BLEND_OPERAND_A_SRC;
                         cfg.bifrost.equation.rgb.b = MALI_BLEND_OPERAND_B_SRC;
                         cfg.bifrost.equation.rgb.c = MALI_BLEND_OPERAND_C_ZERO;
@@ -252,7 +257,7 @@ pan_blitter_emit_bifrost_blend(const struct panfrost_device *dev,
                         cfg.bifrost.equation.color_mask = 0xf;
                         cfg.bifrost.internal.fixed_function.num_comps = 4;
                         cfg.bifrost.internal.fixed_function.conversion.memory_format =
-                                panfrost_format_to_bifrost_blend(dev, format_desc, true);
+                                panfrost_format_to_bifrost_blend(dev, iview->format);
                         cfg.bifrost.internal.fixed_function.conversion.register_format =
                                 blit_type_to_reg_fmt(type);
 
@@ -366,7 +371,7 @@ pan_blitter_get_blend_shaders(struct panfrost_device *dev,
         };
 
         for (unsigned i = 0; i < rt_count; i++) {
-                if (!rts[i] || panfrost_blend_format(rts[i]->format).internal)
+                if (!rts[i] || panfrost_blendable_formats[rts[i]->format].internal)
                         continue;
 
                 struct pan_blit_blend_shader_key key = {
@@ -906,6 +911,11 @@ pan_preload_emit_dcd(struct pan_pool *pool,
 
                 if (pan_is_bifrost(pool->dev)) {
                         pan_preload_emit_bifrost_sampler(pool, &cfg);
+
+                        /* Tiles updated by blit shaders are still considered
+                         * clean (separate for colour and Z/S), allowing us to
+                         * suppress unnecessary writeback */
+                        cfg.clean_fragment_write = true;
                 } else {
                         pan_preload_emit_midgard_sampler(pool, &cfg);
                         cfg.texture_descriptor_is_64b = true;

@@ -1049,7 +1049,7 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
          break;
       op[0].type = BRW_REGISTER_TYPE_D;
       op[0].negate = !op[0].negate;
-      /* fallthrough */
+      FALLTHROUGH;
    case nir_op_i2f64:
    case nir_op_i2i64:
    case nir_op_u2f64:
@@ -1174,7 +1174,7 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
          bld.emit(SHADER_OPCODE_RND_MODE, bld.null_reg_ud(),
                   brw_imm_d(rnd));
       }
-      /* fallthrough */
+      FALLTHROUGH;
    case nir_op_iadd:
       inst = bld.ADD(result, op[0], op[1]);
       break;
@@ -1624,7 +1624,7 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
 
    case nir_op_unpack_half_2x16_split_x_flush_to_zero:
       assert(FLOAT_CONTROLS_DENORM_FLUSH_TO_ZERO_FP16 & execution_mode);
-      /* Fall-through */
+      FALLTHROUGH;
    case nir_op_unpack_half_2x16_split_x:
       inst = bld.emit(BRW_OPCODE_F16TO32, result,
                       subscript(op[0], BRW_REGISTER_TYPE_UW, 0));
@@ -1632,7 +1632,7 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
 
    case nir_op_unpack_half_2x16_split_y_flush_to_zero:
       assert(FLOAT_CONTROLS_DENORM_FLUSH_TO_ZERO_FP16 & execution_mode);
-      /* Fall-through */
+      FALLTHROUGH;
    case nir_op_unpack_half_2x16_split_y:
       inst = bld.emit(BRW_OPCODE_F16TO32, result,
                       subscript(op[0], BRW_REGISTER_TYPE_UW, 1));
@@ -3145,7 +3145,7 @@ fs_inst *
 fs_visitor::emit_non_coherent_fb_read(const fs_builder &bld, const fs_reg &dst,
                                       unsigned target)
 {
-   const struct gen_device_info *devinfo = bld.shader->devinfo;
+   const struct intel_device_info *devinfo = bld.shader->devinfo;
 
    assert(bld.shader->stage == MESA_SHADER_FRAGMENT);
    const brw_wm_prog_key *wm_key =
@@ -4255,7 +4255,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
 
    case nir_intrinsic_scoped_barrier:
       assert(nir_intrinsic_execution_scope(instr) == NIR_SCOPE_NONE);
-      /* Fall through. */
+      FALLTHROUGH;
    case nir_intrinsic_group_memory_barrier:
    case nir_intrinsic_memory_barrier_shared:
    case nir_intrinsic_memory_barrier_buffer:
@@ -4458,7 +4458,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
             (instr->num_components - 1) * type_sz(dest.type);
 
          bool supports_64bit_indirects =
-            !devinfo->is_cherryview && !gen_device_info_is_9lp(devinfo);
+            !devinfo->is_cherryview && !intel_device_info_is_9lp(devinfo);
 
          if (type_sz(dest.type) != 8 || supports_64bit_indirects) {
             for (unsigned j = 0; j < instr->num_components; j++) {
@@ -6211,7 +6211,7 @@ shuffle_from_32bit_read(const fs_builder &bld,
 fs_reg
 setup_imm_df(const fs_builder &bld, double v)
 {
-   const struct gen_device_info *devinfo = bld.shader->devinfo;
+   const struct intel_device_info *devinfo = bld.shader->devinfo;
    assert(devinfo->ver >= 7);
 
    if (devinfo->ver >= 8)

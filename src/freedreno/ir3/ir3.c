@@ -112,6 +112,16 @@ should_double_threadsize(struct ir3_shader_variant *v,
 						 unsigned regs_count)
 {
 	const struct ir3_compiler *compiler = v->shader->compiler;
+
+	/* We can't support more than compiler->branchstack_size diverging threads
+	 * in a wave. Thus, doubling the threadsize is only possible if we don't
+	 * exceed the branchstack size limit.
+	 */
+	if (MIN2(v->branchstack, compiler->threadsize_base * 2) >
+			compiler->branchstack_size) {
+		return false;
+	}
+
 	switch (v->type) {
 	case MESA_SHADER_COMPUTE: {
 		unsigned threads_per_wg = v->local_size[0] * v->local_size[1] * v->local_size[2];
@@ -137,7 +147,7 @@ should_double_threadsize(struct ir3_shader_variant *v,
 				return false;
 		}
 	}
-	/* fallthrough */
+	FALLTHROUGH;
 	case MESA_SHADER_FRAGMENT: {
 		/* Check that doubling the threadsize wouldn't exceed the regfile size */
 		return regs_count * 2 <= compiler->reg_size_vec4;

@@ -403,7 +403,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_sampler_mirror_clamp_to_edge = true,
       .KHR_sampler_ycbcr_conversion = true,
       .KHR_separate_depth_stencil_layouts = true,
-      .KHR_shader_atomic_int64 = LLVM_VERSION_MAJOR >= 9 || !device->use_llvm,
+      .KHR_shader_atomic_int64 = true,
       .KHR_shader_clock = true,
       .KHR_shader_draw_parameters = true,
       .KHR_shader_float16_int8 = true,
@@ -460,8 +460,8 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_sampler_filter_minmax = true,
       .EXT_scalar_block_layout = device->rad_info.chip_class >= GFX7,
       .EXT_shader_atomic_float = true,
-      .EXT_shader_demote_to_helper_invocation = LLVM_VERSION_MAJOR >= 9 || !device->use_llvm,
-      .EXT_shader_image_atomic_int64 = LLVM_VERSION_MAJOR >= 11 || !device->use_llvm,
+      .EXT_shader_demote_to_helper_invocation = true,
+      .EXT_shader_image_atomic_int64 = true,
       .EXT_shader_stencil_export = true,
       .EXT_shader_subgroup_ballot = true,
       .EXT_shader_subgroup_vote = true,
@@ -1165,8 +1165,7 @@ radv_get_physical_device_features_1_1(struct radv_physical_device *pdevice,
    f->storageBuffer16BitAccess = true;
    f->uniformAndStorageBuffer16BitAccess = true;
    f->storagePushConstant16 = true;
-   f->storageInputOutput16 =
-      pdevice->rad_info.has_packed_math_16bit && (LLVM_VERSION_MAJOR >= 9 || !pdevice->use_llvm);
+   f->storageInputOutput16 = pdevice->rad_info.has_packed_math_16bit;
    f->multiview = true;
    f->multiviewGeometryShader = true;
    f->multiviewTessellationShader = true;
@@ -1188,8 +1187,8 @@ radv_get_physical_device_features_1_2(struct radv_physical_device *pdevice,
    f->storageBuffer8BitAccess = true;
    f->uniformAndStorageBuffer8BitAccess = true;
    f->storagePushConstant8 = true;
-   f->shaderBufferInt64Atomics = LLVM_VERSION_MAJOR >= 9 || !pdevice->use_llvm;
-   f->shaderSharedInt64Atomics = LLVM_VERSION_MAJOR >= 9 || !pdevice->use_llvm;
+   f->shaderBufferInt64Atomics = true;
+   f->shaderSharedInt64Atomics = true;
    f->shaderFloat16 = pdevice->rad_info.has_packed_math_16bit;
    f->shaderInt8 = true;
 
@@ -1405,7 +1404,7 @@ radv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES_EXT: {
          VkPhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT *features =
             (VkPhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT *)ext;
-         features->shaderDemoteToHelperInvocation = LLVM_VERSION_MAJOR >= 9 || !pdevice->use_llvm;
+         features->shaderDemoteToHelperInvocation = true;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INLINE_UNIFORM_BLOCK_FEATURES_EXT: {
@@ -1580,8 +1579,7 @@ radv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->shaderBufferFloat64Atomics = true;
          features->shaderBufferFloat64AtomicAdd = false;
          features->shaderSharedFloat32Atomics = true;
-         features->shaderSharedFloat32AtomicAdd = pdevice->rad_info.chip_class >= GFX8 &&
-                                                  (!pdevice->use_llvm || LLVM_VERSION_MAJOR >= 10);
+         features->shaderSharedFloat32AtomicAdd = pdevice->rad_info.chip_class >= GFX8;
          features->shaderSharedFloat64Atomics = true;
          features->shaderSharedFloat64AtomicAdd = false;
          features->shaderImageFloat32Atomics = true;
@@ -1606,8 +1604,8 @@ radv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_IMAGE_ATOMIC_INT64_FEATURES_EXT: {
          VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT *features =
             (VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT *)ext;
-         features->shaderImageInt64Atomics = LLVM_VERSION_MAJOR >= 11 || !pdevice->use_llvm;
-         features->sparseImageInt64Atomics = LLVM_VERSION_MAJOR >= 11 || !pdevice->use_llvm;
+         features->shaderImageInt64Atomics = true;
+         features->sparseImageInt64Atomics = true;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_VALVE: {
@@ -3258,7 +3256,7 @@ fill_geom_tess_rings(struct radv_queue *queue, uint32_t *map, bool add_sample_po
                 S_008F0C_INDEX_STRIDE(3) | S_008F0C_ADD_TID_ENABLE(1);
 
       if (queue->device->physical_device->rad_info.chip_class >= GFX10) {
-         desc[3] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+         desc[3] |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                     S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_DISABLED) | S_008F0C_RESOURCE_LEVEL(1);
       } else {
          desc[3] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -3275,7 +3273,7 @@ fill_geom_tess_rings(struct radv_queue *queue, uint32_t *map, bool add_sample_po
                 S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W);
 
       if (queue->device->physical_device->rad_info.chip_class >= GFX10) {
-         desc[7] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+         desc[7] |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                     S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_DISABLED) | S_008F0C_RESOURCE_LEVEL(1);
       } else {
          desc[7] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -3298,7 +3296,7 @@ fill_geom_tess_rings(struct radv_queue *queue, uint32_t *map, bool add_sample_po
                 S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W);
 
       if (queue->device->physical_device->rad_info.chip_class >= GFX10) {
-         desc[3] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+         desc[3] |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                     S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_DISABLED) | S_008F0C_RESOURCE_LEVEL(1);
       } else {
          desc[3] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -3316,7 +3314,7 @@ fill_geom_tess_rings(struct radv_queue *queue, uint32_t *map, bool add_sample_po
                 S_008F0C_INDEX_STRIDE(1) | S_008F0C_ADD_TID_ENABLE(true);
 
       if (queue->device->physical_device->rad_info.chip_class >= GFX10) {
-         desc[7] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+         desc[7] |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                     S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_DISABLED) | S_008F0C_RESOURCE_LEVEL(1);
       } else {
          desc[7] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -3337,7 +3335,7 @@ fill_geom_tess_rings(struct radv_queue *queue, uint32_t *map, bool add_sample_po
                 S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W);
 
       if (queue->device->physical_device->rad_info.chip_class >= GFX10) {
-         desc[3] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+         desc[3] |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                     S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) | S_008F0C_RESOURCE_LEVEL(1);
       } else {
          desc[3] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -3351,7 +3349,7 @@ fill_geom_tess_rings(struct radv_queue *queue, uint32_t *map, bool add_sample_po
                 S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W);
 
       if (queue->device->physical_device->rad_info.chip_class >= GFX10) {
-         desc[7] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+         desc[7] |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                     S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) | S_008F0C_RESOURCE_LEVEL(1);
       } else {
          desc[7] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -6365,7 +6363,7 @@ radv_initialise_color_surface(struct radv_device *device, struct radv_color_buff
    /* Intensity is implemented as Red, so treat it that way. */
    cb->cb_color_attrib = S_028C74_FORCE_DST_ALPHA_1(desc->swizzle[3] == PIPE_SWIZZLE_1);
 
-   va = radv_buffer_get_va(iview->bo) + iview->image->offset;
+   va = radv_buffer_get_va(iview->image->bo) + iview->image->offset;
 
    cb->cb_color_base = va >> 8;
 
@@ -6427,11 +6425,11 @@ radv_initialise_color_surface(struct radv_device *device, struct radv_color_buff
    }
 
    /* CMASK variables */
-   va = radv_buffer_get_va(iview->bo) + iview->image->offset;
+   va = radv_buffer_get_va(iview->image->bo) + iview->image->offset;
    va += surf->cmask_offset;
    cb->cb_color_cmask = va >> 8;
 
-   va = radv_buffer_get_va(iview->bo) + iview->image->offset;
+   va = radv_buffer_get_va(iview->image->bo) + iview->image->offset;
    va += surf->meta_offset;
 
    if (radv_dcc_enabled(iview->image, iview->base_mip) &&
@@ -6457,7 +6455,7 @@ radv_initialise_color_surface(struct radv_device *device, struct radv_color_buff
    }
 
    if (radv_image_has_fmask(iview->image)) {
-      va = radv_buffer_get_va(iview->bo) + iview->image->offset + surf->fmask_offset;
+      va = radv_buffer_get_va(iview->image->bo) + iview->image->offset + surf->fmask_offset;
       cb->cb_color_fmask = va >> 8;
       cb->cb_color_fmask |= surf->fmask_tile_swizzle;
    } else {
@@ -6650,7 +6648,7 @@ radv_initialise_ds_surface(struct radv_device *device, struct radv_ds_buffer_inf
    ds->db_htile_data_base = 0;
    ds->db_htile_surface = 0;
 
-   va = radv_buffer_get_va(iview->bo) + iview->image->offset;
+   va = radv_buffer_get_va(iview->image->bo) + iview->image->offset;
    s_offs = z_offs = va;
 
    if (device->physical_device->rad_info.chip_class >= GFX9) {
@@ -6694,7 +6692,7 @@ radv_initialise_ds_surface(struct radv_device *device, struct radv_ds_buffer_inf
             ds->db_stencil_info |= S_02803C_TILE_STENCIL_DISABLE(1);
          }
 
-         va = radv_buffer_get_va(iview->bo) + iview->image->offset + surf->meta_offset;
+         va = radv_buffer_get_va(iview->image->bo) + iview->image->offset + surf->meta_offset;
          ds->db_htile_data_base = va >> 8;
          ds->db_htile_surface = S_028ABC_FULL_CACHE(1) | S_028ABC_PIPE_ALIGNED(1);
 
@@ -6763,7 +6761,7 @@ radv_initialise_ds_surface(struct radv_device *device, struct radv_ds_buffer_inf
             ds->db_stencil_info |= S_028044_TILE_STENCIL_DISABLE(1);
          }
 
-         va = radv_buffer_get_va(iview->bo) + iview->image->offset + surf->meta_offset;
+         va = radv_buffer_get_va(iview->image->bo) + iview->image->offset + surf->meta_offset;
          ds->db_htile_data_base = va >> 8;
          ds->db_htile_surface = S_028ABC_FULL_CACHE(1);
 

@@ -458,7 +458,7 @@ radv_load_ubo(struct ac_shader_abi *abi, unsigned desc_set, unsigned binding, bo
             S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W);
 
          if (ctx->ac.chip_class >= GFX10) {
-            desc_type |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+            desc_type |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                          S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) | S_008F0C_RESOURCE_LEVEL(1);
          } else {
             desc_type |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -1084,7 +1084,7 @@ radv_emit_stream_output(struct radv_shader_context *ctx, LLVMValueRef const *so_
    case 2: /* as v2i32 */
    case 3: /* as v4i32 (aligned to 4) */
       out[3] = LLVMGetUndef(ctx->ac.i32);
-      /* fall through */
+      FALLTHROUGH;
    case 4: /* as v4i32 */
       vdata = ac_build_gather_values(&ctx->ac, out,
                                      !ac_has_vec3_support(ctx->ac.chip_class, false)
@@ -2345,7 +2345,7 @@ gfx10_ngg_gs_emit_epilogue_2(struct radv_shader_context *ctx)
       LLVMTypeRef gdsptr = LLVMPointerType(ctx->ac.i32, AC_ADDR_SPACE_GDS);
       LLVMValueRef gdsbase = LLVMBuildIntToPtr(builder, ctx->ac.i32_0, gdsptr, "");
 
-      const char *sync_scope = LLVM_VERSION_MAJOR >= 9 ? "workgroup-one-as" : "workgroup";
+      const char *sync_scope = "workgroup-one-as";
 
       /* Use a plain GDS atomic to accumulate the number of generated
        * primitives.

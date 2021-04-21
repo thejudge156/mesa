@@ -22,8 +22,8 @@
   *
   */
 
-#ifndef GEN_DEVICE_INFO_H
-#define GEN_DEVICE_INFO_H
+#ifndef INTEL_DEVICE_INFO_H
+#define INTEL_DEVICE_INFO_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -36,15 +36,15 @@ extern "C" {
 
 struct drm_i915_query_topology_info;
 
-#define GEN_DEVICE_MAX_SLICES           (6)  /* Maximum on gfx10 */
-#define GEN_DEVICE_MAX_SUBSLICES        (8)  /* Maximum on gfx11 */
-#define GEN_DEVICE_MAX_EUS_PER_SUBSLICE (16) /* Maximum on gfx12 */
-#define GEN_DEVICE_MAX_PIXEL_PIPES      (3)  /* Maximum on gfx12 */
+#define INTEL_DEVICE_MAX_SLICES           (6)  /* Maximum on gfx10 */
+#define INTEL_DEVICE_MAX_SUBSLICES        (8)  /* Maximum on gfx11 */
+#define INTEL_DEVICE_MAX_EUS_PER_SUBSLICE (16) /* Maximum on gfx12 */
+#define INTEL_DEVICE_MAX_PIXEL_PIPES      (3)  /* Maximum on gfx12 */
 
 /**
  * Intel hardware information and quirks
  */
-struct gen_device_info
+struct intel_device_info
 {
    /* Driver internal numbers used to differentiate platforms. */
    int ver;
@@ -132,12 +132,12 @@ struct gen_device_info
    /**
     * Number of subslices for each slice (used to be uniform until CNL).
     */
-   unsigned num_subslices[GEN_DEVICE_MAX_SUBSLICES];
+   unsigned num_subslices[INTEL_DEVICE_MAX_SUBSLICES];
 
    /**
     * Number of subslices on each pixel pipe (ICL).
     */
-   unsigned ppipe_subslices[GEN_DEVICE_MAX_PIXEL_PIPES];
+   unsigned ppipe_subslices[INTEL_DEVICE_MAX_PIXEL_PIPES];
 
    /**
     * Upper bound of number of EU per subslice (some SKUs might have just 1 EU
@@ -160,16 +160,16 @@ struct gen_device_info
     * An array of bit mask of the subslices available, use subslice_slice_stride
     * to access this array.
     */
-   uint8_t subslice_masks[GEN_DEVICE_MAX_SLICES *
-                          DIV_ROUND_UP(GEN_DEVICE_MAX_SUBSLICES, 8)];
+   uint8_t subslice_masks[INTEL_DEVICE_MAX_SLICES *
+                          DIV_ROUND_UP(INTEL_DEVICE_MAX_SUBSLICES, 8)];
 
    /**
     * An array of bit mask of EUs available, use eu_slice_stride &
     * eu_subslice_stride to access this array.
     */
-   uint8_t eu_masks[GEN_DEVICE_MAX_SLICES *
-                    GEN_DEVICE_MAX_SUBSLICES *
-                    DIV_ROUND_UP(GEN_DEVICE_MAX_EUS_PER_SUBSLICE, 8)];
+   uint8_t eu_masks[INTEL_DEVICE_MAX_SLICES *
+                    INTEL_DEVICE_MAX_SUBSLICES *
+                    DIV_ROUND_UP(INTEL_DEVICE_MAX_EUS_PER_SUBSLICE, 8)];
 
    /**
     * Stride to access subslice_masks[].
@@ -285,27 +285,27 @@ struct gen_device_info
 
 #ifdef GFX_VER
 
-#define gen_device_info_is_9lp(devinfo) \
+#define intel_device_info_is_9lp(devinfo) \
    (GFX_VER == 9 && ((devinfo)->is_broxton || (devinfo)->is_geminilake))
 
 #else
 
-#define gen_device_info_is_9lp(devinfo) \
+#define intel_device_info_is_9lp(devinfo) \
    ((devinfo)->is_broxton || (devinfo)->is_geminilake)
 
 #endif
 
 static inline bool
-gen_device_info_subslice_available(const struct gen_device_info *devinfo,
-                                   int slice, int subslice)
+intel_device_info_subslice_available(const struct intel_device_info *devinfo,
+                                     int slice, int subslice)
 {
    return (devinfo->subslice_masks[slice * devinfo->subslice_slice_stride +
                                    subslice / 8] & (1U << (subslice % 8))) != 0;
 }
 
 static inline bool
-gen_device_info_eu_available(const struct gen_device_info *devinfo,
-                             int slice, int subslice, int eu)
+intel_device_info_eu_available(const struct intel_device_info *devinfo,
+                               int slice, int subslice, int eu)
 {
    unsigned subslice_offset = slice * devinfo->eu_slice_stride +
       subslice * devinfo->eu_subslice_stride;
@@ -314,7 +314,7 @@ gen_device_info_eu_available(const struct gen_device_info *devinfo,
 }
 
 static inline uint32_t
-gen_device_info_subslice_total(const struct gen_device_info *devinfo)
+intel_device_info_subslice_total(const struct intel_device_info *devinfo)
 {
    uint32_t total = 0;
 
@@ -325,7 +325,7 @@ gen_device_info_subslice_total(const struct gen_device_info *devinfo)
 }
 
 static inline uint32_t
-gen_device_info_eu_total(const struct gen_device_info *devinfo)
+intel_device_info_eu_total(const struct intel_device_info *devinfo)
 {
    uint32_t total = 0;
 
@@ -336,28 +336,29 @@ gen_device_info_eu_total(const struct gen_device_info *devinfo)
 }
 
 static inline unsigned
-gen_device_info_num_dual_subslices(UNUSED const struct gen_device_info *devinfo)
+intel_device_info_num_dual_subslices(UNUSED
+                                     const struct intel_device_info *devinfo)
 {
    unreachable("TODO");
 }
 
-int gen_device_name_to_pci_device_id(const char *name);
-const char *gen_get_device_name(int devid);
+int intel_device_name_to_pci_device_id(const char *name);
+const char *intel_get_device_name(int devid);
 
 static inline uint64_t
-gen_device_info_timebase_scale(const struct gen_device_info *devinfo,
-                               uint64_t gpu_timestamp)
+intel_device_info_timebase_scale(const struct intel_device_info *devinfo,
+                                 uint64_t gpu_timestamp)
 {
    return (1000000000ull * gpu_timestamp) / devinfo->timestamp_frequency;
 }
 
-bool gen_get_device_info_from_fd(int fh, struct gen_device_info *devinfo);
-bool gen_get_device_info_from_pci_id(int pci_id,
-                                     struct gen_device_info *devinfo);
-int gen_get_aperture_size(int fd, uint64_t *size);
+bool intel_get_device_info_from_fd(int fh, struct intel_device_info *devinfo);
+bool intel_get_device_info_from_pci_id(int pci_id,
+                                       struct intel_device_info *devinfo);
+int intel_get_aperture_size(int fd, uint64_t *size);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* GEN_DEVICE_INFO_H */
+#endif /* INTEL_DEVICE_INFO_H */

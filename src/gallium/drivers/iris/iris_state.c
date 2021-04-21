@@ -382,7 +382,7 @@ emit_state(struct iris_batch *batch,
 static void
 flush_before_state_base_change(struct iris_batch *batch)
 {
-   const struct gen_device_info *devinfo = &batch->screen->devinfo;
+   const struct intel_device_info *devinfo = &batch->screen->devinfo;
 
    /* Flush before emitting STATE_BASE_ADDRESS.
     *
@@ -838,7 +838,7 @@ calculate_pixel_hashing_table(unsigned n, unsigned m,
 static void
 gfx11_upload_pixel_hashing_tables(struct iris_batch *batch)
 {
-   const struct gen_device_info *devinfo = &batch->screen->devinfo;
+   const struct intel_device_info *devinfo = &batch->screen->devinfo;
    assert(devinfo->ppipe_subslices[2] == 0);
 
    if (devinfo->ppipe_subslices[0] == devinfo->ppipe_subslices[1])
@@ -874,7 +874,7 @@ gfx11_upload_pixel_hashing_tables(struct iris_batch *batch)
 static void
 gfx12_upload_pixel_hashing_tables(struct iris_batch *batch)
 {
-   const struct gen_device_info *devinfo = &batch->screen->devinfo;
+   const struct intel_device_info *devinfo = &batch->screen->devinfo;
    /* For each n calculate ppipes_of[n], equal to the number of pixel pipes
     * present with n active dual subslices.
     */
@@ -977,7 +977,7 @@ iris_init_common_context(struct iris_batch *batch)
 static void
 iris_init_render_context(struct iris_batch *batch)
 {
-   UNUSED const struct gen_device_info *devinfo = &batch->screen->devinfo;
+   UNUSED const struct intel_device_info *devinfo = &batch->screen->devinfo;
 
    iris_batch_sync_region_start(batch);
 
@@ -1087,7 +1087,7 @@ iris_init_render_context(struct iris_batch *batch)
 static void
 iris_init_compute_context(struct iris_batch *batch)
 {
-   UNUSED const struct gen_device_info *devinfo = &batch->screen->devinfo;
+   UNUSED const struct intel_device_info *devinfo = &batch->screen->devinfo;
 
    iris_batch_sync_region_start(batch);
 
@@ -1511,7 +1511,7 @@ static bool
 want_pma_fix(struct iris_context *ice)
 {
    UNUSED struct iris_screen *screen = (void *) ice->ctx.screen;
-   UNUSED const struct gen_device_info *devinfo = &screen->devinfo;
+   UNUSED const struct intel_device_info *devinfo = &screen->devinfo;
    const struct brw_wm_prog_data *wm_prog_data = (void *)
       ice->shaders.prog[MESA_SHADER_FRAGMENT]->prog_data;
    const struct pipe_framebuffer_state *cso_fb = &ice->state.framebuffer;
@@ -2313,7 +2313,7 @@ update_surface_state_addrs(struct u_upload_mgr *mgr,
  * to the single slice of the texture being read.
  */
 static void
-get_rt_read_isl_surf(const struct gen_device_info *devinfo,
+get_rt_read_isl_surf(const struct intel_device_info *devinfo,
                      struct iris_resource *res,
                      enum pipe_texture_target target,
                      struct isl_view *view,
@@ -2413,7 +2413,7 @@ iris_create_sampler_view(struct pipe_context *ctx,
                          const struct pipe_sampler_view *tmpl)
 {
    struct iris_screen *screen = (struct iris_screen *)ctx->screen;
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    struct iris_sampler_view *isv = calloc(1, sizeof(struct iris_sampler_view));
 
    if (!isv)
@@ -2520,7 +2520,7 @@ iris_create_surface(struct pipe_context *ctx,
                     const struct pipe_surface *tmpl)
 {
    struct iris_screen *screen = (struct iris_screen *)ctx->screen;
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
 
    isl_surf_usage_flags_t usage = 0;
    if (tmpl->writable)
@@ -3502,6 +3502,9 @@ iris_set_vertex_buffers(struct pipe_context *ctx,
                ro_bo(NULL, res->bo->gtt_offset + (int) buffer->buffer_offset);
             vb.MOCS = iris_mocs(res->bo, &screen->isl_dev,
                                 ISL_SURF_USAGE_VERTEX_BUFFER_BIT);
+#if GEN_GEN >= 12
+            vb.L3BypassDisable       = true;
+#endif
          } else {
             vb.NullVertexBuffer = true;
          }
@@ -3546,7 +3549,7 @@ iris_create_vertex_elements(struct pipe_context *ctx,
                             const struct pipe_vertex_element *state)
 {
    struct iris_screen *screen = (struct iris_screen *)ctx->screen;
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    struct iris_vertex_element_state *cso =
       malloc(sizeof(struct iris_vertex_element_state));
 
@@ -3581,9 +3584,9 @@ iris_create_vertex_elements(struct pipe_context *ctx,
                            VFCOMP_STORE_SRC, VFCOMP_STORE_SRC };
 
       switch (isl_format_get_num_channels(fmt.fmt)) {
-      case 0: comp[0] = VFCOMP_STORE_0; /* fallthrough */
-      case 1: comp[1] = VFCOMP_STORE_0; /* fallthrough */
-      case 2: comp[2] = VFCOMP_STORE_0; /* fallthrough */
+      case 0: comp[0] = VFCOMP_STORE_0; FALLTHROUGH;
+      case 1: comp[1] = VFCOMP_STORE_0; FALLTHROUGH;
+      case 2: comp[2] = VFCOMP_STORE_0; FALLTHROUGH;
       case 3:
          comp[3] = isl_format_has_int_channel(fmt.fmt) ? VFCOMP_STORE_1_INT
                                                        : VFCOMP_STORE_1_FP;
@@ -3748,6 +3751,13 @@ iris_set_stream_output_targets(struct pipe_context *ctx,
                iris_dirty_for_history(ice, res);
             }
          }
+#if GEN_GEN >= 12
+         /* SO draws require flushing of const cache to make SO data
+          * observable when VB/IB are cached in L3.
+          */
+         if (flush & PIPE_CONTROL_VF_CACHE_INVALIDATE)
+            flush |= PIPE_CONTROL_CONST_CACHE_INVALIDATE;
+#endif
          iris_emit_pipe_control_flush(&ice->batches[IRIS_BATCH_RENDER],
                                       "make streamout results visible", flush);
       }
@@ -4076,6 +4086,7 @@ iris_emit_sbe_swiz(struct iris_batch *batch,
             attr->ConstantSource = PRIM_ID;
             continue;
          }
+         break;
 
       default:
          break;
@@ -4353,7 +4364,7 @@ KSP(const struct iris_compiled_shader *shader)
  * Encode most of 3DSTATE_VS based on the compiled shader.
  */
 static void
-iris_store_vs_state(const struct gen_device_info *devinfo,
+iris_store_vs_state(const struct intel_device_info *devinfo,
                     struct iris_compiled_shader *shader)
 {
    struct brw_stage_prog_data *prog_data = shader->prog_data;
@@ -4372,7 +4383,7 @@ iris_store_vs_state(const struct gen_device_info *devinfo,
  * Encode most of 3DSTATE_HS based on the compiled shader.
  */
 static void
-iris_store_tcs_state(const struct gen_device_info *devinfo,
+iris_store_tcs_state(const struct intel_device_info *devinfo,
                      struct iris_compiled_shader *shader)
 {
    struct brw_stage_prog_data *prog_data = shader->prog_data;
@@ -4416,7 +4427,7 @@ iris_store_tcs_state(const struct gen_device_info *devinfo,
  * Encode 3DSTATE_TE and most of 3DSTATE_DS based on the compiled shader.
  */
 static void
-iris_store_tes_state(const struct gen_device_info *devinfo,
+iris_store_tes_state(const struct intel_device_info *devinfo,
                      struct iris_compiled_shader *shader)
 {
    struct brw_stage_prog_data *prog_data = shader->prog_data;
@@ -4453,7 +4464,7 @@ iris_store_tes_state(const struct gen_device_info *devinfo,
  * Encode most of 3DSTATE_GS based on the compiled shader.
  */
 static void
-iris_store_gs_state(const struct gen_device_info *devinfo,
+iris_store_gs_state(const struct intel_device_info *devinfo,
                     struct iris_compiled_shader *shader)
 {
    struct brw_stage_prog_data *prog_data = shader->prog_data;
@@ -4500,7 +4511,7 @@ iris_store_gs_state(const struct gen_device_info *devinfo,
  * Encode most of 3DSTATE_PS and 3DSTATE_PS_EXTRA based on the shader.
  */
 static void
-iris_store_fs_state(const struct gen_device_info *devinfo,
+iris_store_fs_state(const struct intel_device_info *devinfo,
                     struct iris_compiled_shader *shader)
 {
    struct brw_stage_prog_data *prog_data = shader->prog_data;
@@ -4560,7 +4571,7 @@ iris_store_fs_state(const struct gen_device_info *devinfo,
  * This must match the data written by the iris_store_xs_state() functions.
  */
 static void
-iris_store_cs_state(const struct gen_device_info *devinfo,
+iris_store_cs_state(const struct intel_device_info *devinfo,
                     struct iris_compiled_shader *shader)
 {
    struct brw_cs_prog_data *cs_prog_data = (void *) shader->prog_data;
@@ -4617,7 +4628,7 @@ iris_derived_program_state_size(enum iris_program_cache_id cache_id)
  * get most of the state packet without having to reconstruct it.
  */
 static void
-iris_store_derived_program_state(const struct gen_device_info *devinfo,
+iris_store_derived_program_state(const struct intel_device_info *devinfo,
                                  enum iris_program_cache_id cache_id,
                                  struct iris_compiled_shader *shader)
 {
@@ -4639,9 +4650,8 @@ iris_store_derived_program_state(const struct gen_device_info *devinfo,
       break;
    case IRIS_CACHE_CS:
       iris_store_cs_state(devinfo, shader);
-   case IRIS_CACHE_BLORP:
       break;
-   default:
+   case IRIS_CACHE_BLORP:
       break;
    }
 }
@@ -6314,6 +6324,9 @@ iris_upload_dirty_render_state(struct iris_context *ice,
                            (int) ice->draw.draw_params.offset);
             vb.MOCS = iris_mocs(res->bo, &batch->screen->isl_dev,
                                 ISL_SURF_USAGE_VERTEX_BUFFER_BIT);
+#if GEN_GEN >= 12
+            vb.L3BypassDisable       = true;
+#endif
          }
          dynamic_bound |= 1ull << count;
          count++;
@@ -6337,6 +6350,9 @@ iris_upload_dirty_render_state(struct iris_context *ice,
                            (int) ice->draw.derived_draw_params.offset);
             vb.MOCS = iris_mocs(res->bo, &batch->screen->isl_dev,
                                 ISL_SURF_USAGE_VERTEX_BUFFER_BIT);
+#if GEN_GEN >= 12
+            vb.L3BypassDisable       = true;
+#endif
          }
          dynamic_bound |= 1ull << count;
          count++;
@@ -6568,9 +6584,25 @@ iris_upload_render_state(struct iris_context *ice,
    iris_use_pinned_bo(batch, ice->state.binder.bo, false,
                       IRIS_DOMAIN_NONE);
 
+   if (!batch->contains_draw) {
+      if (GFX_VER == 12) {
+         /* Re-emit constants when starting a new batch buffer in order to
+          * work around push constant corruption on context switch.
+          *
+          * XXX - Provide hardware spec quotation when available.
+          */
+         ice->state.stage_dirty |= (IRIS_STAGE_DIRTY_CONSTANTS_VS  |
+                                    IRIS_STAGE_DIRTY_CONSTANTS_TCS |
+                                    IRIS_STAGE_DIRTY_CONSTANTS_TES |
+                                    IRIS_STAGE_DIRTY_CONSTANTS_GS  |
+                                    IRIS_STAGE_DIRTY_CONSTANTS_FS);
+      }
+      batch->contains_draw = true;
+   }
+
    if (!batch->contains_draw_with_next_seqno) {
       iris_restore_render_saved_bos(ice, batch, draw);
-      batch->contains_draw_with_next_seqno = batch->contains_draw = true;
+      batch->contains_draw_with_next_seqno = true;
    }
 
    iris_upload_dirty_render_state(ice, batch, draw);
@@ -6605,6 +6637,9 @@ iris_upload_render_state(struct iris_context *ice,
                              ISL_SURF_USAGE_INDEX_BUFFER_BIT);
          ib.BufferSize = bo->size - offset;
          ib.BufferStartingAddress = ro_bo(NULL, bo->gtt_offset + offset);
+#if GEN_GEN >= 12
+         ib.L3BypassDisable       = true;
+#endif
       }
 
       if (memcmp(genx->last_index_buffer, ib_packet, sizeof(ib_packet)) != 0) {
@@ -6810,7 +6845,7 @@ iris_upload_compute_walker(struct iris_context *ice,
 {
    const uint64_t stage_dirty = ice->state.stage_dirty;
    struct iris_screen *screen = batch->screen;
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    struct iris_binder *binder = &ice->state.binder;
    struct iris_shader_state *shs = &ice->state.shaders[MESA_SHADER_COMPUTE];
    struct iris_compiled_shader *shader =
@@ -6872,7 +6907,7 @@ iris_upload_gpgpu_walker(struct iris_context *ice,
 {
    const uint64_t stage_dirty = ice->state.stage_dirty;
    struct iris_screen *screen = batch->screen;
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    struct iris_binder *binder = &ice->state.binder;
    struct iris_shader_state *shs = &ice->state.shaders[MESA_SHADER_COMPUTE];
    struct iris_uncompiled_shader *ish =
@@ -7373,7 +7408,7 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
                            uint32_t offset,
                            uint64_t imm)
 {
-   UNUSED const struct gen_device_info *devinfo = &batch->screen->devinfo;
+   UNUSED const struct intel_device_info *devinfo = &batch->screen->devinfo;
    enum pipe_control_flags post_sync_flags = get_post_sync_flags(flags);
    enum pipe_control_flags non_lri_post_sync_flags =
       post_sync_flags & ~PIPE_CONTROL_LRI_POST_SYNC_OP;
@@ -7597,23 +7632,6 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
       flags |= PIPE_CONTROL_CS_STALL;
    }
 
-   if (GFX_VER >= 12 && ((flags & PIPE_CONTROL_RENDER_TARGET_FLUSH) ||
-                         (flags & PIPE_CONTROL_DEPTH_CACHE_FLUSH))) {
-      /* From the PIPE_CONTROL instruction table, bit 28 (Tile Cache Flush
-       * Enable):
-       *
-       *    Unified Cache (Tile Cache Disabled):
-       *
-       *    When the Color and Depth (Z) streams are enabled to be cached in
-       *    the DC space of L2, Software must use "Render Target Cache Flush
-       *    Enable" and "Depth Cache Flush Enable" along with "Tile Cache
-       *    Flush" for getting the color and depth (Z) write data to be
-       *    globally observable.  In this mode of operation it is not required
-       *    to set "CS Stall" upon setting "Tile Cache Flush" bit.
-       */
-      flags |= PIPE_CONTROL_TILE_CACHE_FLUSH;
-   }
-
    if (GFX_VER == 9 && devinfo->gt == 4) {
       /* TODO: The big Skylake GT4 post sync op workaround */
    }
@@ -7718,7 +7736,7 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
 
    if (INTEL_DEBUG & DEBUG_PIPE_CONTROL) {
       fprintf(stderr,
-              "  PC [%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%"PRIx64"]: %s\n",
+              "  PC [%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%"PRIx64"]: %s\n",
               (flags & PIPE_CONTROL_FLUSH_ENABLE) ? "PipeCon " : "",
               (flags & PIPE_CONTROL_CS_STALL) ? "CS " : "",
               (flags & PIPE_CONTROL_STALL_AT_SCOREBOARD) ? "Scoreboard " : "",
@@ -7728,6 +7746,7 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
               (flags & PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE) ? "TC " : "",
               (flags & PIPE_CONTROL_DATA_CACHE_FLUSH) ? "DC " : "",
               (flags & PIPE_CONTROL_DEPTH_CACHE_FLUSH) ? "ZFlush " : "",
+              (flags & PIPE_CONTROL_TILE_CACHE_FLUSH) ? "Tile " : "",
               (flags & PIPE_CONTROL_DEPTH_STALL) ? "ZStall " : "",
               (flags & PIPE_CONTROL_STATE_CACHE_INVALIDATE) ? "State " : "",
               (flags & PIPE_CONTROL_TLB_INVALIDATE) ? "TLB " : "",
@@ -7902,7 +7921,7 @@ genX(emit_hashing_mode)(struct iris_context *ice, struct iris_batch *batch,
                         unsigned width, unsigned height, unsigned scale)
 {
 #if GFX_VER == 9
-   const struct gen_device_info *devinfo = &batch->screen->devinfo;
+   const struct intel_device_info *devinfo = &batch->screen->devinfo;
    const unsigned slice_hashing[] = {
       /* Because all Gfx9 platforms with more than one slice require
        * three-way subslice hashing, a single "normal" 16x16 slice hashing

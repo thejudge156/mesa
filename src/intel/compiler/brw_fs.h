@@ -196,6 +196,7 @@ public:
    bool lower_minmax();
    bool lower_simd_width();
    bool lower_barycentrics();
+   bool lower_derivatives();
    bool lower_scoreboard();
    bool lower_sub_sat();
    bool opt_combine_constants();
@@ -566,7 +567,7 @@ private:
    const struct brw_compiler *compiler;
    void *log_data; /* Passed to compiler->*_log functions */
 
-   const struct gen_device_info *devinfo;
+   const struct intel_device_info *devinfo;
 
    struct brw_codegen *p;
    struct brw_stage_prog_data * const prog_data;

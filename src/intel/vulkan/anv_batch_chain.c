@@ -32,7 +32,7 @@
 
 #include "genxml/gen8_pack.h"
 #include "genxml/genX_bits.h"
-#include "perf/gen_perf.h"
+#include "perf/intel_perf.h"
 
 #include "util/debug.h"
 
@@ -996,7 +996,7 @@ anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd_buffer)
           * prefetch.
           */
          if (cmd_buffer->batch_bos.next == cmd_buffer->batch_bos.prev) {
-            const struct gen_device_info *devinfo = &cmd_buffer->device->info;
+            const struct intel_device_info *devinfo = &cmd_buffer->device->info;
             /* Careful to have everything in signed integer. */
             int32_t prefetch_len = devinfo->cs_prefetch_size;
             int32_t batch_len =
@@ -1988,15 +1988,15 @@ anv_queue_execbuf_locked(struct anv_queue *queue,
    if (has_perf_query) {
       struct anv_query_pool *query_pool = submit->perf_query_pool;
       assert(submit->perf_query_pass < query_pool->n_passes);
-      struct gen_perf_query_info *query_info =
+      struct intel_perf_query_info *query_info =
          query_pool->pass_query[submit->perf_query_pass];
 
       /* Some performance queries just the pipeline statistic HW, no need for
        * OA in that case, so no need to reconfigure.
        */
       if ((INTEL_DEBUG & DEBUG_NO_OACONFIG) == 0 &&
-          (query_info->kind == GEN_PERF_QUERY_TYPE_OA ||
-           query_info->kind == GEN_PERF_QUERY_TYPE_RAW)) {
+          (query_info->kind == INTEL_PERF_QUERY_TYPE_OA ||
+           query_info->kind == INTEL_PERF_QUERY_TYPE_RAW)) {
          int ret = intel_ioctl(device->perf_fd, I915_PERF_IOCTL_CONFIG,
                                (void *)(uintptr_t) query_info->oa_metrics_set_id);
          if (ret < 0) {

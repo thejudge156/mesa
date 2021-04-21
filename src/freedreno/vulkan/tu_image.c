@@ -145,6 +145,7 @@ tu6_texswiz(const VkComponentMapping *comps,
             swiz[1] = A6XX_TEX_ZERO;
          }
       }
+      break;
    default:
       break;
    }
@@ -688,7 +689,7 @@ tu_CreateImage(VkDevice _device,
       switch (layout->nr_samples) {
       case 4:
          width *= 2;
-         /* fallthru */
+         FALLTHROUGH;
       case 2:
          height *= 2;
          break;

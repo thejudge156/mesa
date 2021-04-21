@@ -21,17 +21,17 @@
  * IN THE SOFTWARE.
  */
 
-#ifndef GEN_PERF_MDAPI_H
-#define GEN_PERF_MDAPI_H
+#ifndef INTEL_PERF_MDAPI_H
+#define INTEL_PERF_MDAPI_H
 
 #include <stdint.h>
 
-#include "dev/gen_device_info.h"
+#include "dev/intel_device_info.h"
 
-struct gen_perf_query_result;
+struct intel_perf_query_result;
 
 /* Guid has to matches with MDAPI's. */
-#define GEN_PERF_QUERY_GUID_MDAPI "2f01b241-7014-42a7-9eb6-a925cad3daba"
+#define INTEL_PERF_QUERY_GUID_MDAPI "2f01b241-7014-42a7-9eb6-a925cad3daba"
 
 /*
  * Data format expected by MDAPI.
@@ -127,14 +127,14 @@ struct mdapi_pipeline_metrics {
    uint64_t Reserved1; /* Gfx10+ */
 };
 
-int gen_perf_query_result_write_mdapi(void *data, uint32_t data_size,
-                                      const struct gen_device_info *devinfo,
-                                      const struct gen_perf_query_info *query,
-                                      const struct gen_perf_query_result *result);
+int intel_perf_query_result_write_mdapi(void *data, uint32_t data_size,
+                                        const struct intel_device_info *devinfo,
+                                        const struct intel_perf_query_info *query,
+                                        const struct intel_perf_query_result *result);
 
-static inline void gen_perf_query_mdapi_write_marker(void *data, uint32_t data_size,
-                                                     const struct gen_device_info *devinfo,
-                                                     uint64_t value)
+static inline void intel_perf_query_mdapi_write_marker(void *data, uint32_t data_size,
+                                                       const struct intel_device_info *devinfo,
+                                                       uint64_t value)
 {
    switch (devinfo->ver) {
    case 8: {
@@ -157,4 +157,4 @@ static inline void gen_perf_query_mdapi_write_marker(void *data, uint32_t data_s
    }
 }
 
-#endif /* GEN_PERF_MDAPI_H */
+#endif /* INTEL_PERF_MDAPI_H */

@@ -268,7 +268,7 @@ genX(emit_urb_setup)(struct anv_device *device, struct anv_batch *batch,
                      const unsigned entry_size[4],
                      enum intel_urb_deref_block_size *deref_block_size)
 {
-   const struct gen_device_info *devinfo = &device->info;
+   const struct intel_device_info *devinfo = &device->info;
 
    unsigned entries[4];
    unsigned start[4];
@@ -558,20 +558,20 @@ gfx7_ms_rast_mode(struct anv_graphics_pipeline *pipeline,
 }
 #endif
 
-const uint32_t genX(vk_to_gen_cullmode)[] = {
+const uint32_t genX(vk_to_intel_cullmode)[] = {
    [VK_CULL_MODE_NONE]                       = CULLMODE_NONE,
    [VK_CULL_MODE_FRONT_BIT]                  = CULLMODE_FRONT,
    [VK_CULL_MODE_BACK_BIT]                   = CULLMODE_BACK,
    [VK_CULL_MODE_FRONT_AND_BACK]             = CULLMODE_BOTH
 };
 
-const uint32_t genX(vk_to_gen_fillmode)[] = {
+const uint32_t genX(vk_to_intel_fillmode)[] = {
    [VK_POLYGON_MODE_FILL]                    = FILL_MODE_SOLID,
    [VK_POLYGON_MODE_LINE]                    = FILL_MODE_WIREFRAME,
    [VK_POLYGON_MODE_POINT]                   = FILL_MODE_POINT,
 };
 
-const uint32_t genX(vk_to_gen_front_face)[] = {
+const uint32_t genX(vk_to_intel_front_face)[] = {
    [VK_FRONT_FACE_COUNTER_CLOCKWISE]         = 1,
    [VK_FRONT_FACE_CLOCKWISE]                 = 0
 };
@@ -695,13 +695,13 @@ emit_rs_state(struct anv_graphics_pipeline *pipeline,
 
    raster.FrontWinding =
       dynamic_states & ANV_CMD_DIRTY_DYNAMIC_FRONT_FACE ?
-         0 : genX(vk_to_gen_front_face)[rs_info->frontFace];
+         0 : genX(vk_to_intel_front_face)[rs_info->frontFace];
    raster.CullMode =
       dynamic_states & ANV_CMD_DIRTY_DYNAMIC_CULL_MODE ?
-         0 : genX(vk_to_gen_cullmode)[rs_info->cullMode];
+         0 : genX(vk_to_intel_cullmode)[rs_info->cullMode];
 
-   raster.FrontFaceFillMode = genX(vk_to_gen_fillmode)[rs_info->polygonMode];
-   raster.BackFaceFillMode = genX(vk_to_gen_fillmode)[rs_info->polygonMode];
+   raster.FrontFaceFillMode = genX(vk_to_intel_fillmode)[rs_info->polygonMode];
+   raster.BackFaceFillMode = genX(vk_to_intel_fillmode)[rs_info->polygonMode];
    raster.ScissorRectangleEnable = true;
 
 #if GFX_VER >= 9
@@ -755,16 +755,16 @@ emit_ms_state(struct anv_graphics_pipeline *pipeline,
               const VkPipelineMultisampleStateCreateInfo *info,
               uint32_t dynamic_states)
 {
-   /* If the sample locations are dynamic, 3DSTATE_MULTISAMPLE on Gfx7/7.5
-    * will be emitted dynamically, so skip it here. On Gfx8+
-    * 3DSTATE_SAMPLE_PATTERN will be emitted dynamically, so skip it here.
+   /* Only lookup locations if the extensions is active, otherwise the default
+    * ones will be used either at device initialization time or through
+    * 3DSTATE_MULTISAMPLE on Gfx7/7.5 by passing NULL locations.
     */
-   if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)) {
-      /* Only lookup locations if the extensions is active, otherwise the
-       * default ones will be used either at device initialization time or
-       * through 3DSTATE_MULTISAMPLE on Gfx7/7.5 by passing NULL locations.
+   if (pipeline->base.device->vk.enabled_extensions.EXT_sample_locations) {
+      /* If the sample locations are dynamic, 3DSTATE_MULTISAMPLE on Gfx7/7.5
+       * will be emitted dynamically, so skip it here. On Gfx8+
+       * 3DSTATE_SAMPLE_PATTERN will be emitted dynamically, so skip it here.
        */
-      if (pipeline->base.device->vk.enabled_extensions.EXT_sample_locations) {
+      if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)) {
 #if GFX_VER >= 8
          genX(emit_sample_pattern)(&pipeline->base.batch,
                                    pipeline->dynamic_state.sample_locations.samples,
@@ -806,7 +806,7 @@ emit_ms_state(struct anv_graphics_pipeline *pipeline,
    }
 }
 
-static const uint32_t vk_to_gen_logic_op[] = {
+static const uint32_t vk_to_intel_logic_op[] = {
    [VK_LOGIC_OP_COPY]                        = LOGICOP_COPY,
    [VK_LOGIC_OP_CLEAR]                       = LOGICOP_CLEAR,
    [VK_LOGIC_OP_AND]                         = LOGICOP_AND,
@@ -825,7 +825,7 @@ static const uint32_t vk_to_gen_logic_op[] = {
    [VK_LOGIC_OP_SET]                         = LOGICOP_SET,
 };
 
-static const uint32_t vk_to_gen_blend[] = {
+static const uint32_t vk_to_intel_blend[] = {
    [VK_BLEND_FACTOR_ZERO]                    = BLENDFACTOR_ZERO,
    [VK_BLEND_FACTOR_ONE]                     = BLENDFACTOR_ONE,
    [VK_BLEND_FACTOR_SRC_COLOR]               = BLENDFACTOR_SRC_COLOR,
@@ -847,7 +847,7 @@ static const uint32_t vk_to_gen_blend[] = {
    [VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA]    = BLENDFACTOR_INV_SRC1_ALPHA,
 };
 
-static const uint32_t vk_to_gen_blend_op[] = {
+static const uint32_t vk_to_intel_blend_op[] = {
    [VK_BLEND_OP_ADD]                         = BLENDFUNCTION_ADD,
    [VK_BLEND_OP_SUBTRACT]                    = BLENDFUNCTION_SUBTRACT,
    [VK_BLEND_OP_REVERSE_SUBTRACT]            = BLENDFUNCTION_REVERSE_SUBTRACT,
@@ -855,7 +855,7 @@ static const uint32_t vk_to_gen_blend_op[] = {
    [VK_BLEND_OP_MAX]                         = BLENDFUNCTION_MAX,
 };
 
-const uint32_t genX(vk_to_gen_compare_op)[] = {
+const uint32_t genX(vk_to_intel_compare_op)[] = {
    [VK_COMPARE_OP_NEVER]                        = PREFILTEROPNEVER,
    [VK_COMPARE_OP_LESS]                         = PREFILTEROPLESS,
    [VK_COMPARE_OP_EQUAL]                        = PREFILTEROPEQUAL,
@@ -866,7 +866,7 @@ const uint32_t genX(vk_to_gen_compare_op)[] = {
    [VK_COMPARE_OP_ALWAYS]                       = PREFILTEROPALWAYS,
 };
 
-const uint32_t genX(vk_to_gen_stencil_op)[] = {
+const uint32_t genX(vk_to_intel_stencil_op)[] = {
    [VK_STENCIL_OP_KEEP]                         = STENCILOP_KEEP,
    [VK_STENCIL_OP_ZERO]                         = STENCILOP_ZERO,
    [VK_STENCIL_OP_REPLACE]                      = STENCILOP_REPLACE,
@@ -877,7 +877,7 @@ const uint32_t genX(vk_to_gen_stencil_op)[] = {
    [VK_STENCIL_OP_DECREMENT_AND_WRAP]           = STENCILOP_DECR,
 };
 
-const uint32_t genX(vk_to_gen_primitive_type)[] = {
+const uint32_t genX(vk_to_intel_primitive_type)[] = {
    [VK_PRIMITIVE_TOPOLOGY_POINT_LIST]                    = _3DPRIM_POINTLIST,
    [VK_PRIMITIVE_TOPOLOGY_LINE_LIST]                     = _3DPRIM_LINELIST,
    [VK_PRIMITIVE_TOPOLOGY_LINE_STRIP]                    = _3DPRIM_LINESTRIP,
@@ -1081,7 +1081,7 @@ emit_ds_state(struct anv_graphics_pipeline *pipeline,
 
       .DepthTestFunction =
          dynamic_states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP ?
-            0 : genX(vk_to_gen_compare_op)[info.depthCompareOp],
+            0 : genX(vk_to_intel_compare_op)[info.depthCompareOp],
 
       .DoubleSidedStencilEnable = true,
 
@@ -1089,14 +1089,14 @@ emit_ds_state(struct anv_graphics_pipeline *pipeline,
          dynamic_states & ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE ?
             0 : info.stencilTestEnable,
 
-      .StencilFailOp = genX(vk_to_gen_stencil_op)[info.front.failOp],
-      .StencilPassDepthPassOp = genX(vk_to_gen_stencil_op)[info.front.passOp],
-      .StencilPassDepthFailOp = genX(vk_to_gen_stencil_op)[info.front.depthFailOp],
-      .StencilTestFunction = genX(vk_to_gen_compare_op)[info.front.compareOp],
-      .BackfaceStencilFailOp = genX(vk_to_gen_stencil_op)[info.back.failOp],
-      .BackfaceStencilPassDepthPassOp = genX(vk_to_gen_stencil_op)[info.back.passOp],
-      .BackfaceStencilPassDepthFailOp = genX(vk_to_gen_stencil_op)[info.back.depthFailOp],
-      .BackfaceStencilTestFunction = genX(vk_to_gen_compare_op)[info.back.compareOp],
+      .StencilFailOp = genX(vk_to_intel_stencil_op)[info.front.failOp],
+      .StencilPassDepthPassOp = genX(vk_to_intel_stencil_op)[info.front.passOp],
+      .StencilPassDepthFailOp = genX(vk_to_intel_stencil_op)[info.front.depthFailOp],
+      .StencilTestFunction = genX(vk_to_intel_compare_op)[info.front.compareOp],
+      .BackfaceStencilFailOp = genX(vk_to_intel_stencil_op)[info.back.failOp],
+      .BackfaceStencilPassDepthPassOp = genX(vk_to_intel_stencil_op)[info.back.passOp],
+      .BackfaceStencilPassDepthFailOp = genX(vk_to_intel_stencil_op)[info.back.depthFailOp],
+      .BackfaceStencilTestFunction = genX(vk_to_intel_compare_op)[info.back.compareOp],
    };
 
    if (dynamic_stencil_op) {
@@ -1191,7 +1191,7 @@ emit_cb_state(struct anv_graphics_pipeline *pipeline,
          .AlphaToOneEnable = ms_info && ms_info->alphaToOneEnable,
 #endif
          .LogicOpEnable = info->logicOpEnable,
-         .LogicOpFunction = vk_to_gen_logic_op[info->logicOp],
+         .LogicOpFunction = vk_to_intel_logic_op[info->logicOp],
          /* Vulkan specification 1.2.168, VkLogicOp:
           *
           *   "Logical operations are controlled by the logicOpEnable and
@@ -1211,12 +1211,12 @@ emit_cb_state(struct anv_graphics_pipeline *pipeline,
          .ColorClampRange = COLORCLAMP_RTFORMAT,
          .PreBlendColorClampEnable = true,
          .PostBlendColorClampEnable = true,
-         .SourceBlendFactor = vk_to_gen_blend[a->srcColorBlendFactor],
-         .DestinationBlendFactor = vk_to_gen_blend[a->dstColorBlendFactor],
-         .ColorBlendFunction = vk_to_gen_blend_op[a->colorBlendOp],
-         .SourceAlphaBlendFactor = vk_to_gen_blend[a->srcAlphaBlendFactor],
-         .DestinationAlphaBlendFactor = vk_to_gen_blend[a->dstAlphaBlendFactor],
-         .AlphaBlendFunction = vk_to_gen_blend_op[a->alphaBlendOp],
+         .SourceBlendFactor = vk_to_intel_blend[a->srcColorBlendFactor],
+         .DestinationBlendFactor = vk_to_intel_blend[a->dstColorBlendFactor],
+         .ColorBlendFunction = vk_to_intel_blend_op[a->colorBlendOp],
+         .SourceAlphaBlendFactor = vk_to_intel_blend[a->srcAlphaBlendFactor],
+         .DestinationAlphaBlendFactor = vk_to_intel_blend[a->dstAlphaBlendFactor],
+         .AlphaBlendFunction = vk_to_intel_blend_op[a->alphaBlendOp],
          .WriteDisableAlpha = !(a->colorWriteMask & VK_COLOR_COMPONENT_A_BIT),
          .WriteDisableRed = !(a->colorWriteMask & VK_COLOR_COMPONENT_R_BIT),
          .WriteDisableGreen = !(a->colorWriteMask & VK_COLOR_COMPONENT_G_BIT),
@@ -1377,8 +1377,8 @@ emit_3dstate_clip(struct anv_graphics_pipeline *pipeline,
       !(last->vue_map.slots_valid & VARYING_BIT_LAYER);
 
 #if GFX_VER == 7
-   clip.FrontWinding            = genX(vk_to_gen_front_face)[rs_info->frontFace];
-   clip.CullMode                = genX(vk_to_gen_cullmode)[rs_info->cullMode];
+   clip.FrontWinding            = genX(vk_to_intel_front_face)[rs_info->frontFace];
+   clip.CullMode                = genX(vk_to_intel_cullmode)[rs_info->cullMode];
    clip.ViewportZClipTestEnable = pipeline->depth_clip_enable;
    clip.UserClipDistanceClipTestEnableBitmask = last->clip_distance_mask;
    clip.UserClipDistanceCullTestEnableBitmask = last->cull_distance_mask;
@@ -1595,7 +1595,7 @@ get_scratch_space(const struct anv_shader_bin *bin)
 static void
 emit_3dstate_vs(struct anv_graphics_pipeline *pipeline)
 {
-   const struct gen_device_info *devinfo = &pipeline->base.device->info;
+   const struct intel_device_info *devinfo = &pipeline->base.device->info;
    const struct brw_vs_prog_data *vs_prog_data = get_vs_prog_data(pipeline);
    const struct anv_shader_bin *vs_bin =
       pipeline->shaders[MESA_SHADER_VERTEX];
@@ -1679,7 +1679,7 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
       return;
    }
 
-   const struct gen_device_info *devinfo = &pipeline->base.device->info;
+   const struct intel_device_info *devinfo = &pipeline->base.device->info;
    const struct anv_shader_bin *tcs_bin =
       pipeline->shaders[MESA_SHADER_TESS_CTRL];
    const struct anv_shader_bin *tes_bin =
@@ -1809,7 +1809,7 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
 static void
 emit_3dstate_gs(struct anv_graphics_pipeline *pipeline)
 {
-   const struct gen_device_info *devinfo = &pipeline->base.device->info;
+   const struct intel_device_info *devinfo = &pipeline->base.device->info;
    const struct anv_shader_bin *gs_bin =
       pipeline->shaders[MESA_SHADER_GEOMETRY];
 
@@ -1995,7 +1995,8 @@ emit_3dstate_ps(struct anv_graphics_pipeline *pipeline,
                 const VkPipelineColorBlendStateCreateInfo *blend,
                 const VkPipelineMultisampleStateCreateInfo *multisample)
 {
-   UNUSED const struct gen_device_info *devinfo = &pipeline->base.device->info;
+   UNUSED const struct intel_device_info *devinfo =
+      &pipeline->base.device->info;
    const struct anv_shader_bin *fs_bin =
       pipeline->shaders[MESA_SHADER_FRAGMENT];
 
@@ -2377,7 +2378,7 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
    const uint32_t subslices = MAX2(device->physical->subslice_total, 1);
 
    const UNUSED struct anv_shader_bin *cs_bin = pipeline->cs;
-   const struct gen_device_info *devinfo = &device->info;
+   const struct intel_device_info *devinfo = &device->info;
 
    anv_batch_emit(&pipeline->base.batch, GENX(CFE_STATE), cfe) {
       cfe.MaximumNumberofThreads =
@@ -2408,7 +2409,7 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
    const uint32_t subslices = MAX2(device->physical->subslice_total, 1);
 
    const struct anv_shader_bin *cs_bin = pipeline->cs;
-   const struct gen_device_info *devinfo = &device->info;
+   const struct intel_device_info *devinfo = &device->info;
 
    anv_batch_emit(&pipeline->base.batch, GENX(MEDIA_VFE_STATE), vfe) {
 #if GFX_VER > 7

@@ -686,6 +686,7 @@ static void si_disable_shader_image(struct si_context *ctx, unsigned shader, uns
 
       memcpy(descs->list + desc_slot * 8, null_image_descriptor, 8 * 4);
       images->enabled_mask &= ~(1u << slot);
+      images->display_dcc_store_mask &= ~(1u << slot);
       ctx->descriptors_dirty |= 1u << si_sampler_and_image_descriptors_idx(shader);
    }
 }
@@ -791,6 +792,7 @@ static void si_set_shader_image(struct si_context *ctx, unsigned shader, unsigne
 
    if (res->b.b.target == PIPE_BUFFER || view->shader_access & SI_IMAGE_ACCESS_AS_BUFFER) {
       images->needs_color_decompress_mask &= ~(1 << slot);
+      images->display_dcc_store_mask &= ~(1u << slot);
       res->bind_history |= PIPE_BIND_SHADER_IMAGE;
    } else {
       struct si_texture *tex = (struct si_texture *)res;
@@ -801,6 +803,11 @@ static void si_set_shader_image(struct si_context *ctx, unsigned shader, unsigne
       } else {
          images->needs_color_decompress_mask &= ~(1 << slot);
       }
+
+      if (tex->surface.display_dcc_offset && view->access & PIPE_IMAGE_ACCESS_WRITE)
+         images->display_dcc_store_mask |= 1u << slot;
+      else
+         images->display_dcc_store_mask &= ~(1u << slot);
 
       if (vi_dcc_enabled(tex, level) && p_atomic_read(&tex->framebuffers_bound))
          ctx->need_check_render_feedback = true;
@@ -1159,7 +1166,7 @@ static void si_set_constant_buffer(struct si_context *sctx, struct si_buffer_res
                 S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W);
 
       if (sctx->chip_class >= GFX10) {
-         desc[3] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+         desc[3] |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                     S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) | S_008F0C_RESOURCE_LEVEL(1);
       } else {
          desc[3] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -1260,7 +1267,7 @@ static void si_set_shader_buffer(struct si_context *sctx, struct si_buffer_resou
              S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W);
 
    if (sctx->chip_class >= GFX10) {
-      desc[3] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+      desc[3] |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                  S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) | S_008F0C_RESOURCE_LEVEL(1);
    } else {
       desc[3] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -1412,7 +1419,7 @@ void si_set_ring_buffer(struct si_context *sctx, uint slot, struct pipe_resource
          desc[3] |= S_008F0C_ELEMENT_SIZE(element_size);
 
       if (sctx->chip_class >= GFX10) {
-         desc[3] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+         desc[3] |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                     S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_DISABLED) | S_008F0C_RESOURCE_LEVEL(1);
       } else {
          desc[3] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |

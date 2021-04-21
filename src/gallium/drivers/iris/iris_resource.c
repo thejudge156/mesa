@@ -38,6 +38,7 @@
 #include "util/u_cpu_detect.h"
 #include "util/u_inlines.h"
 #include "util/format/u_format.h"
+#include "util/u_memory.h"
 #include "util/u_threaded_context.h"
 #include "util/u_transfer.h"
 #include "util/u_transfer_helper.h"
@@ -48,7 +49,7 @@
 #include "iris_resource.h"
 #include "iris_screen.h"
 #include "intel/common/intel_aux_map.h"
-#include "intel/dev/gen_debug.h"
+#include "intel/dev/intel_debug.h"
 #include "isl/isl.h"
 #include "drm-uapi/drm_fourcc.h"
 #include "drm-uapi/i915_drm.h"
@@ -74,7 +75,7 @@ static const uint64_t priority_to_modifier[] = {
 };
 
 static bool
-modifier_is_supported(const struct gen_device_info *devinfo,
+modifier_is_supported(const struct intel_device_info *devinfo,
                       enum pipe_format pfmt, uint64_t modifier)
 {
    /* Check for basic device support. */
@@ -137,7 +138,7 @@ modifier_is_supported(const struct gen_device_info *devinfo,
 }
 
 static uint64_t
-select_best_modifier(struct gen_device_info *devinfo, enum pipe_format pfmt,
+select_best_modifier(struct intel_device_info *devinfo, enum pipe_format pfmt,
                      const uint64_t *modifiers,
                      int count)
 {
@@ -175,28 +176,6 @@ select_best_modifier(struct gen_device_info *devinfo, enum pipe_format pfmt,
    return priority_to_modifier[prio];
 }
 
-enum isl_surf_dim
-target_to_isl_surf_dim(enum pipe_texture_target target)
-{
-   switch (target) {
-   case PIPE_BUFFER:
-   case PIPE_TEXTURE_1D:
-   case PIPE_TEXTURE_1D_ARRAY:
-      return ISL_SURF_DIM_1D;
-   case PIPE_TEXTURE_2D:
-   case PIPE_TEXTURE_CUBE:
-   case PIPE_TEXTURE_RECT:
-   case PIPE_TEXTURE_2D_ARRAY:
-   case PIPE_TEXTURE_CUBE_ARRAY:
-      return ISL_SURF_DIM_2D;
-   case PIPE_TEXTURE_3D:
-      return ISL_SURF_DIM_3D;
-   case PIPE_MAX_TEXTURE_TYPES:
-      break;
-   }
-   unreachable("invalid texture type");
-}
-
 static inline bool is_modifier_external_only(enum pipe_format pfmt,
                                              uint64_t modifier)
 {
@@ -219,7 +198,7 @@ iris_query_dmabuf_modifiers(struct pipe_screen *pscreen,
                             int *count)
 {
    struct iris_screen *screen = (void *) pscreen;
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
 
    uint64_t all_modifiers[] = {
       DRM_FORMAT_MOD_LINEAR,
@@ -259,7 +238,7 @@ iris_is_dmabuf_modifier_supported(struct pipe_screen *pscreen,
                                   bool *external_only)
 {
    struct iris_screen *screen = (void *) pscreen;
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
 
    if (modifier_is_supported(devinfo, pfmt, modifier)) {
       if (external_only)
@@ -294,7 +273,7 @@ iris_image_view_get_format(struct iris_context *ice,
                            const struct pipe_image_view *img)
 {
    struct iris_screen *screen = (struct iris_screen *)ice->ctx.screen;
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
 
    isl_surf_usage_flags_t usage = ISL_SURF_USAGE_STORAGE_BIT;
    enum isl_format isl_fmt =
@@ -313,6 +292,68 @@ iris_image_view_get_format(struct iris_context *ice,
    }
 
    return isl_fmt;
+}
+
+static struct pipe_memory_object *
+iris_memobj_create_from_handle(struct pipe_screen *pscreen,
+                               struct winsys_handle *whandle,
+                               bool dedicated)
+{
+   struct iris_screen *screen = (struct iris_screen *)pscreen;
+   struct iris_memory_object *memobj = CALLOC_STRUCT(iris_memory_object);
+   struct iris_bo *bo;
+   const struct isl_drm_modifier_info *mod_inf;
+
+   if (!memobj)
+      return NULL;
+
+   switch (whandle->type) {
+   case WINSYS_HANDLE_TYPE_SHARED:
+      bo = iris_bo_gem_create_from_name(screen->bufmgr, "winsys image",
+                                        whandle->handle);
+      break;
+   case WINSYS_HANDLE_TYPE_FD:
+      mod_inf = isl_drm_modifier_get_info(whandle->modifier);
+      if (mod_inf) {
+         bo = iris_bo_import_dmabuf(screen->bufmgr, whandle->handle,
+                                    whandle->modifier);
+      } else {
+         /* If we can't get information about the tiling from the
+          * kernel we ignore it. We are going to set it when we
+          * create the resource.
+          */
+         bo = iris_bo_import_dmabuf_no_mods(screen->bufmgr,
+                                            whandle->handle);
+      }
+
+      break;
+   default:
+      unreachable("invalid winsys handle type");
+   }
+
+   if (!bo) {
+      free(memobj);
+      return NULL;
+   }
+
+   memobj->b.dedicated = dedicated;
+   memobj->bo = bo;
+   memobj->format = whandle->format;
+   memobj->stride = whandle->stride;
+
+   iris_bo_reference(memobj->bo);
+
+   return &memobj->b;
+}
+
+static void
+iris_memobj_destroy(struct pipe_screen *pscreen,
+                    struct pipe_memory_object *pmemobj)
+{
+   struct iris_memory_object *memobj = (struct iris_memory_object *)pmemobj;
+
+   iris_bo_unreference(memobj->bo);
+   free(memobj);
 }
 
 struct pipe_resource *
@@ -357,7 +398,7 @@ iris_get_depth_stencil_resources(struct pipe_resource *res,
 }
 
 enum isl_dim_layout
-iris_get_isl_dim_layout(const struct gen_device_info *devinfo,
+iris_get_isl_dim_layout(const struct intel_device_info *devinfo,
                         enum isl_tiling tiling,
                         enum pipe_texture_target target)
 {
@@ -490,7 +531,7 @@ create_aux_state_map(struct iris_resource *res, enum isl_aux_state initial)
 static unsigned
 iris_get_aux_clear_color_state_size(struct iris_screen *screen)
 {
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    return devinfo->ver >= 10 ? screen->isl_dev.ss.clear_color_state_size : 0;
 }
 
@@ -498,7 +539,7 @@ static void
 map_aux_addresses(struct iris_screen *screen, struct iris_resource *res,
                   enum isl_format format, unsigned plane)
 {
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    if (devinfo->ver >= 12 && isl_aux_usage_has_ccs(res->aux.usage)) {
       void *aux_map_ctx = iris_bufmgr_get_aux_map_context(screen->bufmgr);
       assert(aux_map_ctx);
@@ -514,7 +555,7 @@ map_aux_addresses(struct iris_screen *screen, struct iris_resource *res,
 }
 
 static bool
-want_ccs_e_for_format(const struct gen_device_info *devinfo,
+want_ccs_e_for_format(const struct intel_device_info *devinfo,
                       enum isl_format format)
 {
    if (!isl_format_supports_ccs_e(devinfo, format))
@@ -630,7 +671,7 @@ static bool
 iris_resource_configure_aux(struct iris_screen *screen,
                             struct iris_resource *res, bool imported)
 {
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
 
    /* Try to create the auxiliary surfaces allowed by the modifier or by
     * the user if no modifier is specified.
@@ -937,7 +978,7 @@ iris_resource_create_with_modifiers(struct pipe_screen *pscreen,
                                     int modifiers_count)
 {
    struct iris_screen *screen = (struct iris_screen *)pscreen;
-   struct gen_device_info *devinfo = &screen->devinfo;
+   struct intel_device_info *devinfo = &screen->devinfo;
    struct iris_resource *res = iris_alloc_resource(pscreen, templ);
 
    if (!res)
@@ -1173,6 +1214,32 @@ iris_resource_from_handle(struct pipe_screen *pscreen,
 fail:
    iris_resource_destroy(pscreen, &res->base.b);
    return NULL;
+}
+
+static struct pipe_resource *
+iris_resource_from_memobj(struct pipe_screen *pscreen,
+                          const struct pipe_resource *templ,
+                          struct pipe_memory_object *pmemobj,
+                          uint64_t offset)
+{
+   struct iris_screen *screen = (struct iris_screen *)pscreen;
+   struct iris_memory_object *memobj = (struct iris_memory_object *)pmemobj;
+   struct iris_resource *res = iris_alloc_resource(pscreen, templ);
+
+   if (!res)
+      return NULL;
+
+   if (templ->flags & PIPE_RESOURCE_FLAG_TEXTURING_MORE_LIKELY) {
+      UNUSED const bool isl_surf_created_successfully =
+         iris_resource_configure_main(screen, res, templ, DRM_FORMAT_MOD_INVALID, 0);
+      assert(isl_surf_created_successfully);
+   }
+
+   res->bo = memobj->bo;
+   res->offset = offset;
+   res->external_format = memobj->format;
+
+   return &res->base.b;
 }
 
 static void
@@ -1540,6 +1607,7 @@ iris_map_copy_region(struct iris_transfer *map)
       iris_emit_pipe_control_flush(map->batch,
                                    "transfer read: flush before mapping",
                                    PIPE_CONTROL_RENDER_TARGET_FLUSH |
+                                   PIPE_CONTROL_TILE_CACHE_FLUSH |
                                    PIPE_CONTROL_CS_STALL);
    }
 
@@ -2051,7 +2119,8 @@ iris_transfer_flush_region(struct pipe_context *ctx,
 
    if (res->base.b.target == PIPE_BUFFER) {
       if (map->staging)
-         history_flush |= PIPE_CONTROL_RENDER_TARGET_FLUSH;
+         history_flush |= PIPE_CONTROL_RENDER_TARGET_FLUSH |
+                          PIPE_CONTROL_TILE_CACHE_FLUSH;
 
       if (map->dest_had_defined_contents)
          history_flush |= iris_flush_bits_for_history(ice, res);
@@ -2306,9 +2375,12 @@ iris_init_screen_resource_functions(struct pipe_screen *pscreen)
    pscreen->resource_create = u_transfer_helper_resource_create;
    pscreen->resource_from_user_memory = iris_resource_from_user_memory;
    pscreen->resource_from_handle = iris_resource_from_handle;
+   pscreen->resource_from_memobj = iris_resource_from_memobj;
    pscreen->resource_get_handle = iris_resource_get_handle;
    pscreen->resource_get_param = iris_resource_get_param;
    pscreen->resource_destroy = u_transfer_helper_resource_destroy;
+   pscreen->memobj_create_from_handle = iris_memobj_create_from_handle;
+   pscreen->memobj_destroy = iris_memobj_destroy;
    pscreen->transfer_helper =
       u_transfer_helper_create(&transfer_vtbl, true, true, false, true);
 }

@@ -75,7 +75,9 @@ tu_spirv_to_nir(struct tu_device *dev,
          .runtime_descriptor_array = true,
          .float_controls = true,
          .float16 = true,
+         .int16 = true,
          .storage_16bit = dev->physical_device->gpu_id >= 650,
+         .demote_to_helper_invocation = true,
       },
    };
 
@@ -185,6 +187,8 @@ tu_spirv_to_nir(struct tu_device *dev,
 
    NIR_PASS_V(nir, nir_lower_io_arrays_to_elements_no_indirects, false);
 
+   NIR_PASS_V(nir, nir_lower_is_helper_invocation);
+
    NIR_PASS_V(nir, nir_lower_system_values);
    NIR_PASS_V(nir, nir_lower_compute_system_values, &compute_sysval_options);
 
@@ -192,7 +196,7 @@ tu_spirv_to_nir(struct tu_device *dev,
 
    NIR_PASS_V(nir, nir_lower_frexp);
 
-   ir3_optimize_loop(nir);
+   ir3_optimize_loop(dev->compiler, nir);
 
    return nir;
 }

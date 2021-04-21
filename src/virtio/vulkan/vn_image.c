@@ -18,55 +18,17 @@
 #include "vn_device.h"
 #include "vn_device_memory.h"
 
-/* image commands */
-
-VkResult
-vn_CreateImage(VkDevice device,
-               const VkImageCreateInfo *pCreateInfo,
-               const VkAllocationCallbacks *pAllocator,
-               VkImage *pImage)
+static void
+vn_image_init_memory_requirements(struct vn_image *img,
+                                  struct vn_device *dev,
+                                  const VkImageCreateInfo *create_info)
 {
-   struct vn_device *dev = vn_device_from_handle(device);
-   const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &dev->base.base.alloc;
-
-   /* TODO wsi_create_native_image uses modifiers or set wsi_info->scanout to
-    * true.  Instead of forcing VK_IMAGE_TILING_LINEAR, we should ask wsi to
-    * use wsi_create_prime_image instead.
-    */
-   const struct wsi_image_create_info *wsi_info =
-      vk_find_struct_const(pCreateInfo->pNext, WSI_IMAGE_CREATE_INFO_MESA);
-   VkImageCreateInfo local_create_info;
-   if (wsi_info && wsi_info->scanout) {
-      if (VN_DEBUG(WSI))
-         vn_log(dev->instance, "forcing scanout image linear");
-      local_create_info = *pCreateInfo;
-      local_create_info.tiling = VK_IMAGE_TILING_LINEAR;
-      pCreateInfo = &local_create_info;
-   }
-
-   struct vn_image *img = vk_zalloc(alloc, sizeof(*img), VN_DEFAULT_ALIGN,
-                                    VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-   if (!img)
-      return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
-
-   vn_object_base_init(&img->base, VK_OBJECT_TYPE_IMAGE, &dev->base);
-
-   VkImage img_handle = vn_image_to_handle(img);
-   /* TODO async */
-   VkResult result = vn_call_vkCreateImage(dev->instance, device, pCreateInfo,
-                                           NULL, &img_handle);
-   if (result != VK_SUCCESS) {
-      vk_free(alloc, img);
-      return vn_error(dev->instance, result);
-   }
-
    uint32_t plane_count = 1;
-   if (pCreateInfo->flags & VK_IMAGE_CREATE_DISJOINT_BIT) {
+   if (create_info->flags & VK_IMAGE_CREATE_DISJOINT_BIT) {
       /* TODO VkDrmFormatModifierPropertiesEXT::drmFormatModifierPlaneCount */
-      assert(pCreateInfo->tiling != VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT);
+      assert(create_info->tiling != VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT);
 
-      switch (pCreateInfo->format) {
+      switch (create_info->format) {
       case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM:
       case VK_FORMAT_G8_B8R8_2PLANE_422_UNORM:
       case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16:
@@ -108,9 +70,11 @@ vn_CreateImage(VkDevice device,
       img->dedicated_requirements[i].pNext = NULL;
    }
 
+   VkDevice dev_handle = vn_device_to_handle(dev);
+   VkImage img_handle = vn_image_to_handle(img);
    if (plane_count == 1) {
       vn_call_vkGetImageMemoryRequirements2(
-         dev->instance, device,
+         dev->instance, dev_handle,
          &(VkImageMemoryRequirementsInfo2){
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
             .image = img_handle,
@@ -119,7 +83,7 @@ vn_CreateImage(VkDevice device,
    } else {
       for (uint32_t i = 0; i < plane_count; i++) {
          vn_call_vkGetImageMemoryRequirements2(
-            dev->instance, device,
+            dev->instance, dev_handle,
             &(VkImageMemoryRequirementsInfo2){
                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
                .pNext =
@@ -133,9 +97,69 @@ vn_CreateImage(VkDevice device,
             &img->memory_requirements[i]);
       }
    }
+}
 
-   *pImage = img_handle;
+VkResult
+vn_image_create(struct vn_device *dev,
+                const VkImageCreateInfo *create_info,
+                const VkAllocationCallbacks *alloc,
+                struct vn_image **out_img)
+{
+   struct vn_image *img = vk_zalloc(alloc, sizeof(*img), VN_DEFAULT_ALIGN,
+                                    VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!img)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
 
+   vn_object_base_init(&img->base, VK_OBJECT_TYPE_IMAGE, &dev->base);
+
+   VkDevice dev_handle = vn_device_to_handle(dev);
+   VkImage img_handle = vn_image_to_handle(img);
+   /* TODO async */
+   VkResult result = vn_call_vkCreateImage(dev->instance, dev_handle,
+                                           create_info, NULL, &img_handle);
+   if (result != VK_SUCCESS) {
+      vk_free(alloc, img);
+      return result;
+   }
+
+   vn_image_init_memory_requirements(img, dev, create_info);
+
+   *out_img = img;
+
+   return VK_SUCCESS;
+}
+
+/* image commands */
+
+VkResult
+vn_CreateImage(VkDevice device,
+               const VkImageCreateInfo *pCreateInfo,
+               const VkAllocationCallbacks *pAllocator,
+               VkImage *pImage)
+{
+   struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc =
+      pAllocator ? pAllocator : &dev->base.base.alloc;
+   struct vn_image *img;
+   VkResult result;
+
+#ifdef VN_USE_WSI_PLATFORM
+   const struct wsi_image_create_info *wsi_info =
+      vk_find_struct_const(pCreateInfo->pNext, WSI_IMAGE_CREATE_INFO_MESA);
+   if (wsi_info) {
+      assert(wsi_info->scanout);
+      result = vn_wsi_create_scanout_image(dev, pCreateInfo, alloc, &img);
+      goto out;
+   }
+#endif
+
+   result = vn_image_create(dev, pCreateInfo, alloc, &img);
+
+out:
+   if (result != VK_SUCCESS)
+      return vn_error(dev->instance, result);
+
+   *pImage = vn_image_to_handle(img);
    return VK_SUCCESS;
 }
 

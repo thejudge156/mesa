@@ -346,16 +346,16 @@ static const struct brw_image_format brw_image_formats[] = {
 
 static const struct {
    uint64_t modifier;
-   unsigned since_gen;
+   unsigned since_ver;
 } supported_modifiers[] = {
-   { .modifier = DRM_FORMAT_MOD_LINEAR       , .since_gen = 1 },
-   { .modifier = I915_FORMAT_MOD_X_TILED     , .since_gen = 1 },
-   { .modifier = I915_FORMAT_MOD_Y_TILED     , .since_gen = 6 },
-   { .modifier = I915_FORMAT_MOD_Y_TILED_CCS , .since_gen = 9 },
+   { .modifier = DRM_FORMAT_MOD_LINEAR       , .since_ver = 1 },
+   { .modifier = I915_FORMAT_MOD_X_TILED     , .since_ver = 1 },
+   { .modifier = I915_FORMAT_MOD_Y_TILED     , .since_ver = 6 },
+   { .modifier = I915_FORMAT_MOD_Y_TILED_CCS , .since_ver = 9 },
 };
 
 static bool
-modifier_is_supported(const struct gen_device_info *devinfo,
+modifier_is_supported(const struct intel_device_info *devinfo,
                       const struct brw_image_format *fmt, int dri_format,
                       uint64_t modifier)
 {
@@ -396,7 +396,7 @@ modifier_is_supported(const struct gen_device_info *devinfo,
       if (supported_modifiers[i].modifier != modifier)
          continue;
 
-      return supported_modifiers[i].since_gen <= devinfo->ver;
+      return supported_modifiers[i].since_ver <= devinfo->ver;
    }
 
    return false;
@@ -685,7 +685,7 @@ const uint64_t priority_to_modifier[] = {
 };
 
 static uint64_t
-select_best_modifier(struct gen_device_info *devinfo,
+select_best_modifier(struct intel_device_info *devinfo,
                      int dri_format,
                      const uint64_t *modifiers,
                      const unsigned count)
@@ -1338,7 +1338,7 @@ brw_create_image_from_dma_bufs(__DRIscreen *dri_screen,
 }
 
 static bool
-brw_image_format_is_supported(const struct gen_device_info *devinfo,
+brw_image_format_is_supported(const struct intel_device_info *devinfo,
                                 const struct brw_image_format *fmt)
 {
    /* Currently, all formats with an brw_image_format are available on all
@@ -2082,7 +2082,7 @@ err:
 static bool
 brw_detect_pipelined_so(struct brw_screen *screen)
 {
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
 
    /* Supposedly, Broadwell just works. */
    if (devinfo->ver >= 8)
@@ -2233,7 +2233,7 @@ brw_screen_make_configs(__DRIscreen *dri_screen)
    static const uint8_t singlesample_samples[1] = {0};
 
    struct brw_screen *screen = dri_screen->driverPrivate;
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    uint8_t depth_bits[4], stencil_bits[4];
    __DRIconfig **configs = NULL;
 
@@ -2538,10 +2538,10 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
    screen->driScrnPriv = dri_screen;
    dri_screen->driverPrivate = (void *) screen;
 
-   if (!gen_get_device_info_from_fd(dri_screen->fd, &screen->devinfo))
+   if (!intel_get_device_info_from_fd(dri_screen->fd, &screen->devinfo))
       return NULL;
 
-   const struct gen_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    screen->deviceID = devinfo->chipset_id;
    screen->no_hw = devinfo->no_hw;
 
@@ -2604,8 +2604,8 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
                    screen->hw_has_swizzling);
 
    /* GENs prior to 8 do not support EU/Subslice info */
-   screen->subslice_total = gen_device_info_subslice_total(devinfo);
-   screen->eu_total = gen_device_info_eu_total(devinfo);
+   screen->subslice_total = intel_device_info_subslice_total(devinfo);
+   screen->eu_total = intel_device_info_eu_total(devinfo);
 
    /* Gfx7-7.5 kernel requirements / command parser saga:
     *

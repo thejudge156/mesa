@@ -1262,7 +1262,8 @@ radv_emit_graphics_pipeline(struct radv_cmd_buffer *cmd_buffer)
          RADV_CMD_DIRTY_DYNAMIC_CULL_MODE | RADV_CMD_DIRTY_DYNAMIC_FRONT_FACE;
 
    if (!cmd_buffer->state.emitted_pipeline)
-      cmd_buffer->state.dirty |= RADV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY;
+      cmd_buffer->state.dirty |= RADV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY |
+                                 RADV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS;
 
    if (!cmd_buffer->state.emitted_pipeline ||
        cmd_buffer->state.emitted_pipeline->graphics.db_depth_control !=
@@ -2321,7 +2322,7 @@ radv_emit_framebuffer_state(struct radv_cmd_buffer *cmd_buffer)
       VkImageLayout layout = subpass->color_attachments[i].layout;
       bool in_render_loop = subpass->color_attachments[i].in_render_loop;
 
-      radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, iview->bo);
+      radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, iview->image->bo);
 
       assert(iview->aspect_mask & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_PLANE_0_BIT |
                                    VK_IMAGE_ASPECT_PLANE_1_BIT | VK_IMAGE_ASPECT_PLANE_2_BIT));
@@ -2337,7 +2338,7 @@ radv_emit_framebuffer_state(struct radv_cmd_buffer *cmd_buffer)
       bool in_render_loop = subpass->depth_stencil_attachment->in_render_loop;
       struct radv_image_view *iview = cmd_buffer->state.attachments[idx].iview;
       radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs,
-                         cmd_buffer->state.attachments[idx].iview->bo);
+                         cmd_buffer->state.attachments[idx].iview->image->bo);
 
       radv_emit_fb_ds_state(cmd_buffer, &cmd_buffer->state.attachments[idx].ds, iview, layout,
                             in_render_loop);
@@ -2817,7 +2818,7 @@ radv_flush_vertex_descriptors(struct radv_cmd_buffer *cmd_buffer, bool pipeline_
              */
             int oob_select = stride ? V_008F0C_OOB_SELECT_STRUCTURED : V_008F0C_OOB_SELECT_RAW;
 
-            rsrc_word3 |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_UINT) |
+            rsrc_word3 |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_UINT) |
                           S_008F0C_OOB_SELECT(oob_select) | S_008F0C_RESOURCE_LEVEL(1);
          } else {
             rsrc_word3 |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_UINT) |
@@ -2923,7 +2924,7 @@ radv_flush_streamout_descriptors(struct radv_cmd_buffer *cmd_buffer)
             S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W);
 
          if (cmd_buffer->device->physical_device->rad_info.chip_class >= GFX10) {
-            rsrc_word3 |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+            rsrc_word3 |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                           S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) | S_008F0C_RESOURCE_LEVEL(1);
          } else {
             rsrc_word3 |= S_008F0C_DATA_FORMAT(V_008F0C_BUF_DATA_FORMAT_32);
@@ -4006,7 +4007,7 @@ radv_CmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pi
                      S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W);
 
             if (cmd_buffer->device->physical_device->rad_info.chip_class >= GFX10) {
-               dst[3] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+               dst[3] |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_FLOAT) |
                          S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) | S_008F0C_RESOURCE_LEVEL(1);
             } else {
                dst[3] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |

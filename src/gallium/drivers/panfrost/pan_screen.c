@@ -166,6 +166,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED:
         case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
         case PIPE_CAP_TEXTURE_BUFFER_SAMPLER:
+        case PIPE_CAP_PACKED_UNIFORMS:
                 return 1;
 
         /* We need this for OES_copy_image, but currently there are some awful
@@ -429,13 +430,13 @@ panfrost_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
         switch (param) {
         case PIPE_CAPF_MAX_LINE_WIDTH:
 
-        /* fall-through */
+        FALLTHROUGH;
         case PIPE_CAPF_MAX_LINE_WIDTH_AA:
                 return 255.0; /* arbitrary */
 
         case PIPE_CAPF_MAX_POINT_WIDTH:
 
-        /* fall-through */
+        FALLTHROUGH;
         case PIPE_CAPF_MAX_POINT_WIDTH_AA:
                 return 1024.0;
 

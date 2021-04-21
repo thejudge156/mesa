@@ -185,7 +185,7 @@ bool ac_is_modifier_supported(const struct radeon_info *info,
 
    if (util_format_is_compressed(format) ||
        util_format_is_depth_or_stencil(format) ||
-       util_format_get_blocksize(format) > 8)
+       util_format_get_blocksizebits(format) > 64)
       return false;
 
    if (info->chip_class < GFX9)
@@ -194,7 +194,8 @@ bool ac_is_modifier_supported(const struct radeon_info *info,
    if(modifier == DRM_FORMAT_MOD_LINEAR)
       return true;
 
-   if (util_format_get_num_planes(format) > 1)
+   /* GFX8 may need a different modifier for each plane */
+   if (info->chip_class < GFX9 && util_format_get_num_planes(format) > 1)
       return false;
 
    uint32_t allowed_swizzles = 0xFFFFFFFF;
@@ -214,6 +215,10 @@ bool ac_is_modifier_supported(const struct radeon_info *info,
       return false;
 
    if (ac_modifier_has_dcc(modifier)) {
+      /* TODO: support multi-planar formats with DCC */
+      if (util_format_get_num_planes(format) > 1)
+         return false;
+
       if (!info->has_graphics)
          return false;
 
@@ -276,7 +281,7 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
               common_dcc |
               AMD_FMT_MOD_SET(PIPE, pipes))
 
-      if (util_format_get_blocksize(format) == 4) {
+      if (util_format_get_blocksizebits(format) == 32) {
          if (info->max_render_backends == 1) {
             ADD_MOD(AMD_FMT_MOD |
                     AMD_FMT_MOD_SET(TILE, AMD_FMT_MOD_TILE_GFX9_64K_S_X) |
@@ -365,7 +370,7 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
               AMD_FMT_MOD_SET(TILE, AMD_FMT_MOD_TILE_GFX9_64K_S_X) |
               AMD_FMT_MOD_SET(PIPE_XOR_BITS, pipe_xor_bits))
 
-      if (util_format_get_blocksize(format) != 4) {
+      if (util_format_get_blocksizebits(format) != 32) {
          ADD_MOD(AMD_FMT_MOD |
                  AMD_FMT_MOD_SET(TILE, AMD_FMT_MOD_TILE_GFX9_64K_D) |
                  AMD_FMT_MOD_SET(TILE_VERSION, AMD_FMT_MOD_TILE_VER_GFX9));

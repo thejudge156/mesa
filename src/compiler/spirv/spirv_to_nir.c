@@ -2301,7 +2301,7 @@ vtn_mem_semantics_to_nir_mem_semantics(struct vtn_builder *b,
       break;
 
    case SpvMemorySemanticsSequentiallyConsistentMask:
-      /* Fall through.  Treated as AcquireRelease in Vulkan. */
+      FALLTHROUGH; /* Treated as AcquireRelease in Vulkan. */
    case SpvMemorySemanticsAcquireReleaseMask:
       nir_semantics = NIR_MEMORY_ACQUIRE | NIR_MEMORY_RELEASE;
       break;
@@ -5370,6 +5370,7 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpGenericPtrMemSemantics:
    case SpvOpSubgroupBlockReadINTEL:
    case SpvOpSubgroupBlockWriteINTEL:
+   case SpvOpConvertUToAccelerationStructureKHR:
       vtn_handle_variables(b, opcode, w, count);
       break;
 

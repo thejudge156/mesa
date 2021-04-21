@@ -274,6 +274,23 @@ zink_create_sampler_state(struct pipe_context *pctx,
    sci.magFilter = zink_filter(state->mag_img_filter);
    sci.minFilter = zink_filter(state->min_img_filter);
 
+   VkSamplerReductionModeCreateInfo rci;
+   rci.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO;
+   rci.pNext = NULL;
+   switch (state->reduction_mode) {
+   case PIPE_TEX_REDUCTION_MIN:
+      rci.reductionMode = VK_SAMPLER_REDUCTION_MODE_MIN;
+      break;
+   case PIPE_TEX_REDUCTION_MAX:
+      rci.reductionMode = VK_SAMPLER_REDUCTION_MODE_MAX;
+      break;
+   default:
+      rci.reductionMode = VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE;
+      break;
+   }
+   if (state->reduction_mode)
+      sci.pNext = &rci;
+
    if (state->min_mip_filter != PIPE_TEX_MIPFILTER_NONE) {
       sci.mipmapMode = sampler_mipmap_mode(state->min_mip_filter);
       sci.minLod = state->min_lod;
@@ -310,6 +327,7 @@ zink_create_sampler_state(struct pipe_context *pctx,
          cbci.format = VK_FORMAT_UNDEFINED;
          /* these are identical unions */
          memcpy(&cbci.customBorderColor, &state->border_color, sizeof(union pipe_color_union));
+         cbci.pNext = sci.pNext;
          sci.pNext = &cbci;
          UNUSED uint32_t check = p_atomic_inc_return(&screen->cur_custom_border_color_samplers);
          assert(check <= screen->info.border_color_props.maxCustomBorderColorSamplers);
@@ -1771,7 +1789,7 @@ copy_scanout(struct zink_context *ctx, struct zink_resource *res)
       NULL,
       0,
       VK_ACCESS_TRANSFER_WRITE_BIT,
-      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+      res->scanout_obj_init ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_UNDEFINED,
       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
       VK_QUEUE_FAMILY_IGNORED,
       VK_QUEUE_FAMILY_IGNORED,
@@ -1804,6 +1822,8 @@ copy_scanout(struct zink_context *ctx, struct zink_resource *res)
       0, NULL,
       1, &imb
    );
+   /* separate flag to avoid annoying validation errors for new scanout objs */
+   res->scanout_obj_init = true;
 }
 
 static void
@@ -1818,12 +1838,10 @@ zink_flush(struct pipe_context *pctx,
    struct zink_fence *fence = NULL;
    struct zink_screen *screen = zink_screen(ctx->base.screen);
 
-   if (!deferred && ctx->clears_enabled) {
-      /* start rp to do all the clears */
-      zink_begin_render_pass(ctx, batch);
-   }
-
-   if (flags & PIPE_FLUSH_END_OF_FRAME) {
+   if (!deferred) {
+      if (ctx->clears_enabled)
+         /* start rp to do all the clears */
+         zink_begin_render_pass(ctx, batch);
       zink_end_render_pass(ctx, batch);
       if (ctx->flush_res) {
          copy_scanout(ctx, ctx->flush_res);
@@ -1938,7 +1956,7 @@ timeline_wait(struct zink_context *ctx, uint32_t batch_id, uint64_t timeout)
    wi.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
    wi.semaphoreCount = 1;
    /* handle batch_id overflow */
-   wi.pSemaphores = batch_id > ctx->curr_batch ? &screen->prev_sem : &screen->sem;
+   wi.pSemaphores = batch_id > screen->curr_batch ? &screen->prev_sem : &screen->sem;
    uint64_t batch_id64 = batch_id;
    wi.pValues = &batch_id64;
    bool success = false;

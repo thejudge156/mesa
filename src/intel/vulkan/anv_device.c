@@ -48,7 +48,7 @@
 #include "common/intel_aux_map.h"
 #include "common/intel_defines.h"
 #include "common/intel_uuid.h"
-#include "perf/gen_perf.h"
+#include "perf/intel_perf.h"
 
 #include "genxml/gen7_pack.h"
 
@@ -345,7 +345,7 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
       anv_perf_warn(NULL, NULL,
                     "Failed to get I915_CONTEXT_PARAM_GTT_SIZE: %m");
 
-      if (gen_get_aperture_size(fd, &device->gtt_size) == -1) {
+      if (intel_get_aperture_size(fd, &device->gtt_size) == -1) {
          return vk_errorfi(device->instance, NULL,
                            VK_ERROR_INITIALIZATION_FAILED,
                            "failed to get aperture size: %m");
@@ -662,13 +662,13 @@ anv_physical_device_try_create(struct anv_instance *instance,
                         "Unable to open device %s: %m", path);
    }
 
-   struct gen_device_info devinfo;
-   if (!gen_get_device_info_from_fd(fd, &devinfo)) {
+   struct intel_device_info devinfo;
+   if (!intel_get_device_info_from_fd(fd, &devinfo)) {
       result = vk_error(VK_ERROR_INCOMPATIBLE_DRIVER);
       goto fail_fd;
    }
 
-   const char *device_name = gen_get_device_name(devinfo.chipset_id);
+   const char *device_name = intel_get_device_name(devinfo.chipset_id);
 
    if (devinfo.is_haswell) {
       mesa_logw("Haswell Vulkan support is incomplete");
@@ -831,8 +831,8 @@ anv_physical_device_try_create(struct anv_instance *instance,
       anv_gem_get_param(fd, I915_PARAM_MMAP_GTT_VERSION) >= 4;
 
    /* GENs prior to 8 do not support EU/Subslice info */
-   device->subslice_total = gen_device_info_subslice_total(&device->info);
-   device->eu_total = gen_device_info_eu_total(&device->info);
+   device->subslice_total = intel_device_info_subslice_total(&device->info);
+   device->eu_total = intel_device_info_eu_total(&device->info);
 
    if (device->info.is_cherryview) {
       /* Logical CS threads = EUs per subslice * num threads per EU */
@@ -1765,7 +1765,7 @@ void anv_GetPhysicalDeviceProperties(
     VkPhysicalDeviceProperties*                 pProperties)
 {
    ANV_FROM_HANDLE(anv_physical_device, pdevice, physicalDevice);
-   const struct gen_device_info *devinfo = &pdevice->info;
+   const struct intel_device_info *devinfo = &pdevice->info;
 
    /* See assertions made when programming the buffer surface state. */
    const uint32_t max_raw_buffer_sz = devinfo->ver >= 7 ?
@@ -2750,7 +2750,7 @@ anv_device_init_trivial_batch(struct anv_device *device)
    anv_batch_emit(&batch, GFX7_MI_NOOP, noop);
 
    if (!device->info.has_llc)
-      gen_clflush_range(batch.start, batch.next - batch.start);
+      intel_clflush_range(batch.start, batch.next - batch.start);
 
    return VK_SUCCESS;
 }
@@ -2866,7 +2866,7 @@ intel_aux_map_buffer_free(void *driver_ctx, struct intel_buffer *buffer)
    free(buf);
 }
 
-static struct gen_mapped_pinned_buffer_alloc aux_map_allocator = {
+static struct intel_mapped_pinned_buffer_alloc aux_map_allocator = {
    .alloc = intel_aux_map_buffer_alloc,
    .free = intel_aux_map_buffer_free,
 };
@@ -3216,7 +3216,7 @@ VkResult anv_CreateDevice(
    device->debug_frame_desc =
       intel_debug_get_identifier_block(device->workaround_bo->map,
                                        device->workaround_bo->size,
-                                       GEN_DEBUG_BLOCK_TYPE_FRAME);
+                                       INTEL_DEBUG_BLOCK_TYPE_FRAME);
 
    result = anv_device_init_trivial_batch(device);
    if (result != VK_SUCCESS)
@@ -4101,7 +4101,7 @@ clflush_mapped_ranges(struct anv_device         *device,
       if (ranges[i].offset >= mem->map_size)
          continue;
 
-      gen_clflush_range(mem->map + ranges[i].offset,
+      intel_clflush_range(mem->map + ranges[i].offset,
                         MIN2(ranges[i].size, mem->map_size - ranges[i].offset));
    }
 }

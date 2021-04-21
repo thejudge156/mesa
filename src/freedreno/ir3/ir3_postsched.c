@@ -197,7 +197,7 @@ choose_instr(struct ir3_postsched_ctx *ctx)
 		if (d > 0)
 			continue;
 
-		if (!is_kill(n->instr))
+		if (!is_kill_or_demote(n->instr))
 			continue;
 
 		if (!chosen || (chosen->max_delay < n->max_delay))
@@ -562,7 +562,7 @@ sched_dag_init(struct ir3_postsched_ctx *ctx)
 
 		if (is_input(instr)) {
 			util_dynarray_append(&inputs, struct ir3_instruction *, instr);
-		} else if (is_kill(instr)) {
+		} else if (is_kill_or_demote(instr)) {
 			util_dynarray_foreach(&inputs, struct ir3_instruction *, instrp) {
 				struct ir3_instruction *input = *instrp;
 				struct ir3_postsched_node *in = input->data;
@@ -672,10 +672,12 @@ is_self_mov(struct ir3_instruction *instr)
 	if (instr->regs[0]->flags & IR3_REG_RELATIV)
 		return false;
 
+	if (instr->cat1.round != ROUND_ZERO)
+		return false;
+
 	if (instr->regs[1]->flags & (IR3_REG_CONST | IR3_REG_IMMED |
 			IR3_REG_RELATIV | IR3_REG_FNEG | IR3_REG_FABS |
-			IR3_REG_SNEG | IR3_REG_SABS | IR3_REG_BNOT |
-			IR3_REG_EVEN | IR3_REG_POS_INF))
+			IR3_REG_SNEG | IR3_REG_SABS | IR3_REG_BNOT))
 		return false;
 
 	return true;

@@ -23,7 +23,7 @@
  */
 
 /**
- * \file gen_debug.c
+ * \file intel_debug.c
  *
  * Support for the INTEL_DEBUG environment variable, along with other
  * miscellaneous debugging code.
@@ -33,7 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dev/gen_debug.h"
+#include "dev/intel_debug.h"
 #include "git_sha1.h"
 #include "util/macros.h"
 #include "util/debug.h"
@@ -168,10 +168,10 @@ intel_debug_write_identifiers(void *_output,
    memcpy(output, intel_debug_identifier(), intel_debug_identifier_size());
    output += intel_debug_identifier_size();
 
-   for (uint32_t id = GEN_DEBUG_BLOCK_TYPE_DRIVER; id < GEN_DEBUG_BLOCK_TYPE_MAX; id++) {
+   for (uint32_t id = INTEL_DEBUG_BLOCK_TYPE_DRIVER; id < INTEL_DEBUG_BLOCK_TYPE_MAX; id++) {
       switch (id) {
-      case GEN_DEBUG_BLOCK_TYPE_DRIVER: {
-         struct gen_debug_block_driver driver_desc = {
+      case INTEL_DEBUG_BLOCK_TYPE_DRIVER: {
+         struct intel_debug_block_driver driver_desc = {
             .base = {
                .type = id,
             },
@@ -186,10 +186,10 @@ intel_debug_write_identifiers(void *_output,
          break;
       }
 
-      case GEN_DEBUG_BLOCK_TYPE_FRAME: {
-         struct gen_debug_block_frame frame_desc = {
+      case INTEL_DEBUG_BLOCK_TYPE_FRAME: {
+         struct intel_debug_block_frame frame_desc = {
             .base = {
-               .type = GEN_DEBUG_BLOCK_TYPE_FRAME,
+               .type = INTEL_DEBUG_BLOCK_TYPE_FRAME,
                .length = sizeof(frame_desc),
             },
          };
@@ -205,8 +205,8 @@ intel_debug_write_identifiers(void *_output,
       assert(output < output_end);
    }
 
-   struct gen_debug_block_base end = {
-      .type = GEN_DEBUG_BLOCK_TYPE_END,
+   struct intel_debug_block_base end = {
+      .type = INTEL_DEBUG_BLOCK_TYPE_END,
       .length = sizeof(end),
    };
    memcpy(output, &end, sizeof(end));
@@ -223,17 +223,17 @@ intel_debug_write_identifiers(void *_output,
 void *
 intel_debug_get_identifier_block(void *_buffer,
                                  uint32_t buffer_size,
-                                 enum gen_debug_block_type type)
+                                 enum intel_debug_block_type type)
 {
    void *buffer = _buffer + intel_debug_identifier_size(),
       *end_buffer = _buffer + buffer_size;
 
    while (buffer < end_buffer) {
-      struct gen_debug_block_base *item = buffer;
+      struct intel_debug_block_base *item = buffer;
 
       if (item->type == type)
          return item;
-      if (item->type == GEN_DEBUG_BLOCK_TYPE_END)
+      if (item->type == INTEL_DEBUG_BLOCK_TYPE_END)
          return NULL;
 
       buffer += item->length;
