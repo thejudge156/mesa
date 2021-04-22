@@ -22,7 +22,7 @@ jobs:
       - name: Build
         run: |
           ln -s vulkan_android.pc vulkan.pc
-          sudo apt install -y meson libxrandr-dev libxxf86vm-dev libxshmfence-dev libxcb-*-dev libx11-xcb-dev libxfixes-dev libdrm-dev libx11-dev
+          sudo apt install -y meson libxrandr-dev llvm-dev libxxf86vm-dev libxshmfence-dev libxcb-*-dev libx11-xcb-dev libxfixes-dev libdrm-dev libx11-dev
           cp -R /usr/include/X11 include/
           cp -R /usr/include/xcb include/
           cp -R /usr/include/GL/* include/GL/
@@ -45,7 +45,7 @@ jobs:
             -Dopengl=true \
             -Dosmesa=true \
             -Dvulkan-drivers= \
-            -Dgallium-drivers=swrast,zink \
+            -Dgallium-drivers=llvmpipe,zink \
             -Dshared-glapi=false
           ninja -C "build-android-${{matrix.arch}}" install
           cp "build-android-${{matrix.arch}}/src/gallium/drivers/zink/libzink.a" /tmp/zink/lib/
