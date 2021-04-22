@@ -212,7 +212,10 @@ static void print_gpu(const struct instance_info *info, unsigned index, VkPhysic
    };
    if (info->has_vulkan11 && info->has_pci_bus)
       properties.pNext = &ext_pci_properties;
-   get_device_properties(info, device, &properties);
+   if (info->GetPhysicalDeviceProperties2)
+      info->GetPhysicalDeviceProperties2(device, &properties);
+   else
+      info->GetPhysicalDeviceProperties(device, &properties.properties);
 
    switch(properties.properties.deviceType) {
    case VK_PHYSICAL_DEVICE_TYPE_OTHER:
@@ -255,7 +258,10 @@ static bool fill_drm_device_info(const struct instance_info *info,
 
    if (info->has_vulkan11 && info->has_pci_bus)
       properties.pNext = &ext_pci_properties;
-   get_device_properties(info, device, &properties);
+   if (info->GetPhysicalDeviceProperties2)
+     info->GetPhysicalDeviceProperties2(device, &properties);
+   else
+     info->GetPhysicalDeviceProperties(device, &properties.properties);
 
    drm_device->cpu_device = properties.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
    drm_device->dev_info.vendor_id = properties.properties.vendorID;
