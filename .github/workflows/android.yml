@@ -32,11 +32,11 @@ jobs:
           meson "build-android-${{matrix.arch}}" \
             --prefix=/tmp/zink \
             --cross-file "android-${{matrix.arch}}" \
-            --buildtype debug \
+            --buildtype release \
             -Dplatforms=android \
             -Dplatform-sdk-version=26 \
             -Dandroid-stub=true \
-            -Dllvm=disabled \
+            -Dllvm=true \
             -Dxlib-lease=disabled \
             -Degl=disabled \
             -Dgbm=disabled \
@@ -45,7 +45,7 @@ jobs:
             -Dopengl=true \
             -Dosmesa=true \
             -Dvulkan-drivers= \
-            -Dgallium-drivers=zink \
+            -Dgallium-drivers=swrast,zink \
             -Dshared-glapi=false
           ninja -C "build-android-${{matrix.arch}}" install
           cp "build-android-${{matrix.arch}}/src/gallium/drivers/zink/libzink.a" /tmp/zink/lib/
