@@ -41,7 +41,7 @@
 #include "util/u_memory.h"
 #include "util/u_screen.h"
 #include "util/u_string.h"
-#include "util/u_transfer_helper.h"
+#include "util/u_transfer_helper.h" #zink_debug_util_callback
 #include "util/xmlconfig.h"
 
 #include "util/u_cpu_detect.h"
@@ -1258,7 +1258,7 @@ create_debug(struct zink_screen *screen)
        VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-       zink_debug_util_callback,
+       (PFN_vkDebugUtilsMessengerCallbackEXT) zink_debug_util_callback,
        NULL
    };
 
