@@ -96,6 +96,11 @@ static void set_viewport( float x, float y,
    vp.translate[1] = half_height + y;
    vp.translate[2] = half_depth + z;
 
+   vp.swizzle_x = PIPE_VIEWPORT_SWIZZLE_POSITIVE_X;
+   vp.swizzle_y = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y;
+   vp.swizzle_z = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z;
+   vp.swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
+
    ctx->set_viewport_states( ctx, 0, 1, &vp );
 }
 
@@ -147,7 +152,7 @@ static void set_vertices( void )
                                                  sizeof(inst_data),
                                                  inst_data);
 
-   ctx->set_vertex_buffers(ctx, 0, 2, vbuf);
+   ctx->set_vertex_buffers(ctx, 0, 2, 0, false, vbuf);
 }
 
 static void set_vertex_shader( void )

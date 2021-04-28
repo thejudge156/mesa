@@ -303,8 +303,12 @@ subscript(fs_reg reg, brw_reg_type type, unsigned i)
       reg.vstride += (reg.vstride ? delta : 0);
 
    } else if (reg.file == IMM) {
-      assert(reg.type == type);
-
+      unsigned bit_size = type_sz(type) * 8;
+      reg.u64 >>= i * bit_size;
+      reg.u64 &= BITFIELD64_MASK(bit_size);
+      if (bit_size <= 16)
+         reg.u64 |= reg.u64 << 16;
+      return retype(reg, type);
    } else {
       reg.stride *= type_sz(reg.type) / type_sz(type);
    }
@@ -549,7 +553,8 @@ is_unordered(const fs_inst *inst)
  */
 static inline bool
 has_dst_aligned_region_restriction(const gen_device_info *devinfo,
-                                   const fs_inst *inst)
+                                   const fs_inst *inst,
+                                   brw_reg_type dst_type)
 {
    const brw_reg_type exec_type = get_exec_type(inst);
    /* Even though the hardware spec claims that "integer DWord multiply"
@@ -563,11 +568,18 @@ has_dst_aligned_region_restriction(const gen_device_info *devinfo,
        (inst->opcode == BRW_OPCODE_MAD &&
         MIN2(type_sz(inst->src[1].type), type_sz(inst->src[2].type)) >= 4));
 
-   if (type_sz(inst->dst.type) > 4 || type_sz(exec_type) > 4 ||
+   if (type_sz(dst_type) > 4 || type_sz(exec_type) > 4 ||
        (type_sz(exec_type) == 4 && is_dword_multiply))
       return devinfo->is_cherryview || gen_device_info_is_9lp(devinfo);
    else
       return false;
+}
+
+static inline bool
+has_dst_aligned_region_restriction(const gen_device_info *devinfo,
+                                   const fs_inst *inst)
+{
+   return has_dst_aligned_region_restriction(devinfo, inst, inst->dst.type);
 }
 
 /**

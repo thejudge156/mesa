@@ -250,6 +250,11 @@ static void init_prog(struct program *p)
 		p->viewport.translate[0] = half_width + x;
 		p->viewport.translate[1] = (half_height + y) * scale + bias;
 		p->viewport.translate[2] = half_depth + z;
+
+		p->viewport.swizzle_x = PIPE_VIEWPORT_SWIZZLE_POSITIVE_X;
+		p->viewport.swizzle_y = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y;
+		p->viewport.swizzle_z = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z;
+		p->viewport.swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 	}
 
 	/* vertex elements state */
@@ -322,7 +327,7 @@ static void draw(struct program *p)
 	cso_set_samplers(p->cso, PIPE_SHADER_FRAGMENT, 1, samplers);
 
 	/* texture sampler view */
-	cso_set_sampler_views(p->cso, PIPE_SHADER_FRAGMENT, 1, &p->view);
+	p->pipe->set_sampler_views(p->pipe, PIPE_SHADER_FRAGMENT, 0, 1, 0, &p->view);
 
 	/* shaders */
 	cso_set_fragment_shader_handle(p->cso, p->fs);

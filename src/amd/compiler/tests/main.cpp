@@ -34,6 +34,8 @@
 #include "aco_ir.h"
 #include "framework.h"
 
+#include "util/u_cpu_detect.h"
+
 static const char *help_message =
    "Usage: %s [-h] [-l --list] [--no-check] [TEST [TEST ...]]\n"
    "\n"
@@ -193,7 +195,7 @@ int check_output(char **argv)
       write(stdin_pipe[1], checker_stdin_data, checker_stdin_size);
       close(stdin_pipe[0]);
       close(stdin_pipe[1]);
-      exit(0);
+      _exit(0);
    }
 }
 
@@ -240,6 +242,8 @@ int main(int argc, char **argv)
       fprintf(stderr, help_message, argv[0]);
       return 99;
    }
+
+   util_cpu_detect();
 
    if (do_list) {
       for (auto test : tests)

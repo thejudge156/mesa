@@ -263,7 +263,7 @@ handleVAProtectedSliceDataBufferType(vlVaContext *context, vlVaBuffer *buf)
 {
 	uint8_t* encrypted_data = (uint8_t*) buf->data;
 
-	unsigned int drm_key_size = 56 * 4;
+	unsigned int drm_key_size = buf->size;
 
 	context->desc.base.decrypt_key = CALLOC(1, drm_key_size);
 	memcpy(context->desc.base.decrypt_key, encrypted_data, drm_key_size);
@@ -561,7 +561,7 @@ vlVaRenderPicture(VADriverContextP ctx, VAContextID context_id, VABufferID *buff
          handleVAProtectedSliceDataBufferType(context, buf);
    }
 
-   for (i = 0; i < num_buffers; ++i) {
+   for (i = 0; i < num_buffers && vaStatus == VA_STATUS_SUCCESS; ++i) {
       vlVaBuffer *buf = handle_table_get(drv->htab, buffers[i]);
 
       switch (buf->type) {

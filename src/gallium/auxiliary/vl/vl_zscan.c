@@ -500,6 +500,10 @@ vl_zscan_init_buffer(struct vl_zscan *zscan, struct vl_zscan_buffer *buffer,
    buffer->viewport.translate[0] = 0;
    buffer->viewport.translate[1] = 0;
    buffer->viewport.translate[2] = 0;
+   buffer->viewport.swizzle_x = PIPE_VIEWPORT_SWIZZLE_POSITIVE_X;
+   buffer->viewport.swizzle_y = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y;
+   buffer->viewport.swizzle_z = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z;
+   buffer->viewport.swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 
    buffer->fb_state.width = dst->width;
    buffer->fb_state.height = dst->height;
@@ -604,7 +608,7 @@ vl_zscan_render(struct vl_zscan *zscan, struct vl_zscan_buffer *buffer, unsigned
    zscan->pipe->set_framebuffer_state(zscan->pipe, &buffer->fb_state);
    zscan->pipe->set_viewport_states(zscan->pipe, 0, 1, &buffer->viewport);
    zscan->pipe->set_sampler_views(zscan->pipe, PIPE_SHADER_FRAGMENT,
-                                  0, 3, &buffer->src);
+                                  0, 3, 0, &buffer->src);
    zscan->pipe->bind_vs_state(zscan->pipe, zscan->vs);
    zscan->pipe->bind_fs_state(zscan->pipe, zscan->fs);
    util_draw_arrays_instanced(zscan->pipe, PIPE_PRIM_QUADS, 0, 4, 0, num_instances);
