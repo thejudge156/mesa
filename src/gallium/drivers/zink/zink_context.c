@@ -1040,7 +1040,7 @@ get_render_pass(struct zink_context *ctx)
       state.rts[fb->nr_cbufs].clear_stencil = zink_fb_clear_enabled(ctx, PIPE_MAX_COLOR_BUFS) &&
                                               !zink_fb_clear_first_needs_explicit(fb_clear) &&
                                               (zink_fb_clear_element(fb_clear, 0)->zs.bits & PIPE_CLEAR_STENCIL);
-      clears |= state.rts[fb->nr_cbufs].clear_color || state.rts[fb->nr_cbufs].clear_stencil ? BITFIELD_BIT(fb->nr_cbufs) : 0;;
+      clears |= state.rts[fb->nr_cbufs].clear_color || state.rts[fb->nr_cbufs].clear_stencil ? BITFIELD_BIT(fb->nr_cbufs) : 0;
       state.num_rts++;
    }
    state.have_zsbuf = fb->zsbuf != NULL;
@@ -1078,7 +1078,7 @@ get_framebuffer(struct zink_context *ctx)
    state.num_attachments = ctx->fb_state.nr_cbufs;
    if (ctx->fb_state.zsbuf) {
       struct pipe_surface *psurf = ctx->fb_state.zsbuf;
-      state.attachments[state.num_attachments] = psurf ? zink_surface(psurf)->image_view : VK_NULL_HANDLE;;
+      state.attachments[state.num_attachments] = psurf ? zink_surface(psurf)->image_view : VK_NULL_HANDLE;
       attachments[state.num_attachments++] = psurf;
    }
 
@@ -1235,6 +1235,9 @@ static void
 flush_batch(struct zink_context *ctx, bool sync)
 {
    struct zink_batch *batch = &ctx->batch;
+   if (ctx->clears_enabled)
+      /* start rp to do all the clears */
+      zink_begin_render_pass(ctx, batch);
    zink_end_render_pass(ctx, batch);
    zink_end_batch(ctx, batch);
 
@@ -1705,127 +1708,6 @@ equals_gfx_program(const void *a, const void *b)
    return memcmp(a, b, sizeof(struct zink_shader *) * (ZINK_SHADER_COUNT)) == 0;
 }
 
-/* TODO: remove for wsi */
-static void
-copy_scanout(struct zink_context *ctx, struct zink_resource *res)
-{
-   VkImageCopy region = {};
-   struct pipe_box box = {0, 0, 0,
-                          u_minify(res->base.b.width0, 0),
-                          u_minify(res->base.b.height0, 0), res->base.b.array_size};
-   box.depth = util_num_layers(&res->base.b, 0);
-   struct pipe_box *src_box = &box;
-   unsigned dstz = 0;
-
-   region.srcSubresource.aspectMask = res->aspect;
-   region.srcSubresource.mipLevel = 0;
-   switch (res->base.b.target) {
-   case PIPE_TEXTURE_CUBE:
-   case PIPE_TEXTURE_CUBE_ARRAY:
-   case PIPE_TEXTURE_2D_ARRAY:
-   case PIPE_TEXTURE_1D_ARRAY:
-      /* these use layer */
-      region.srcSubresource.baseArrayLayer = src_box->z;
-      region.srcSubresource.layerCount = src_box->depth;
-      region.srcOffset.z = 0;
-      region.extent.depth = 1;
-      break;
-   case PIPE_TEXTURE_3D:
-      /* this uses depth */
-      region.srcSubresource.baseArrayLayer = 0;
-      region.srcSubresource.layerCount = 1;
-      region.srcOffset.z = src_box->z;
-      region.extent.depth = src_box->depth;
-      break;
-   default:
-      /* these must only copy one layer */
-      region.srcSubresource.baseArrayLayer = 0;
-      region.srcSubresource.layerCount = 1;
-      region.srcOffset.z = 0;
-      region.extent.depth = 1;
-   }
-
-   region.srcOffset.x = src_box->x;
-   region.srcOffset.y = src_box->y;
-
-   region.dstSubresource.aspectMask = res->aspect;
-   region.dstSubresource.mipLevel = 0;
-   switch (res->base.b.target) {
-   case PIPE_TEXTURE_CUBE:
-   case PIPE_TEXTURE_CUBE_ARRAY:
-   case PIPE_TEXTURE_2D_ARRAY:
-   case PIPE_TEXTURE_1D_ARRAY:
-      /* these use layer */
-      region.dstSubresource.baseArrayLayer = dstz;
-      region.dstSubresource.layerCount = src_box->depth;
-      region.dstOffset.z = 0;
-      break;
-   case PIPE_TEXTURE_3D:
-      /* this uses depth */
-      region.dstSubresource.baseArrayLayer = 0;
-      region.dstSubresource.layerCount = 1;
-      region.dstOffset.z = dstz;
-      break;
-   default:
-      /* these must only copy one layer */
-      region.dstSubresource.baseArrayLayer = 0;
-      region.dstSubresource.layerCount = 1;
-      region.dstOffset.z = 0;
-   }
-
-   region.dstOffset.x = 0;
-   region.dstOffset.y = 0;
-   region.extent.width = src_box->width;
-   region.extent.height = src_box->height;
-   zink_resource_image_barrier(ctx, NULL, res, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-
-   VkImageSubresourceRange isr = {
-      res->aspect,
-      0, VK_REMAINING_MIP_LEVELS,
-      0, VK_REMAINING_ARRAY_LAYERS
-   };
-   VkImageMemoryBarrier imb = {
-      VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-      NULL,
-      0,
-      VK_ACCESS_TRANSFER_WRITE_BIT,
-      res->scanout_obj_init ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_UNDEFINED,
-      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-      VK_QUEUE_FAMILY_IGNORED,
-      VK_QUEUE_FAMILY_IGNORED,
-      res->scanout_obj->image,
-      isr
-   };
-   vkCmdPipelineBarrier(
-      ctx->batch.state->cmdbuf,
-      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-      VK_PIPELINE_STAGE_TRANSFER_BIT,
-      0,
-      0, NULL,
-      0, NULL,
-      1, &imb
-   );
-
-   vkCmdCopyImage(ctx->batch.state->cmdbuf, res->obj->image, res->layout,
-                  res->scanout_obj->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  1, &region);
-   imb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-   imb.dstAccessMask = 0;
-   imb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-   imb.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-   vkCmdPipelineBarrier(
-      ctx->batch.state->cmdbuf,
-      VK_PIPELINE_STAGE_TRANSFER_BIT,
-      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-      0,
-      0, NULL,
-      0, NULL,
-      1, &imb
-   );
-   /* separate flag to avoid annoying validation errors for new scanout objs */
-   res->scanout_obj_init = true;
-}
-
 static void
 zink_flush(struct pipe_context *pctx,
            struct pipe_fence_handle **pfence,
@@ -1838,18 +1720,10 @@ zink_flush(struct pipe_context *pctx,
    struct zink_fence *fence = NULL;
    struct zink_screen *screen = zink_screen(ctx->base.screen);
 
-   if (!deferred) {
-      if (ctx->clears_enabled)
-         /* start rp to do all the clears */
-         zink_begin_render_pass(ctx, batch);
-      zink_end_render_pass(ctx, batch);
-      if (ctx->flush_res) {
-         copy_scanout(ctx, ctx->flush_res);
-         if (zink_screen(pctx->screen)->needs_mesa_flush_wsi)
-            batch->state->flush_res = ctx->flush_res;
-         ctx->flush_res = NULL;
-      }
-   }
+   /* triggering clears will force has_work */
+   if (!deferred && ctx->clears_enabled)
+      /* start rp to do all the clears */
+      zink_begin_render_pass(ctx, batch);
 
    if (!batch->has_work) {
        if (pfence) {
@@ -2194,7 +2068,7 @@ zink_flush_resource(struct pipe_context *pctx,
     * WSI support is added
     */
    if (pres->bind & (PIPE_BIND_SHARED | PIPE_BIND_SCANOUT))
-      ctx->flush_res = zink_resource(pres);
+      ctx->batch.state->flush_res = zink_resource(pres);
 }
 
 void
@@ -2592,6 +2466,7 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    struct zink_context *ctx = rzalloc(NULL, struct zink_context);
    if (!ctx)
       goto fail;
+   ctx->have_timelines = screen->info.have_KHR_timeline_semaphore;
 
    ctx->gfx_pipeline_state.dirty = true;
    ctx->compute_pipeline_state.dirty = true;

@@ -25,7 +25,7 @@
  * IN THE SOFTWARE.
  */
 
-#include "drm-uapi/drm_fourcc.h"
+#include "ac_drm_fourcc.h"
 #include "util/debug.h"
 #include "util/u_atomic.h"
 #include "vulkan/util/vk_format.h"
@@ -283,8 +283,7 @@ radv_image_use_dcc_image_stores(const struct radv_device *device, const struct r
     */
    return device->physical_device->rad_info.chip_class == GFX10 ||
           (device->physical_device->rad_info.chip_class == GFX10_3 &&
-           (device->instance->perftest_flags & RADV_PERFTEST_DCC_STORES) &&
-           !device->physical_device->use_llvm);
+           (device->instance->perftest_flags & RADV_PERFTEST_DCC_STORES));
 }
 
 /*
@@ -335,11 +334,6 @@ radv_use_tc_compat_cmask_for_image(struct radv_device *device, struct radv_image
       return false;
 
    if (device->instance->debug_flags & RADV_DEBUG_NO_TC_COMPAT_CMASK)
-      return false;
-
-   /* TODO: Enable TC-compat CMASK on GFX8-9. */
-   if (device->physical_device->rad_info.chip_class < GFX10 &&
-       !(device->instance->perftest_flags & RADV_PERFTEST_TC_COMPAT_CMASK))
       return false;
 
    if (image->usage & VK_IMAGE_USAGE_STORAGE_BIT)

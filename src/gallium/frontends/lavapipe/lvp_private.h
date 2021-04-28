@@ -475,11 +475,12 @@ struct lvp_pipeline {
    void *shader_cso[PIPE_SHADER_TYPES];
    VkGraphicsPipelineCreateInfo graphics_create_info;
    VkComputePipelineCreateInfo compute_create_info;
+   bool provoking_vertex_last;
 };
 
 struct lvp_event {
    struct vk_object_base base;
-   uint64_t event_storage;
+   volatile uint64_t event_storage;
 };
 
 struct lvp_fence {

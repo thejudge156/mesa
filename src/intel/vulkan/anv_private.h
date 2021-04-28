@@ -2239,6 +2239,7 @@ enum anv_cmd_dirty_bits {
    ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE         = 1 << 22, /* VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT */
    ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP                  = 1 << 23, /* VK_DYNAMIC_STATE_STENCIL_OP_EXT */
    ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS            = 1 << 24, /* VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT */
+   ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE           = 1 << 25, /* VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT */
 };
 typedef uint32_t anv_cmd_dirty_mask_t;
 
@@ -2263,7 +2264,8 @@ typedef uint32_t anv_cmd_dirty_mask_t;
     ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE |    \
     ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE |         \
     ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP |                  \
-    ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)
+    ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS |            \
+    ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE)
 
 static inline enum anv_cmd_dirty_bits
 anv_cmd_dirty_bit_for_vk_dynamic_state(VkDynamicState vk_state)
@@ -2313,6 +2315,8 @@ anv_cmd_dirty_bit_for_vk_dynamic_state(VkDynamicState vk_state)
       return ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP;
    case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT:
       return ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS;
+   case VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT:
+      return ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE;
    default:
       assert(!"Unsupported dynamic state");
       return 0;
@@ -2652,6 +2656,9 @@ struct anv_dynamic_state {
    bool                                         stencil_test_enable;
    bool                                         dyn_vbo_stride;
    bool                                         dyn_vbo_size;
+
+   /* Bitfield, one bit per render target */
+   uint8_t                                      color_writes;
 };
 
 extern const struct anv_dynamic_state default_dynamic_state;
@@ -3369,6 +3376,7 @@ struct anv_graphics_pipeline {
    bool                                         sample_shading_enable;
    bool                                         kill_pixel;
    bool                                         depth_bounds_test_enable;
+   bool                                         force_fragment_thread_dispatch;
 
    /* When primitive replication is used, subpass->view_mask will describe what
     * views to replicate.
@@ -3389,12 +3397,17 @@ struct anv_graphics_pipeline {
       uint32_t                                  depth_stencil_state[3];
       uint32_t                                  clip[4];
       uint32_t                                  xfb_bo_pitch[4];
+      uint32_t                                  wm[3];
+      uint32_t                                  blend_state[MAX_RTS * 2];
    } gfx7;
 
    struct {
       uint32_t                                  sf[4];
       uint32_t                                  raster[5];
       uint32_t                                  wm_depth_stencil[3];
+      uint32_t                                  wm[2];
+      uint32_t                                  ps_blend[2];
+      uint32_t                                  blend_state[1 + MAX_RTS * 2];
    } gfx8;
 
    struct {

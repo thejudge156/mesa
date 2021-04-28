@@ -504,6 +504,7 @@ struct brw_batch {
    bool needs_sol_reset;
    bool state_base_address_emitted;
    bool no_wrap;
+   bool contains_fence_signal;
 
    struct brw_reloc_list batch_relocs;
    struct brw_reloc_list state_relocs;
@@ -529,6 +530,9 @@ struct brw_batch {
    struct hash_table_u64 *state_batch_sizes;
 
    struct intel_batch_decode_ctx decoder;
+
+   /** A list of drm_i915_exec_fences to have execbuf signal or wait on */
+   struct util_dynarray exec_fences;
 };
 
 #define BRW_MAX_XFB_STREAMS 4

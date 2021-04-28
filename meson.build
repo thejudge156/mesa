@@ -732,6 +732,10 @@ if _va != 'disabled'
   if dep_va.found()
     dep_va_headers = dep_va.partial_dependency(compile_args : true)
     with_gallium_va = true
+    if cc.has_header_symbol('va/va.h', 'VASurfaceAttribDRMFormatModifiers',
+                            dependencies: dep_va_headers)
+      pre_args += '-DHAVE_VA_SURFACE_ATTRIB_DRM_FORMAT_MODIFIERS'
+    endif
   endif
 endif
 
@@ -1023,6 +1027,7 @@ if cc.get_id() == 'msvc'
                '/wd4624',  # destructor was implicitly defined as deleted [from LLVM]
                '/wd4309',  # 'initializing': truncation of constant value
                '/wd4838',  # conversion from 'int' to 'const char' requires a narrowing conversion
+               '/wd5105',  # macro expansion producing 'defined' has undefined behavior (winbase.h, need Windows SDK upgrade)
                '/we4020',  # Error when passing the wrong number of parameters
                '/we4024',  # Error when passing different type of parameter
               ]
@@ -1461,7 +1466,7 @@ _drm_ver = '2.4.81'
 
 _libdrm_checks = [
   ['intel', with_dri_i915 or with_gallium_i915],
-  ['amdgpu', with_amd_vk or with_gallium_radeonsi],
+  ['amdgpu', (with_amd_vk and not with_platform_windows) or with_gallium_radeonsi],
   ['radeon', (with_gallium_radeonsi or with_dri_r100 or with_dri_r200 or
               with_gallium_r300 or with_gallium_r600)],
   ['nouveau', (with_gallium_nouveau or with_dri_nouveau)],
@@ -1687,7 +1692,11 @@ with_opencl_native = _opencl != 'disabled' and get_option('opencl-native')
 if (with_amd_vk or with_gallium_radeonsi or
     (with_gallium_opencl and with_opencl_native) or
     (with_gallium_r600 and with_llvm))
-  dep_elf = dependency('libelf', required : false)
+  if with_platform_windows
+    dep_elf = dependency('libelf', required : false, fallback : ['libelf', 'libelf_dep'])
+  else
+    dep_elf = dependency('libelf', required : false)
+  endif
   if not dep_elf.found()
     dep_elf = cc.find_library('elf')
   endif

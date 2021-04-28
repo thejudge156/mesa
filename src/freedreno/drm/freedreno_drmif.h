@@ -29,6 +29,7 @@
 
 #include <stdint.h>
 
+#include "util/bitset.h"
 #include "util/u_debug.h"
 
 #ifdef __cplusplus
@@ -62,23 +63,49 @@ enum fd_param_id {
    FD_GLOBAL_FAULTS, /* # of global (all context) faults */
 };
 
+/**
+ * Helper for fence/seqno comparisions which deals properly with rollover.
+ * Returns true if fence 'a' is before fence 'b'
+ */
+static inline bool
+fd_fence_before(uint32_t a, uint32_t b)
+{
+   return (int32_t)(a - b) < 0;
+}
+
+static inline bool
+fd_fence_after(uint32_t a, uint32_t b)
+{
+   return (int32_t)(a - b) > 0;
+}
+
+/**
+ * Per submit, there are actually two fences:
+ *  1) The userspace maintained fence, which is used to optimistically
+ *     avoid kernel ioctls to query if specific rendering is completed
+ *  2) The kernel maintained fence, which we cannot directly do anything
+ *     with, other than pass it back to the kernel
+ *
+ * The userspace fence is mostly internal to the drm layer, but we want
+ * the gallium layer to be able to pass it back to us for things like
+ * fd_pipe_wait().  So this struct encapsulates the two.
+ */
+struct fd_fence {
+   uint32_t kfence;     /* kernel fence */
+   uint32_t ufence;     /* userspace fence */
+};
+
 /* bo flags: */
-#define DRM_FREEDRENO_GEM_TYPE_SMI       0x00000001
-#define DRM_FREEDRENO_GEM_TYPE_KMEM      0x00000002
-#define DRM_FREEDRENO_GEM_TYPE_MEM_MASK  0x0000000f
-#define DRM_FREEDRENO_GEM_CACHE_NONE     0x00000000
-#define DRM_FREEDRENO_GEM_CACHE_WCOMBINE 0x00100000
-#define DRM_FREEDRENO_GEM_CACHE_WTHROUGH 0x00200000
-#define DRM_FREEDRENO_GEM_CACHE_WBACK    0x00400000
-#define DRM_FREEDRENO_GEM_CACHE_WBACKWA  0x00800000
-#define DRM_FREEDRENO_GEM_CACHE_MASK     0x00f00000
-#define DRM_FREEDRENO_GEM_GPUREADONLY    0x01000000
-#define DRM_FREEDRENO_GEM_SCANOUT        0x02000000
+#define FD_BO_GPUREADONLY  BITSET_BIT(1)
+#define FD_BO_SCANOUT      BITSET_BIT(2)
+/* Default caching is WRITECOMBINE, we can add new bo flags later for cached/etc */
 
 /* bo access flags: (keep aligned to MSM_PREP_x) */
-#define DRM_FREEDRENO_PREP_READ   0x01
-#define DRM_FREEDRENO_PREP_WRITE  0x02
-#define DRM_FREEDRENO_PREP_NOSYNC 0x04
+#define FD_BO_PREP_READ   BITSET_BIT(0)
+#define FD_BO_PREP_WRITE  BITSET_BIT(1)
+#define FD_BO_PREP_NOSYNC BITSET_BIT(2)
+#define FD_BO_PREP_FLUSH  BITSET_BIT(3)
+
 
 /* device functions:
  */
@@ -86,6 +113,7 @@ enum fd_param_id {
 struct fd_device *fd_device_new(int fd);
 struct fd_device *fd_device_new_dup(int fd);
 struct fd_device *fd_device_ref(struct fd_device *dev);
+void fd_device_purge(struct fd_device *dev);
 void fd_device_del(struct fd_device *dev);
 int fd_device_fd(struct fd_device *dev);
 
@@ -111,12 +139,14 @@ struct fd_pipe *fd_pipe_new(struct fd_device *dev, enum fd_pipe_id id);
 struct fd_pipe *fd_pipe_new2(struct fd_device *dev, enum fd_pipe_id id,
                              uint32_t prio);
 struct fd_pipe *fd_pipe_ref(struct fd_pipe *pipe);
+struct fd_pipe *fd_pipe_ref_locked(struct fd_pipe *pipe);
 void fd_pipe_del(struct fd_pipe *pipe);
+void fd_pipe_purge(struct fd_pipe *pipe);
 int fd_pipe_get_param(struct fd_pipe *pipe, enum fd_param_id param,
                       uint64_t *value);
-int fd_pipe_wait(struct fd_pipe *pipe, uint32_t timestamp);
+int fd_pipe_wait(struct fd_pipe *pipe, const struct fd_fence *fence);
 /* timeout in nanosec */
-int fd_pipe_wait_timeout(struct fd_pipe *pipe, uint32_t timestamp,
+int fd_pipe_wait_timeout(struct fd_pipe *pipe, const struct fd_fence *fence,
                          uint64_t timeout);
 
 /* buffer-object functions:

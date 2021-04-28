@@ -65,9 +65,7 @@
 
 #include "ac_binary.h"
 #include "ac_gpu_info.h"
-#include "ac_llvm_build.h"
-#include "ac_llvm_util.h"
-#include "ac_nir_to_llvm.h"
+#include "ac_shader_util.h"
 #include "ac_sqtt.h"
 #include "ac_surface.h"
 #include "radv_constants.h"
@@ -368,6 +366,7 @@ struct radv_pipeline_key {
    uint8_t num_samples;
    uint32_t has_multiview_view_index : 1;
    uint32_t optimisations_disabled : 1;
+   uint32_t provoking_vtx_last : 1;
    uint8_t topology;
 
    /* Non-zero if a required subgroup size is specified via

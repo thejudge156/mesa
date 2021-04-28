@@ -4628,7 +4628,7 @@ bool nir_lower_io_to_scalar_early(nir_shader *shader, nir_variable_mode mask);
 bool nir_lower_io_to_vector(nir_shader *shader, nir_variable_mode mask);
 bool nir_vectorize_tess_levels(nir_shader *shader);
 
-bool nir_lower_fragcolor(nir_shader *shader);
+bool nir_lower_fragcolor(nir_shader *shader, unsigned max_cbufs);
 bool nir_lower_fragcoord_wtrans(nir_shader *shader);
 void nir_lower_viewport_transform(nir_shader *shader);
 bool nir_lower_uniforms_to_ubo(nir_shader *shader, bool dword_packed, bool load_vec4);
@@ -4847,7 +4847,7 @@ typedef struct nir_lower_tex_options {
 bool nir_lower_tex(nir_shader *shader,
                    const nir_lower_tex_options *options);
 
-bool nir_lower_cl_images_to_tex(nir_shader *shader);
+bool nir_lower_readonly_images_to_tex(nir_shader *shader, bool per_variable);
 
 enum nir_lower_non_uniform_access_type {
    nir_lower_non_uniform_ubo_access     = (1 << 0),
@@ -4856,8 +4856,17 @@ enum nir_lower_non_uniform_access_type {
    nir_lower_non_uniform_image_access   = (1 << 3),
 };
 
+/* Given the nir_src used for the resource, return the channels which might be non-uniform. */
+typedef nir_component_mask_t (*nir_lower_non_uniform_access_callback)(const nir_src *, void *);
+
+typedef struct nir_lower_non_uniform_access_options {
+   enum nir_lower_non_uniform_access_type types;
+   nir_lower_non_uniform_access_callback callback;
+   void *callback_data;
+} nir_lower_non_uniform_access_options;
+
 bool nir_lower_non_uniform_access(nir_shader *shader,
-                                  enum nir_lower_non_uniform_access_type);
+                                  const nir_lower_non_uniform_access_options *options);
 
 typedef struct {
    /* If true, a 32-bit division lowering based on NV50LegalizeSSA::handleDIV()

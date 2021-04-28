@@ -112,7 +112,7 @@ schedule_barrier(compiler_context *ctx)
                         .swizzle = SWIZZLE_IDENTITY_4, \
                         .op = midgard_op_##name, \
 			.load_store = { \
-				.address = address \
+				.signed_offset = address \
 			} \
 		}; \
                 \
@@ -132,19 +132,19 @@ schedule_barrier(compiler_context *ctx)
 
 M_LOAD(ld_attr_32, nir_type_uint32);
 M_LOAD(ld_vary_32, nir_type_uint32);
-M_LOAD(ld_ubo_u128, nir_type_uint32);
-M_LOAD(ld_u32, nir_type_uint32);
-M_LOAD(ld_u64, nir_type_uint32);
-M_LOAD(ld_u128, nir_type_uint32);
-M_STORE(st_u32, nir_type_uint32);
-M_STORE(st_u64, nir_type_uint32);
-M_STORE(st_u128, nir_type_uint32);
-M_LOAD(ld_color_buffer_32u, nir_type_uint32);
-M_LOAD(ld_color_buffer_as_fp16, nir_type_float16);
-M_LOAD(ld_color_buffer_as_fp32, nir_type_float32);
+M_LOAD(ld_ubo_128, nir_type_uint32);
+M_LOAD(ld_32, nir_type_uint32);
+M_LOAD(ld_64, nir_type_uint32);
+M_LOAD(ld_128, nir_type_uint32);
+M_STORE(st_32, nir_type_uint32);
+M_STORE(st_64, nir_type_uint32);
+M_STORE(st_128, nir_type_uint32);
+M_LOAD(ld_tilebuffer_raw, nir_type_uint32);
+M_LOAD(ld_tilebuffer_16f, nir_type_float16);
+M_LOAD(ld_tilebuffer_32f, nir_type_float32);
 M_STORE(st_vary_32, nir_type_uint32);
 M_LOAD(ld_cubemap_coords, nir_type_uint32);
-M_LOAD(ld_compute_id, nir_type_uint32);
+M_LOAD(ldst_mov, nir_type_uint32);
 M_LOAD(ld_image_32f, nir_type_float32);
 M_LOAD(ld_image_16f, nir_type_float16);
 M_LOAD(ld_image_32u, nir_type_uint32);
@@ -153,7 +153,7 @@ M_STORE(st_image_32f, nir_type_float32);
 M_STORE(st_image_16f, nir_type_float16);
 M_STORE(st_image_32u, nir_type_uint32);
 M_STORE(st_image_32i, nir_type_int32);
-M_LOAD(lea_tex, nir_type_uint64);
+M_LOAD(lea_image, nir_type_uint64);
 
 #define M_IMAGE(op) \
 static midgard_instruction \
@@ -435,7 +435,7 @@ emit_load_const(compiler_context *ctx, nir_load_const_instr *instr)
 {
         nir_ssa_def def = instr->def;
 
-        midgard_constants *consts = rzalloc(NULL, midgard_constants);
+        midgard_constants *consts = rzalloc(ctx, midgard_constants);
 
         assert(instr->def.num_components * instr->def.bit_size <= sizeof(*consts) * 8);
 
@@ -566,31 +566,31 @@ mir_accept_dest_mod(compiler_context *ctx, nir_dest **dest, nir_op op)
         return false;
 }
 
-/* Look for floating point mods. We have the mods fsat, fsat_signed,
- * and fpos. We also have the relations (note 3 * 2 = 6 cases):
+/* Look for floating point mods. We have the mods clamp_m1_1, clamp_0_1,
+ * and clamp_0_inf. We also have the relations (note 3 * 2 = 6 cases):
  *
- * fsat_signed(fpos(x)) = fsat(x)
- * fsat_signed(fsat(x)) = fsat(x)
- * fpos(fsat_signed(x)) = fsat(x)
- * fpos(fsat(x)) = fsat(x)
- * fsat(fsat_signed(x)) = fsat(x)
- * fsat(fpos(x)) = fsat(x)
+ * clamp_0_1(clamp_0_inf(x))  = clamp_m1_1(x)
+ * clamp_0_1(clamp_m1_1(x))   = clamp_m1_1(x)
+ * clamp_0_inf(clamp_0_1(x))  = clamp_m1_1(x)
+ * clamp_0_inf(clamp_m1_1(x)) = clamp_m1_1(x)
+ * clamp_m1_1(clamp_0_1(x))   = clamp_m1_1(x)
+ * clamp_m1_1(clamp_0_inf(x)) = clamp_m1_1(x)
  *
  * So by cases any composition of output modifiers is equivalent to
- * fsat alone.
+ * clamp_m1_1 alone.
  */
 static unsigned
 mir_determine_float_outmod(compiler_context *ctx, nir_dest **dest, unsigned prior_outmod)
 {
-        bool fpos = mir_accept_dest_mod(ctx, dest, nir_op_fclamp_pos);
-        bool fsat = mir_accept_dest_mod(ctx, dest, nir_op_fsat);
-        bool ssat = mir_accept_dest_mod(ctx, dest, nir_op_fsat_signed);
+        bool clamp_0_inf = mir_accept_dest_mod(ctx, dest, nir_op_fclamp_pos);
+        bool clamp_0_1 = mir_accept_dest_mod(ctx, dest, nir_op_fsat);
+        bool clamp_m1_1 = mir_accept_dest_mod(ctx, dest, nir_op_fsat_signed);
         bool prior = (prior_outmod != midgard_outmod_none);
-        int count = (int) prior + (int) fpos + (int) ssat + (int) fsat;
+        int count = (int) prior + (int) clamp_0_inf + (int) clamp_0_1 + (int) clamp_m1_1;
 
-        return ((count > 1) || fsat) ? midgard_outmod_sat :
-                                fpos ? midgard_outmod_pos :
-                                ssat ? midgard_outmod_sat_signed :
+        return ((count > 1) || clamp_0_1) ?  midgard_outmod_clamp_0_1 :
+                                clamp_0_inf ? midgard_outmod_clamp_0_inf :
+                                clamp_m1_1 ?   midgard_outmod_clamp_m1_1 :
                                 prior_outmod;
 }
 
@@ -807,8 +807,8 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
                 ALU_CASE_RTZ(i2f16, i2f_rte);
                 ALU_CASE_RTZ(u2f16, u2f_rte);
 
-                ALU_CASE(fsin, fsin);
-                ALU_CASE(fcos, fcos);
+                ALU_CASE(fsin, fsinpi);
+                ALU_CASE(fcos, fcospi);
 
                 /* We'll get 0 in the second arg, so:
                  * ~a = ~(a | 0) = nor(a, 0) */
@@ -927,15 +927,15 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
         bool is_int = midgard_is_integer_op(op);
 
         if (instr->op == nir_op_umul_high || instr->op == nir_op_imul_high) {
-                outmod = midgard_outmod_int_high;
+                outmod = midgard_outmod_keephi;
         } else if (midgard_is_integer_out_op(op)) {
-                outmod = midgard_outmod_int_wrap;
+                outmod = midgard_outmod_keeplo;
         } else if (instr->op == nir_op_fsat) {
-                outmod = midgard_outmod_sat;
+                outmod = midgard_outmod_clamp_0_1;
         } else if (instr->op == nir_op_fsat_signed) {
-                outmod = midgard_outmod_sat_signed;
+                outmod = midgard_outmod_clamp_m1_1;
         } else if (instr->op == nir_op_fclamp_pos) {
-                outmod = midgard_outmod_pos;
+                outmod = midgard_outmod_clamp_0_inf;
         }
 
         /* Fetch unit, quirks, etc information */
@@ -1155,7 +1155,7 @@ emit_ubo_read(
 {
         /* TODO: half-floats */
 
-        midgard_instruction ins = m_ld_ubo_u128(dest, 0);
+        midgard_instruction ins = m_ld_ubo_128(dest, 0);
         ins.constants.u32[0] = offset;
 
         if (instr->type == nir_instr_type_intrinsic)
@@ -1164,20 +1164,20 @@ emit_ubo_read(
         if (indirect_offset) {
                 ins.src[2] = nir_src_index(ctx, indirect_offset);
                 ins.src_types[2] = nir_type_uint32;
-                ins.load_store.arg_2 = (indirect_shift << 5);
+                ins.load_store.index_shift = indirect_shift;
 
                 /* X component for the whole swizzle to prevent register
                  * pressure from ballooning from the extra components */
                 for (unsigned i = 0; i < ARRAY_SIZE(ins.swizzle[2]); ++i)
                         ins.swizzle[2][i] = 0;
         } else {
-                ins.load_store.arg_2 = 0x1E;
+                ins.load_store.index_reg = REGISTER_LDST_ZERO;
         }
 
         if (indirect_offset && indirect_offset->is_ssa && !indirect_shift)
                 mir_set_ubo_offset(&ins, indirect_offset, offset);
 
-        ins.load_store.arg_1 = index;
+        midgard_pack_ubo_index_imm(&ins.load_store, index);
 
         return emit_mir_instruction(ctx, ins);
 }
@@ -1202,11 +1202,11 @@ emit_global(
                         nir_dest_num_components(intr->dest);
 
                 if (bitsize <= 32)
-                        ins = m_ld_u32(srcdest, 0);
+                        ins = m_ld_32(srcdest, 0);
                 else if (bitsize <= 64)
-                        ins = m_ld_u64(srcdest, 0);
+                        ins = m_ld_64(srcdest, 0);
                 else if (bitsize <= 128)
-                        ins = m_ld_u128(srcdest, 0);
+                        ins = m_ld_128(srcdest, 0);
                 else
                         unreachable("Invalid global read size");
         } else {
@@ -1214,11 +1214,11 @@ emit_global(
                         nir_src_num_components(intr->src[0]);
 
                 if (bitsize <= 32)
-                        ins = m_st_u32(srcdest, 0);
+                        ins = m_st_32(srcdest, 0);
                 else if (bitsize <= 64)
-                        ins = m_st_u64(srcdest, 0);
+                        ins = m_st_64(srcdest, 0);
                 else if (bitsize <= 128)
-                        ins = m_st_u128(srcdest, 0);
+                        ins = m_st_128(srcdest, 0);
                 else
                         unreachable("Invalid global store size");
         }
@@ -1241,7 +1241,7 @@ emit_global(
 /* If is_shared is off, the only other possible value are globals, since
  * SSBO's are being lowered to globals through a NIR pass.
  * `image_direct_address` should be ~0 when instr is not an image_atomic
- * and the destination register of a lea_tex op when it is an image_atomic. */
+ * and the destination register of a lea_image op when it is an image_atomic. */
 static void
 emit_atomic(
         compiler_context *ctx,
@@ -1274,12 +1274,6 @@ emit_atomic(
         nir_src *src_offset = nir_get_io_offset_src(instr);
 
         if (op == midgard_op_atomic_cmpxchg) {
-                for(unsigned i = 0; i < 2; ++i)
-                        ins.swizzle[1][i] = i;
-
-                ins.src[1] = is_image ? image_direct_address : nir_src_index(ctx, src_offset);
-                ins.src_types[1] = nir_type_uint64;
-
                 unsigned xchg_val_src = is_image ? 4 : 2;
                 unsigned xchg_val = nir_src_index(ctx, &instr->src[xchg_val_src]);
                 emit_explicit_constant(ctx, xchg_val, xchg_val);
@@ -1288,8 +1282,18 @@ emit_atomic(
                 ins.src_types[2] = type | bitsize;
                 ins.src[3] = xchg_val;
 
-                if (is_shared)
-                        ins.load_store.arg_1 |= 0x6E;
+                if (is_shared) {
+                        ins.load_store.arg_reg = REGISTER_LDST_LOCAL_STORAGE_PTR;
+                        ins.load_store.arg_comp = COMPONENT_Z;
+                        ins.load_store.bitsize_toggle = true;
+                } else {
+                        for(unsigned i = 0; i < 2; ++i)
+                                ins.swizzle[1][i] = i;
+
+                        ins.src[1] = is_image ? image_direct_address :
+                                                nir_src_index(ctx, src_offset);
+                        ins.src_types[1] = nir_type_uint64;
+                }
         } else if (is_image) {
                 for(unsigned i = 0; i < 2; ++i)
                         ins.swizzle[2][i] = i;
@@ -1297,7 +1301,9 @@ emit_atomic(
                 ins.src[2] = image_direct_address;
                 ins.src_types[2] = nir_type_uint64;
 
-                ins.load_store.arg_1 |= 0x7E;
+                ins.load_store.arg_reg = REGISTER_LDST_ZERO;
+                ins.load_store.bitsize_toggle = true;
+                ins.load_store.index_format = midgard_index_address_u64;
         } else
                 mir_set_offset(ctx, &ins, src_offset, is_shared ? LDST_SHARED : LDST_GLOBAL);
 
@@ -1316,7 +1322,7 @@ emit_varying_read(
         /* XXX: Half-floats? */
         /* TODO: swizzle, mask */
 
-        midgard_instruction ins = m_ld_vary_32(dest, offset);
+        midgard_instruction ins = m_ld_vary_32(dest, PACK_LDST_ATTRIB_OFS(offset));
         ins.mask = mask_of(nr_comp);
         ins.dest_type = type;
 
@@ -1328,23 +1334,22 @@ emit_varying_read(
         for (unsigned i = 0; i < ARRAY_SIZE(ins.swizzle[0]); ++i)
                 ins.swizzle[0][i] = MIN2(i + component, COMPONENT_W);
 
-        midgard_varying_parameter p = {
-                .is_varying = 1,
-                .interpolation = midgard_interp_default,
-                .flat = flat,
-        };
 
-        unsigned u;
-        memcpy(&u, &p, sizeof(p));
-        ins.load_store.varying_parameters = u;
+        midgard_varying_params p = {
+                .flat_shading = flat,
+                .perspective_correction = 1,
+                .interpolate_sample = true,
+        };
+        midgard_pack_varying_params(&ins.load_store, p);
 
         if (indirect_offset) {
                 ins.src[2] = nir_src_index(ctx, indirect_offset);
                 ins.src_types[2] = nir_type_uint32;
         } else
-                ins.load_store.arg_2 = 0x1E;
+                ins.load_store.index_reg = REGISTER_LDST_ZERO;
 
-        ins.load_store.arg_1 = 0x9E;
+        ins.load_store.arg_reg = REGISTER_LDST_ZERO;
+        ins.load_store.index_format = midgard_index_address_u32;
 
         /* Use the type appropriate load */
         switch (type) {
@@ -1370,7 +1375,7 @@ emit_varying_read(
 }
 
 
-/* If `is_atomic` is true, we emit a `lea_tex` since midgard doesn't not have special
+/* If `is_atomic` is true, we emit a `lea_image` since midgard doesn't not have special
  * image_atomic opcodes. The caller can then use that address to emit a normal atomic opcode. */
 static midgard_instruction
 emit_image_op(compiler_context *ctx, nir_intrinsic_instr *instr, bool is_atomic)
@@ -1402,16 +1407,16 @@ emit_image_op(compiler_context *ctx, nir_intrinsic_instr *instr, bool is_atomic)
                 emit_explicit_constant(ctx, val, val);
 
                 nir_alu_type type = nir_intrinsic_src_type(instr);
-                ins = st_image(type, val, address);
+                ins = st_image(type, val, PACK_LDST_ATTRIB_OFS(address));
                 nir_alu_type base_type = nir_alu_type_get_base_type(type);
                 ins.src_types[0] = base_type | nir_src_bit_size(instr->src[3]);
-        } else if (is_atomic) { /* emit lea_tex */
+        } else if (is_atomic) { /* emit lea_image */
                 unsigned dest = make_compiler_temp_reg(ctx);
-                ins = m_lea_tex(dest, address);
+                ins = m_lea_image(dest, PACK_LDST_ATTRIB_OFS(address));
                 ins.mask = mask_of(2); /* 64-bit memory address */
         } else { /* emit ld_image_* */
                 nir_alu_type type = nir_intrinsic_dest_type(instr);
-                ins = ld_image(type, nir_dest_index(&instr->dest), address);
+                ins = ld_image(type, nir_dest_index(&instr->dest), PACK_LDST_ATTRIB_OFS(address));
                 ins.mask = mask_of(nir_intrinsic_dest_components(instr));
                 ins.dest_type = type;
         }
@@ -1420,7 +1425,7 @@ emit_image_op(compiler_context *ctx, nir_intrinsic_instr *instr, bool is_atomic)
         ins.src[1] = coord_reg;
         ins.src_types[1] = nir_type_uint16;
         if (nr_dim == 3 || is_array) {
-                ins.load_store.arg_1 |= 0x20;
+                ins.load_store.bitsize_toggle = true;
         }
 
         /* Image index reg */
@@ -1428,7 +1433,7 @@ emit_image_op(compiler_context *ctx, nir_intrinsic_instr *instr, bool is_atomic)
                 ins.src[2] = nir_src_index(ctx, index);
                 ins.src_types[2] = nir_type_uint32;
         } else
-                ins.load_store.arg_2 = 0x1E;
+                ins.load_store.index_reg = REGISTER_LDST_ZERO;
 
         emit_mir_instruction(ctx, ins);
 
@@ -1441,9 +1446,9 @@ emit_attr_read(
         unsigned dest, unsigned offset,
         unsigned nr_comp, nir_alu_type t)
 {
-        midgard_instruction ins = m_ld_attr_32(dest, offset);
-        ins.load_store.arg_1 = 0x1E;
-        ins.load_store.arg_2 = 0x1E;
+        midgard_instruction ins = m_ld_attr_32(dest, PACK_LDST_ATTRIB_OFS(offset));
+        ins.load_store.arg_reg = REGISTER_LDST_ZERO;
+        ins.load_store.index_reg = REGISTER_LDST_ZERO;
         ins.mask = mask_of(nr_comp);
 
         /* Use the type appropriate load */
@@ -1493,12 +1498,12 @@ compute_builtin_arg(nir_op op)
 {
         switch (op) {
         case nir_intrinsic_load_work_group_id:
-                return 0x14;
+                return REGISTER_LDST_GROUP_ID;
         case nir_intrinsic_load_local_invocation_id:
-                return 0x10;
+                return REGISTER_LDST_LOCAL_THREAD_ID;
         case nir_intrinsic_load_global_invocation_id:
         case nir_intrinsic_load_global_invocation_id_zero_base:
-                return 0x18;
+                return REGISTER_LDST_GLOBAL_THREAD_ID;
         default:
                 unreachable("Invalid compute paramater loaded");
         }
@@ -1564,10 +1569,10 @@ static void
 emit_compute_builtin(compiler_context *ctx, nir_intrinsic_instr *instr)
 {
         unsigned reg = nir_dest_index(&instr->dest);
-        midgard_instruction ins = m_ld_compute_id(reg, 0);
+        midgard_instruction ins = m_ldst_mov(reg, 0);
         ins.mask = mask_of(3);
         ins.swizzle[0][3] = COMPONENT_X; /* xyzx */
-        ins.load_store.arg_1 = compute_builtin_arg(instr->intrinsic);
+        ins.load_store.arg_reg = compute_builtin_arg(instr->intrinsic);
         emit_mir_instruction(ctx, ins);
 }
 
@@ -1596,10 +1601,10 @@ emit_special(compiler_context *ctx, nir_intrinsic_instr *instr, unsigned idx)
 {
         unsigned reg = nir_dest_index(&instr->dest);
 
-        midgard_instruction ld = m_ld_color_buffer_32u(reg, 0);
-        ld.op = midgard_op_ld_color_buffer_32u_old;
-        ld.load_store.address = idx;
-        ld.load_store.arg_2 = 0x1E;
+        midgard_instruction ld = m_ld_tilebuffer_raw(reg, 0);
+        ld.op = midgard_op_ld_special_32u;
+        ld.load_store.signed_offset = PACK_LDST_SELECTOR_OFS(idx);
+        ld.load_store.index_reg = REGISTER_LDST_ZERO;
 
         for (int i = 0; i < 4; ++i)
                 ld.swizzle[0][i] = COMPONENT_X;
@@ -1614,7 +1619,7 @@ emit_control_barrier(compiler_context *ctx)
                 .type = TAG_TEXTURE_4,
                 .dest = ~0,
                 .src = { ~0, ~0, ~0, ~0 },
-                .op = TEXTURE_OP_BARRIER,
+                .op = midgard_tex_op_barrier,
         };
 
         emit_mir_instruction(ctx, ins);
@@ -1788,22 +1793,27 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                 /* T720 and below use different blend opcodes with slightly
                  * different semantics than T760 and up */
 
-                midgard_instruction ld = m_ld_color_buffer_32u(reg, 0);
+                midgard_instruction ld = m_ld_tilebuffer_raw(reg, 0);
 
-                ld.load_store.arg_2 = output_load_rt_addr(ctx, instr);
+                unsigned target = output_load_rt_addr(ctx, instr);
+                ld.load_store.index_comp = target & 0x3;
+                ld.load_store.index_reg = target >> 2;
 
                 if (nir_src_is_const(instr->src[0])) {
-                        ld.load_store.arg_1 = nir_src_as_uint(instr->src[0]);
+                        unsigned sample = nir_src_as_uint(instr->src[0]);
+                        ld.load_store.arg_comp = sample & 0x3;
+                        ld.load_store.arg_reg = sample >> 2;
                 } else {
-                        ld.load_store.varying_parameters = 2;
+                        /* Enable sample index via register. */
+                        ld.load_store.signed_offset |= 1;
                         ld.src[1] = nir_src_index(ctx, &instr->src[0]);
                         ld.src_types[1] = nir_type_int32;
                 }
 
                 if (ctx->quirks & MIDGARD_OLD_BLEND) {
-                        ld.op = midgard_op_ld_color_buffer_32u_old;
-                        ld.load_store.address = 16;
-                        ld.load_store.arg_2 = 0x1E;
+                        ld.op = midgard_op_ld_special_32u;
+                        ld.load_store.signed_offset = PACK_LDST_SELECTOR_OFS(16);
+                        ld.load_store.index_reg = REGISTER_LDST_ZERO;
                 }
 
                 emit_mir_instruction(ctx, ld);
@@ -1817,22 +1827,24 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
 
                 midgard_instruction ld;
                 if (bits == 16)
-                        ld = m_ld_color_buffer_as_fp16(reg, 0);
+                        ld = m_ld_tilebuffer_16f(reg, 0);
                 else
-                        ld = m_ld_color_buffer_as_fp32(reg, 0);
+                        ld = m_ld_tilebuffer_32f(reg, 0);
 
-                ld.load_store.arg_2 = output_load_rt_addr(ctx, instr);
+                unsigned index = output_load_rt_addr(ctx, instr);
+                ld.load_store.index_comp = index & 0x3;
+                ld.load_store.index_reg = index >> 2;
 
                 for (unsigned c = 4; c < 16; ++c)
                         ld.swizzle[0][c] = 0;
 
                 if (ctx->quirks & MIDGARD_OLD_BLEND) {
                         if (bits == 16)
-                                ld.op = midgard_op_ld_color_buffer_as_fp16_old;
+                                ld.op = midgard_op_ld_special_16f;
                         else
-                                ld.op = midgard_op_ld_color_buffer_as_fp32_old;
-                        ld.load_store.address = 1;
-                        ld.load_store.arg_2 = 0x1E;
+                                ld.op = midgard_op_ld_special_32f;
+                        ld.load_store.signed_offset = PACK_LDST_SELECTOR_OFS(1);
+                        ld.load_store.index_reg = REGISTER_LDST_ZERO;
                 }
 
                 emit_mir_instruction(ctx, ld);
@@ -1924,9 +1936,10 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                         unsigned dst_component = nir_intrinsic_component(instr);
                         unsigned nr_comp = nir_src_num_components(instr->src[0]);
 
-                        midgard_instruction st = m_st_vary_32(reg, offset);
-                        st.load_store.arg_1 = 0x9E;
-                        st.load_store.arg_2 = 0x1E;
+                        midgard_instruction st = m_st_vary_32(reg, PACK_LDST_ATTRIB_OFS(offset));
+                        st.load_store.arg_reg = REGISTER_LDST_ZERO;
+                        st.load_store.index_format = midgard_index_address_u32;
+                        st.load_store.index_reg = REGISTER_LDST_ZERO;
 
                         switch (nir_alu_type_get_base_type(nir_intrinsic_src_type(instr))) {
                         case nir_type_uint:
@@ -2200,7 +2213,7 @@ set_tex_coord(compiler_context *ctx, nir_tex_instr *instr,
 
         if (instr->sampler_dim == GLSL_SAMPLER_DIM_CUBE) {
                 /* texelFetch is undefined on samplerCube */
-                assert(ins->op != TEXTURE_OP_TEXEL_FETCH);
+                assert(ins->op != midgard_tex_op_fetch);
 
                 ins->src[1] = make_compiler_temp_reg(ctx);
 
@@ -2211,7 +2224,7 @@ set_tex_coord(compiler_context *ctx, nir_tex_instr *instr,
                 ld.src[1] = coords;
                 ld.src_types[1] = ins->src_types[1];
                 ld.mask = 0x3; /* xy */
-                ld.load_store.arg_1 = 0x20;
+                ld.load_store.bitsize_toggle = true;
                 ld.swizzle[1][3] = COMPONENT_X;
                 emit_mir_instruction(ctx, ld);
 
@@ -2255,7 +2268,7 @@ set_tex_coord(compiler_context *ctx, nir_tex_instr *instr,
          * of texture dimensionality, which means it's necessary to zero the
          * unused components to keep everything happy.
          */
-        if (ins->op == TEXTURE_OP_TEXEL_FETCH &&
+        if (ins->op == midgard_tex_op_fetch &&
             (written_mask | write_mask) != 0xF) {
                 if (ins->src[1] == ~0)
                         ins->src[1] = make_compiler_temp_reg(ctx);
@@ -2348,7 +2361,7 @@ emit_texop_native(compiler_context *ctx, nir_tex_instr *instr,
                 case nir_tex_src_lod: {
                         /* Try as a constant if we can */
 
-                        bool is_txf = midgard_texop == TEXTURE_OP_TEXEL_FETCH;
+                        bool is_txf = midgard_texop == midgard_tex_op_fetch;
                         if (!is_txf && pan_attach_constant_bias(ctx, instr->src[i].src, &ins.texture))
                                 break;
 
@@ -2397,15 +2410,15 @@ emit_tex(compiler_context *ctx, nir_tex_instr *instr)
         switch (instr->op) {
         case nir_texop_tex:
         case nir_texop_txb:
-                emit_texop_native(ctx, instr, TEXTURE_OP_NORMAL);
+                emit_texop_native(ctx, instr, midgard_tex_op_normal);
                 break;
         case nir_texop_txl:
         case nir_texop_tg4:
-                emit_texop_native(ctx, instr, TEXTURE_OP_LOD);
+                emit_texop_native(ctx, instr, midgard_tex_op_gradient);
                 break;
         case nir_texop_txf:
         case nir_texop_txf_ms:
-                emit_texop_native(ctx, instr, TEXTURE_OP_TEXEL_FETCH);
+                emit_texop_native(ctx, instr, midgard_tex_op_fetch);
                 break;
         case nir_texop_txs:
                 emit_sysval_read(ctx, &instr->instr, 4, 0);
@@ -2545,8 +2558,8 @@ max_bitsize_for_alu(midgard_instruction *ins)
         case midgard_alu_op_fsqrt:
         case midgard_alu_op_frcp:
         case midgard_alu_op_frsqrt:
-        case midgard_alu_op_fsin:
-        case midgard_alu_op_fcos:
+        case midgard_alu_op_fsinpi:
+        case midgard_alu_op_fcospi:
         case midgard_alu_op_fexp2:
         case midgard_alu_op_flog2:
                 max_bitsize = MAX2(max_bitsize, 32);
@@ -2558,7 +2571,7 @@ max_bitsize_for_alu(midgard_instruction *ins)
 
         /* High implies computing at a higher bitsize, e.g umul_high of 32-bit
          * requires computing at 64-bit */
-        if (midgard_is_integer_out_op(ins->op) && ins->outmod == midgard_outmod_int_high) {
+        if (midgard_is_integer_out_op(ins->op) && ins->outmod == midgard_outmod_keephi) {
                 max_bitsize *= 2;
                 assert(max_bitsize <= 64);
         }
@@ -3040,7 +3053,7 @@ midgard_compile_shader_nir(nir_shader *nir,
 
         /* Initialize at a global (not block) level hash tables */
 
-        ctx->ssa_constants = _mesa_hash_table_u64_create(NULL);
+        ctx->ssa_constants = _mesa_hash_table_u64_create(ctx);
 
         /* Lower gl_Position pre-optimisation, but after lowering vars to ssa
          * (so we don't accidentally duplicate the epilogue since mesa/st has

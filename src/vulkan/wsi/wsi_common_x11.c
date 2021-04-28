@@ -785,8 +785,10 @@ struct x11_image {
    struct wsi_image                          base;
    xcb_pixmap_t                              pixmap;
    bool                                      busy;
+   bool                                      present_queued;
    struct xshmfence *                        shm_fence;
    uint32_t                                  sync_fence;
+   uint32_t                                  serial;
 };
 
 struct x11_swapchain {
@@ -891,7 +893,7 @@ x11_handle_dri3_present_event(struct x11_swapchain *chain,
 
       if (config->width != chain->extent.width ||
           config->height != chain->extent.height)
-         return VK_ERROR_OUT_OF_DATE_KHR;
+         return VK_SUBOPTIMAL_KHR;
 
       break;
    }
@@ -915,8 +917,15 @@ x11_handle_dri3_present_event(struct x11_swapchain *chain,
 
    case XCB_PRESENT_EVENT_COMPLETE_NOTIFY: {
       xcb_present_complete_notify_event_t *complete = (void *) event;
-      if (complete->kind == XCB_PRESENT_COMPLETE_KIND_PIXMAP)
+      if (complete->kind == XCB_PRESENT_COMPLETE_KIND_PIXMAP) {
+         unsigned i;
+         for (i = 0; i < chain->base.image_count; i++) {
+            struct x11_image *image = &chain->images[i];
+            if (image->present_queued && image->serial == complete->serial)
+               image->present_queued = false;
+         }
          chain->last_present_msc = complete->msc;
+      }
 
       VkResult result = VK_SUCCESS;
 
@@ -1096,12 +1105,14 @@ x11_present_to_x11_dri3(struct x11_swapchain *chain, uint32_t image_index,
    assert(chain->sent_image_count <= chain->base.image_count);
 
    ++chain->send_sbc;
+   image->present_queued = true;
+   image->serial = (uint32_t) chain->send_sbc;
 
    xcb_void_cookie_t cookie =
       xcb_present_pixmap(chain->conn,
                          chain->window,
                          image->pixmap,
-                         (uint32_t) chain->send_sbc,
+                         image->serial,
                          0,                                    /* valid */
                          0,                                    /* update */
                          0,                                    /* x_off */
@@ -1252,7 +1263,7 @@ x11_manage_fifo_queues(void *state)
           * image that can be acquired by the client afterwards. This ensures we
           * can pull on the present-queue on the next loop.
           */
-         while (chain->last_present_msc < target_msc ||
+         while (chain->images[image_index].present_queued ||
                 chain->sent_image_count == chain->base.image_count) {
             xcb_generic_event_t *event =
                xcb_wait_for_special_event(chain->conn, chain->special_event);
@@ -1580,6 +1591,8 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    if (geometry == NULL)
       return VK_ERROR_SURFACE_LOST_KHR;
    const uint32_t bit_depth = geometry->depth;
+   const uint16_t cur_width = geometry->width;
+   const uint16_t cur_height = geometry->height;
    free(geometry);
 
    size_t size = sizeof(*chain) + num_images * sizeof(chain->images[0]);
@@ -1610,6 +1623,9 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    chain->has_present_queue = false;
    chain->status = VK_SUCCESS;
    chain->has_dri3_modifiers = wsi_conn->has_dri3_modifiers;
+
+   if (chain->extent.width != cur_width || chain->extent.height != cur_height)
+       chain->status = VK_SUBOPTIMAL_KHR;
 
    /* If we are reallocating from an old swapchain, then we inherit its
     * last completion mode, to ensure we don't get into reallocation

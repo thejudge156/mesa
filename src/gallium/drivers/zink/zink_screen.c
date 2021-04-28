@@ -413,9 +413,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return screen->info.props.limits.maxViewports;
 
    case PIPE_CAP_IMAGE_LOAD_FORMATTED:
-      return screen->info.feats.features.shaderStorageImageExtendedFormats &&
-             screen->info.feats.features.shaderStorageImageReadWithoutFormat &&
-             screen->info.feats.features.shaderStorageImageWriteWithoutFormat;
+      return screen->info.feats.features.shaderStorageImageReadWithoutFormat;
 
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
       return 1;
@@ -752,9 +750,8 @@ zink_get_shader_param(struct pipe_screen *pscreen,
       return (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_TGSI);
 
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-      if (screen->info.feats.features.shaderStorageImageExtendedFormats ||
-          (screen->info.feats.features.shaderStorageImageWriteWithoutFormat &&
-           screen->info.feats.features.shaderStorageImageReadWithoutFormat))
+      if (screen->info.feats.features.shaderStorageImageExtendedFormats &&
+          screen->info.feats.features.shaderStorageImageWriteWithoutFormat)
          return MIN2(screen->info.props.limits.maxPerStageDescriptorStorageImages,
                      PIPE_MAX_SHADER_IMAGES);
       return 0;
@@ -879,8 +876,9 @@ zink_is_format_supported(struct pipe_screen *pscreen,
          !(props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
             return false;
 
-      if (bind & PIPE_BIND_SAMPLER_REDUCTION_MINMAX)
-         return props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
+      if (bind & PIPE_BIND_SAMPLER_REDUCTION_MINMAX &&
+          !(props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT))
+         return false;
 
       if ((bind & PIPE_BIND_SAMPLER_VIEW) || (bind & PIPE_BIND_RENDER_TARGET)) {
          /* if this is a 3-component texture, force gallium to give us 4 components by rejecting this one */
@@ -1212,6 +1210,11 @@ load_device_extensions(struct zink_screen *screen)
    }
 #endif // VK_EXTX_PORTABILITY_SUBSET_EXTENSION_NAME
 
+   if (screen->info.have_KHR_swapchain) {
+      GET_PROC_ADDR(CreateSwapchainKHR);
+      GET_PROC_ADDR(DestroySwapchainKHR);
+   }
+
    return true;
 }
 
@@ -1366,6 +1369,7 @@ zink_screen_init_semaphore(struct zink_screen *screen)
        */
       if (screen->prev_sem)
          vkDestroySemaphore(screen->dev, screen->prev_sem, NULL);
+      screen->prev_sem = screen->sem;
       screen->sem = sem;
       return true;
    }
@@ -1564,6 +1568,8 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    screen->total_video_mem = get_video_mem(screen);
    if (!os_get_total_physical_memory(&screen->total_mem))
       goto fail;
+   if (screen->info.have_KHR_timeline_semaphore)
+      zink_screen_init_semaphore(screen);
 
    simple_mtx_init(&screen->surface_mtx, mtx_plain);
    simple_mtx_init(&screen->bufferview_mtx, mtx_plain);

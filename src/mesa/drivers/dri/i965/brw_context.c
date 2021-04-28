@@ -46,6 +46,7 @@
 #include "main/stencil.h"
 #include "main/state.h"
 #include "main/spirv_extensions.h"
+#include "main/externalobjects.h"
 
 #include "vbo/vbo.h"
 
@@ -79,6 +80,7 @@
 #include "isl/isl.h"
 
 #include "common/intel_defines.h"
+#include "common/intel_uuid.h"
 
 #include "compiler/spirv/nir_spirv.h"
 /***************************************
@@ -155,6 +157,29 @@ brw_set_background_context(struct gl_context *ctx,
     * backgroundCallable is not NULL.
     */
    backgroundCallable->setBackgroundContext(driContext->loaderPrivate);
+}
+
+static void
+brw_delete_memoryobj(struct gl_context *ctx, struct gl_memory_object *memObj)
+{
+   struct brw_memory_object *memory_object = brw_memory_object(memObj);
+   brw_bo_unreference(memory_object->bo);
+   _mesa_delete_memory_object(ctx, memObj);
+}
+
+static void
+brw_import_memoryobj_fd(struct gl_context *ctx,
+                       struct gl_memory_object *obj,
+                       GLuint64 size,
+                       int fd)
+{
+   struct brw_context *brw = brw_context(ctx);
+   struct brw_memory_object *memory_object = brw_memory_object(obj);
+
+   memory_object->bo = brw_bo_gem_create_from_prime(brw->bufmgr, fd);
+   brw_bo_reference(memory_object->bo);
+   assert(memory_object->bo->size >= size);
+   close(fd);
 }
 
 static void
@@ -324,6 +349,29 @@ brw_finish(struct gl_context * ctx)
 }
 
 static void
+brw_get_device_uuid(struct gl_context *ctx, char *uuid)
+{
+   struct brw_context *brw = brw_context(ctx);
+   struct brw_screen *screen = brw->screen;
+
+   assert(GL_UUID_SIZE_EXT >= PIPE_UUID_SIZE);
+   memset(uuid, 0, GL_UUID_SIZE_EXT);
+   intel_uuid_compute_device_id((uint8_t *)uuid, &screen->isl_dev, PIPE_UUID_SIZE);
+}
+
+
+static void
+brw_get_driver_uuid(struct gl_context *ctx, char *uuid)
+{
+   struct brw_context *brw = brw_context(ctx);
+   struct brw_screen *screen = brw->screen;
+
+   assert(GL_UUID_SIZE_EXT >= PIPE_UUID_SIZE);
+   memset(uuid, 0, GL_UUID_SIZE_EXT);
+   intel_uuid_compute_driver_id((uint8_t *)uuid, &screen->devinfo, PIPE_UUID_SIZE);
+}
+
+static void
 brw_init_driver_functions(struct brw_context *brw,
                           struct dd_function_table *functions)
 {
@@ -412,6 +460,11 @@ brw_init_driver_functions(struct brw_context *brw,
    }
 
    functions->SetBackgroundContext = brw_set_background_context;
+
+   functions->DeleteMemoryObject = brw_delete_memoryobj;
+   functions->ImportMemoryObjectFd = brw_import_memoryobj_fd;
+   functions->GetDeviceUuid = brw_get_device_uuid;
+   functions->GetDriverUuid = brw_get_driver_uuid;
 }
 
 static void

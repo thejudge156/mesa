@@ -127,6 +127,9 @@ struct panfrost_batch {
         /* Indirect draw data */
         struct panfrost_ptr indirect_draw_ctx;
         unsigned indirect_draw_job_id;
+
+        /* Keep the num_work_groups sysval around for indirect dispatch */
+        mali_ptr num_wg_sysval[3];
 };
 
 /* Functions for managing the above */
@@ -195,9 +198,6 @@ panfrost_batch_intersection_scissor(struct panfrost_batch *batch,
 
 mali_ptr
 panfrost_batch_get_bifrost_tiler(struct panfrost_batch *batch, unsigned vertex_count);
-
-mali_ptr
-panfrost_batch_reserve_framebuffer(struct panfrost_batch *batch);
 
 mali_ptr
 panfrost_batch_reserve_tls(struct panfrost_batch *batch, bool compute);

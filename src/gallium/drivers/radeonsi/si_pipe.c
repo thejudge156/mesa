@@ -272,8 +272,10 @@ static void si_destroy_context(struct pipe_context *context)
       for (unsigned j = 0; j < ARRAY_SIZE(sctx->cs_clear_dcc_msaa[i]); j++) {
          for (unsigned k = 0; k < ARRAY_SIZE(sctx->cs_clear_dcc_msaa[i][j]); k++) {
             for (unsigned l = 0; l < ARRAY_SIZE(sctx->cs_clear_dcc_msaa[i][j][k]); l++) {
-               if (sctx->cs_clear_dcc_msaa[i][j][k][l])
-                  sctx->b.delete_compute_state(&sctx->b, sctx->cs_clear_dcc_msaa[i][j][k][l]);
+               for (unsigned m = 0; m < ARRAY_SIZE(sctx->cs_clear_dcc_msaa[i][j][k][l]); m++) {
+                  if (sctx->cs_clear_dcc_msaa[i][j][k][l][m])
+                     sctx->b.delete_compute_state(&sctx->b, sctx->cs_clear_dcc_msaa[i][j][k][l][m]);
+               }
             }
          }
       }
@@ -281,17 +283,6 @@ static void si_destroy_context(struct pipe_context *context)
 
    if (sctx->blitter)
       util_blitter_destroy(sctx->blitter);
-
-   /* Release DCC stats. */
-   for (int i = 0; i < ARRAY_SIZE(sctx->dcc_stats); i++) {
-      assert(!sctx->dcc_stats[i].query_active);
-
-      for (int j = 0; j < ARRAY_SIZE(sctx->dcc_stats[i].ps_stats); j++)
-         if (sctx->dcc_stats[i].ps_stats[j])
-            sctx->b.destroy_query(&sctx->b, sctx->dcc_stats[i].ps_stats[j]);
-
-      si_texture_reference(&sctx->dcc_stats[i].tex, NULL);
-   }
 
    if (sctx->query_result_shader)
       sctx->b.delete_compute_state(&sctx->b, sctx->query_result_shader);
@@ -620,6 +611,8 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
    if (sscreen->info.has_hw_decode) {
       sctx->b.create_video_codec = si_uvd_create_decoder;
       sctx->b.create_video_buffer = si_video_buffer_create;
+      if (screen->resource_create_with_modifiers)
+         sctx->b.create_video_buffer_with_modifiers = si_video_buffer_create_with_modifiers;
    } else {
       sctx->b.create_video_codec = vl_create_decoder;
       sctx->b.create_video_buffer = vl_video_buffer_create;

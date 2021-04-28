@@ -223,7 +223,9 @@ vn_AllocateMemory(VkDevice device,
          vk_free(alloc, mem);
          return vn_error(dev->instance, result);
       }
+      vn_instance_roundtrip(dev->instance);
 
+      /* XXX fix VkImportMemoryResourceInfoMESA to support memory planes */
       const VkImportMemoryResourceInfoMESA import_memory_resource_info = {
          .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_RESOURCE_INFO_MESA,
          .pNext = pAllocateInfo->pNext,
@@ -243,6 +245,8 @@ vn_AllocateMemory(VkDevice device,
          return vn_error(dev->instance, result);
       }
 
+      /* need to close import fd on success to avoid fd leak */
+      close(import_info->fd);
       mem->base_bo = bo;
    } else if (suballocate) {
       result = vn_device_memory_pool_alloc(
@@ -433,6 +437,7 @@ vn_GetMemoryFdPropertiesKHR(VkDevice device,
                                                   fd, 0, handleType, &bo);
    if (result != VK_SUCCESS)
       return vn_error(dev->instance, result);
+   vn_instance_roundtrip(dev->instance);
 
    VkMemoryResourcePropertiesMESA memory_resource_properties = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_RESOURCE_PROPERTIES_MESA,

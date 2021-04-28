@@ -35,7 +35,7 @@
 #include "ac_binary.h"
 #include "ac_exp_param.h"
 #include "ac_llvm_build.h"
-#include "ac_llvm_util.h"
+#include "ac_nir_to_llvm.h"
 #include "ac_shader_abi.h"
 #include "ac_shader_util.h"
 #include "sid.h"
@@ -223,10 +223,10 @@ radv_load_resource(struct ac_shader_abi *abi, LLVMValueRef index, unsigned desc_
       offset = ac_build_imad(&ctx->ac, index, stride, offset);
    }
 
-   desc_ptr = LLVMBuildGEP(ctx->ac.builder, desc_ptr, &offset, 1, "");
-   desc_ptr = ac_cast_ptr(&ctx->ac, desc_ptr, ctx->ac.v4i32);
+   desc_ptr = LLVMBuildPtrToInt(ctx->ac.builder, desc_ptr, ctx->ac.i32, "");
 
-   return desc_ptr;
+   LLVMValueRef res[] = {desc_ptr, offset, ctx->ac.i32_0};
+   return ac_build_gather_values(&ctx->ac, res, 3);
 }
 
 static uint32_t
@@ -415,25 +415,33 @@ radv_load_base_vertex(struct ac_shader_abi *abi, bool non_indexed_is_zero)
 }
 
 static LLVMValueRef
+get_desc_ptr(struct radv_shader_context *ctx, LLVMValueRef ptr, bool non_uniform)
+{
+   LLVMValueRef set_ptr = ac_llvm_extract_elem(&ctx->ac, ptr, 0);
+   LLVMValueRef offset = ac_llvm_extract_elem(&ctx->ac, ptr, 1);
+   ptr = LLVMBuildNUWAdd(ctx->ac.builder, set_ptr, offset, "");
+
+   unsigned addr_space = AC_ADDR_SPACE_CONST_32BIT;
+   if (non_uniform) {
+      /* 32-bit seems to always use SMEM. addrspacecast from 32-bit -> 64-bit is broken. */
+      LLVMValueRef dwords[] = {ptr,
+                               LLVMConstInt(ctx->ac.i32, ctx->args->options->address32_hi, false)};
+      ptr = ac_build_gather_values(&ctx->ac, dwords, 2);
+      ptr = LLVMBuildBitCast(ctx->ac.builder, ptr, ctx->ac.i64, "");
+      addr_space = AC_ADDR_SPACE_CONST;
+   }
+   return LLVMBuildIntToPtr(ctx->ac.builder, ptr, LLVMPointerType(ctx->ac.v4i32, addr_space), "");
+}
+
+static LLVMValueRef
 radv_load_ssbo(struct ac_shader_abi *abi, LLVMValueRef buffer_ptr, bool write, bool non_uniform)
 {
    struct radv_shader_context *ctx = radv_shader_context_from_abi(abi);
    LLVMValueRef result;
 
+   buffer_ptr = get_desc_ptr(ctx, buffer_ptr, non_uniform);
    if (!non_uniform)
       LLVMSetMetadata(buffer_ptr, ctx->ac.uniform_md_kind, ctx->ac.empty_md);
-
-   if (non_uniform &&
-       LLVMGetPointerAddressSpace(LLVMTypeOf(buffer_ptr)) == AC_ADDR_SPACE_CONST_32BIT) {
-      /* 32-bit seems to always use SMEM. addrspacecast from 32-bit -> 64-bit is broken. */
-      buffer_ptr = LLVMBuildPtrToInt(ctx->ac.builder, buffer_ptr, ctx->ac.i32, ""),
-      buffer_ptr = LLVMBuildZExt(ctx->ac.builder, buffer_ptr, ctx->ac.i64, "");
-      uint64_t hi = (uint64_t)ctx->args->options->address32_hi << 32;
-      buffer_ptr =
-         LLVMBuildOr(ctx->ac.builder, buffer_ptr, LLVMConstInt(ctx->ac.i64, hi, false), "");
-      buffer_ptr = LLVMBuildIntToPtr(ctx->ac.builder, buffer_ptr,
-                                     LLVMPointerType(ctx->ac.v4i32, AC_ADDR_SPACE_CONST), "");
-   }
 
    result = LLVMBuildLoad(ctx->ac.builder, buffer_ptr, "");
    LLVMSetMetadata(result, ctx->ac.invariant_load_md_kind, ctx->ac.empty_md);
@@ -453,6 +461,10 @@ radv_load_ubo(struct ac_shader_abi *abi, unsigned desc_set, unsigned binding, bo
       struct radv_descriptor_set_layout *layout = pipeline_layout->set[desc_set].layout;
 
       if (layout->binding[binding].type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT) {
+         LLVMValueRef set_ptr = ac_llvm_extract_elem(&ctx->ac, buffer_ptr, 0);
+         LLVMValueRef offset = ac_llvm_extract_elem(&ctx->ac, buffer_ptr, 1);
+         buffer_ptr = LLVMBuildNUWAdd(ctx->ac.builder, set_ptr, offset, "");
+
          uint32_t desc_type =
             S_008F0C_DST_SEL_X(V_008F0C_SQ_SEL_X) | S_008F0C_DST_SEL_Y(V_008F0C_SQ_SEL_Y) |
             S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W);
@@ -477,6 +489,7 @@ radv_load_ubo(struct ac_shader_abi *abi, unsigned desc_set, unsigned binding, bo
       }
    }
 
+   buffer_ptr = get_desc_ptr(ctx, buffer_ptr, false);
    LLVMSetMetadata(buffer_ptr, ctx->ac.uniform_md_kind, ctx->ac.empty_md);
 
    result = LLVMBuildLoad(ctx->ac.builder, buffer_ptr, "");
@@ -583,6 +596,19 @@ radv_get_sampler_desc(struct ac_shader_abi *abi, unsigned descriptor_set, unsign
 
       for (unsigned i = 4; i < 8; ++i)
          components[i] = ac_llvm_extract_elem(&ctx->ac, descriptor2, i);
+      descriptor = ac_build_gather_values(&ctx->ac, components, 8);
+   } else if (desc_type == AC_DESC_IMAGE &&
+              ctx->args->options->has_image_load_dcc_bug &&
+              image && !write) {
+      LLVMValueRef components[8];
+
+      for (unsigned i = 0; i < 8; i++)
+         components[i] = ac_llvm_extract_elem(&ctx->ac, descriptor, i);
+
+      /* WRITE_COMPRESS_ENABLE must be 0 for all image loads to workaround a hardware bug. */
+      components[6] = LLVMBuildAnd(ctx->ac.builder, components[6],
+                                   LLVMConstInt(ctx->ac.i32, C_00A018_WRITE_COMPRESS_ENABLE, false), "");
+
       descriptor = ac_build_gather_values(&ctx->ac, components, 8);
    }
 
@@ -2108,8 +2134,12 @@ handle_ngg_outputs_post_2(struct radv_shader_context *ctx)
          ac_build_s_barrier(&ctx->ac);
 
       ac_build_ifcc(&ctx->ac, is_gs_thread, 5400);
-      /* Extract the PROVOKING_VTX_INDEX field. */
+
       LLVMValueRef provoking_vtx_in_prim = LLVMConstInt(ctx->ac.i32, 0, false);
+
+      /* For provoking vertex last mode, use num_vtx_in_prim - 1. */
+      if (ctx->args->options->key.vs.provoking_vtx_last)
+         provoking_vtx_in_prim = LLVMConstInt(ctx->ac.i32, ctx->args->options->key.vs.outprim, false);
 
       /* provoking_vtx_index = vtxindex[provoking_vtx_in_prim]; */
       LLVMValueRef indices = ac_build_gather_values(&ctx->ac, vtxindex, 3);
@@ -2451,20 +2481,15 @@ gfx10_ngg_gs_emit_epilogue_2(struct radv_shader_context *ctx)
          prim.edgeflag[i] = ctx->ac.i1false;
       }
 
-      /* Geometry shaders output triangle strips, but NGG expects
-       * triangles. We need to change the vertex order for odd
-       * triangles to get correct front/back facing by swapping 2
-       * vertex indices, but we also have to keep the provoking
-       * vertex in the same place.
-       */
+      /* Geometry shaders output triangle strips, but NGG expects triangles. */
       if (verts_per_prim == 3) {
          LLVMValueRef is_odd = LLVMBuildLShr(builder, flags, ctx->ac.i8_1, "");
          is_odd = LLVMBuildTrunc(builder, is_odd, ctx->ac.i1, "");
 
-         struct ac_ngg_prim in = prim;
-         prim.index[0] = in.index[0];
-         prim.index[1] = LLVMBuildSelect(builder, is_odd, in.index[2], in.index[1], "");
-         prim.index[2] = LLVMBuildSelect(builder, is_odd, in.index[1], in.index[2], "");
+         LLVMValueRef flatshade_first =
+            LLVMConstInt(ctx->ac.i32, !ctx->args->options->key.vs.provoking_vtx_last, false);
+
+         ac_build_triangle_strip_indices_to_triangle(&ctx->ac, is_odd, flatshade_first, prim.index);
       }
 
       ac_build_export_prim(&ctx->ac, &prim);
@@ -3400,15 +3425,12 @@ llvm_compile_shader(struct radv_device *device, unsigned shader_count,
 {
    enum ac_target_machine_options tm_options = 0;
    struct ac_llvm_compiler ac_llvm;
-   bool thread_compiler;
 
    tm_options |= AC_TM_SUPPORTS_SPILL;
    if (args->options->check_ir)
       tm_options |= AC_TM_CHECK_IR;
 
-   thread_compiler = !(device->instance->debug_flags & RADV_DEBUG_NOTHREADLLVM);
-
-   radv_init_llvm_compiler(&ac_llvm, thread_compiler, args->options->family, tm_options,
+   radv_init_llvm_compiler(&ac_llvm, args->options->family, tm_options,
                            args->shader_info->wave_size);
 
    if (args->is_gs_copy_shader) {
@@ -3416,6 +3438,4 @@ llvm_compile_shader(struct radv_device *device, unsigned shader_count,
    } else {
       radv_compile_nir_shader(&ac_llvm, binary, args, shaders, shader_count);
    }
-
-   radv_destroy_llvm_compiler(&ac_llvm, thread_compiler);
 }

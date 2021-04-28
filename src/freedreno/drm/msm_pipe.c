@@ -106,11 +106,11 @@ msm_pipe_get_param(struct fd_pipe *pipe, enum fd_param_id param,
 }
 
 static int
-msm_pipe_wait(struct fd_pipe *pipe, uint32_t timestamp, uint64_t timeout)
+msm_pipe_wait(struct fd_pipe *pipe, const struct fd_fence *fence, uint64_t timeout)
 {
    struct fd_device *dev = pipe->dev;
    struct drm_msm_wait_fence req = {
-      .fence = timestamp,
+      .fence = fence->kfence,
       .queueid = to_msm_pipe(pipe)->queue_id,
    };
    int ret;
@@ -177,6 +177,7 @@ msm_pipe_destroy(struct fd_pipe *pipe)
 static const struct fd_pipe_funcs sp_funcs = {
    .ringbuffer_new_object = msm_ringbuffer_sp_new_object,
    .submit_new = msm_submit_sp_new,
+   .flush = msm_pipe_sp_flush,
    .get_param = msm_pipe_get_param,
    .wait = msm_pipe_wait,
    .destroy = msm_pipe_destroy,

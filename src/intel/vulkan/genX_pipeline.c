@@ -558,6 +558,16 @@ gfx7_ms_rast_mode(struct anv_graphics_pipeline *pipeline,
 }
 #endif
 
+static VkProvokingVertexModeEXT
+vk_provoking_vertex_mode(const VkPipelineRasterizationStateCreateInfo *rs_info)
+{
+   const VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *rs_pv_info =
+      vk_find_struct_const(rs_info, PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT);
+
+   return rs_pv_info == NULL ? VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT :
+                               rs_pv_info->provokingVertexMode;
+}
+
 const uint32_t genX(vk_to_intel_cullmode)[] = {
    [VK_CULL_MODE_NONE]                       = CULLMODE_NONE,
    [VK_CULL_MODE_FRONT_BIT]                  = CULLMODE_FRONT,
@@ -605,11 +615,25 @@ emit_rs_state(struct anv_graphics_pipeline *pipeline,
 
    sf.ViewportTransformEnable = true;
    sf.StatisticsEnable = true;
-   sf.TriangleStripListProvokingVertexSelect = 0;
-   sf.LineStripListProvokingVertexSelect = 0;
-   sf.TriangleFanProvokingVertexSelect = 1;
    sf.VertexSubPixelPrecisionSelect = _8Bit;
    sf.AALineDistanceMode = true;
+
+   switch (vk_provoking_vertex_mode(rs_info)) {
+   case VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT:
+      sf.TriangleStripListProvokingVertexSelect = 0;
+      sf.LineStripListProvokingVertexSelect = 0;
+      sf.TriangleFanProvokingVertexSelect = 1;
+      break;
+
+   case VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT:
+      sf.TriangleStripListProvokingVertexSelect = 2;
+      sf.LineStripListProvokingVertexSelect = 1;
+      sf.TriangleFanProvokingVertexSelect = 2;
+      break;
+
+   default:
+      unreachable("Invalid provoking vertex mode");
+   }
 
 #if GFX_VERx10 == 75
    sf.LineStippleEnable = line_info && line_info->stippledLineEnable;
@@ -1126,10 +1150,24 @@ is_dual_src_blend_factor(VkBlendFactor factor)
           factor == VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
 }
 
+static inline uint32_t *
+write_disabled_blend(uint32_t *state)
+{
+   struct GENX(BLEND_STATE_ENTRY) entry = {
+      .WriteDisableAlpha = true,
+      .WriteDisableRed = true,
+      .WriteDisableGreen = true,
+      .WriteDisableBlue = true,
+   };
+   GENX(BLEND_STATE_ENTRY_pack)(NULL, state, &entry);
+   return state + GENX(BLEND_STATE_ENTRY_length);
+}
+
 static void
 emit_cb_state(struct anv_graphics_pipeline *pipeline,
               const VkPipelineColorBlendStateCreateInfo *info,
-              const VkPipelineMultisampleStateCreateInfo *ms_info)
+              const VkPipelineMultisampleStateCreateInfo *ms_info,
+              uint32_t dynamic_states)
 {
    struct anv_device *device = pipeline->base.device;
    const struct brw_wm_prog_data *wm_prog_data = get_wm_prog_data(pipeline);
@@ -1150,11 +1188,21 @@ emit_cb_state(struct anv_graphics_pipeline *pipeline,
 
    const uint32_t num_dwords = GENX(BLEND_STATE_length) +
       GENX(BLEND_STATE_ENTRY_length) * surface_count;
-   pipeline->blend_state =
-      anv_state_pool_alloc(&device->dynamic_state_pool, num_dwords * 4, 64);
+   uint32_t *blend_state_start, *state_pos;
+
+   if (dynamic_states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE) {
+      const struct intel_device_info *devinfo = &pipeline->base.device->info;
+      blend_state_start = devinfo->ver >= 8 ?
+         pipeline->gfx8.blend_state : pipeline->gfx7.blend_state;
+      pipeline->blend_state = ANV_STATE_NULL;
+   } else {
+      pipeline->blend_state =
+         anv_state_pool_alloc(&device->dynamic_state_pool, num_dwords * 4, 64);
+      blend_state_start = pipeline->blend_state.map;
+   }
+   state_pos = blend_state_start;
 
    bool has_writeable_rt = false;
-   uint32_t *state_pos = pipeline->blend_state.map;
    state_pos += GENX(BLEND_STATE_length);
 #if GFX_VER >= 8
    struct GENX(BLEND_STATE_ENTRY) bs0 = { 0 };
@@ -1167,18 +1215,15 @@ emit_cb_state(struct anv_graphics_pipeline *pipeline,
          break;
 
       /* We can have at most 8 attachments */
-      assert(i < 8);
+      assert(i < MAX_RTS);
 
       if (info == NULL || binding->index >= info->attachmentCount) {
-         /* Default everything to disabled */
-         struct GENX(BLEND_STATE_ENTRY) entry = {
-            .WriteDisableAlpha = true,
-            .WriteDisableRed = true,
-            .WriteDisableGreen = true,
-            .WriteDisableBlue = true,
-         };
-         GENX(BLEND_STATE_ENTRY_pack)(NULL, state_pos, &entry);
-         state_pos += GENX(BLEND_STATE_ENTRY_length);
+         state_pos = write_disabled_blend(state_pos);
+         continue;
+      }
+
+      if ((pipeline->dynamic_state.color_writes & (1u << binding->index)) == 0) {
+         state_pos = write_disabled_blend(state_pos);
          continue;
       }
 
@@ -1285,29 +1330,38 @@ emit_cb_state(struct anv_graphics_pipeline *pipeline,
    }
 
 #if GFX_VER >= 8
-   anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_PS_BLEND), blend) {
-      blend.AlphaToCoverageEnable         = blend_state.AlphaToCoverageEnable;
-      blend.HasWriteableRT                = has_writeable_rt;
-      blend.ColorBufferBlendEnable        = bs0.ColorBufferBlendEnable;
-      blend.SourceAlphaBlendFactor        = bs0.SourceAlphaBlendFactor;
-      blend.DestinationAlphaBlendFactor   = bs0.DestinationAlphaBlendFactor;
-      blend.SourceBlendFactor             = bs0.SourceBlendFactor;
-      blend.DestinationBlendFactor        = bs0.DestinationBlendFactor;
-      blend.AlphaTestEnable               = false;
-      blend.IndependentAlphaBlendEnable   =
-         blend_state.IndependentAlphaBlendEnable;
+   struct GENX(3DSTATE_PS_BLEND) blend = {
+      GENX(3DSTATE_PS_BLEND_header),
+   };
+   blend.AlphaToCoverageEnable         = blend_state.AlphaToCoverageEnable;
+   blend.HasWriteableRT                = has_writeable_rt;
+   blend.ColorBufferBlendEnable        = bs0.ColorBufferBlendEnable;
+   blend.SourceAlphaBlendFactor        = bs0.SourceAlphaBlendFactor;
+   blend.DestinationAlphaBlendFactor   = bs0.DestinationAlphaBlendFactor;
+   blend.SourceBlendFactor             = bs0.SourceBlendFactor;
+   blend.DestinationBlendFactor        = bs0.DestinationBlendFactor;
+   blend.AlphaTestEnable               = false;
+   blend.IndependentAlphaBlendEnable   = blend_state.IndependentAlphaBlendEnable;
+
+   if (dynamic_states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE) {
+      GENX(3DSTATE_PS_BLEND_pack)(NULL, pipeline->gfx8.ps_blend, &blend);
+   } else {
+      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_PS_BLEND), _blend)
+         _blend = blend;
    }
 #else
    (void)has_writeable_rt;
 #endif
 
-   GENX(BLEND_STATE_pack)(NULL, pipeline->blend_state.map, &blend_state);
+   GENX(BLEND_STATE_pack)(NULL, blend_state_start, &blend_state);
 
-   anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_BLEND_STATE_POINTERS), bsp) {
-      bsp.BlendStatePointer      = pipeline->blend_state.offset;
+   if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE)) {
+      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_BLEND_STATE_POINTERS), bsp) {
+         bsp.BlendStatePointer      = pipeline->blend_state.offset;
 #if GFX_VER >= 8
-      bsp.BlendStatePointerValid = true;
+         bsp.BlendStatePointerValid = true;
 #endif
+      }
    }
 }
 
@@ -1344,9 +1398,22 @@ emit_3dstate_clip(struct anv_graphics_pipeline *pipeline,
 #endif
    clip.ClipMode = CLIPMODE_NORMAL;
 
-   clip.TriangleStripListProvokingVertexSelect = 0;
-   clip.LineStripListProvokingVertexSelect     = 0;
-   clip.TriangleFanProvokingVertexSelect       = 1;
+   switch (vk_provoking_vertex_mode(rs_info)) {
+   case VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT:
+      clip.TriangleStripListProvokingVertexSelect = 0;
+      clip.LineStripListProvokingVertexSelect = 0;
+      clip.TriangleFanProvokingVertexSelect = 1;
+      break;
+
+   case VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT:
+      clip.TriangleStripListProvokingVertexSelect = 2;
+      clip.LineStripListProvokingVertexSelect = 1;
+      clip.TriangleFanProvokingVertexSelect = 2;
+      break;
+
+   default:
+      unreachable("Invalid provoking vertex mode");
+   }
 
    clip.MinimumPointWidth = 0.125;
    clip.MaximumPointWidth = 255.875;
@@ -1413,6 +1480,19 @@ emit_3dstate_streamout(struct anv_graphics_pipeline *pipeline,
       if (xfb_info) {
          so.SOFunctionEnable = true;
          so.SOStatisticsEnable = true;
+
+         switch (vk_provoking_vertex_mode(rs_info)) {
+         case VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT:
+            so.ReorderMode = LEADING;
+            break;
+
+         case VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT:
+            so.ReorderMode = TRAILING;
+            break;
+
+         default:
+            unreachable("Invalid provoking vertex mode");
+         }
 
          const VkPipelineRasterizationStateStreamCreateInfoEXT *stream_info =
             vk_find_struct_const(rs_info, PIPELINE_RASTERIZATION_STATE_STREAM_CREATE_INFO_EXT);
@@ -1883,6 +1963,9 @@ has_color_buffer_write_enabled(const struct anv_graphics_pipeline *pipeline,
    if (!shader_bin)
       return false;
 
+   if (!pipeline->dynamic_state.color_writes)
+      return false;
+
    const struct anv_pipeline_bind_map *bind_map = &shader_bin->bind_map;
    for (int i = 0; i < bind_map->surface_count; i++) {
       struct anv_pipeline_binding *binding = &bind_map->surface_to_descriptor[i];
@@ -1906,87 +1989,110 @@ emit_3dstate_wm(struct anv_graphics_pipeline *pipeline, struct anv_subpass *subp
                 const VkPipelineRasterizationStateCreateInfo *raster,
                 const VkPipelineColorBlendStateCreateInfo *blend,
                 const VkPipelineMultisampleStateCreateInfo *multisample,
-                const VkPipelineRasterizationLineStateCreateInfoEXT *line)
+                const VkPipelineRasterizationLineStateCreateInfoEXT *line,
+                const uint32_t dynamic_states)
 {
    const struct brw_wm_prog_data *wm_prog_data = get_wm_prog_data(pipeline);
 
-   anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_WM), wm) {
-      wm.StatisticsEnable                    = true;
-      wm.LineEndCapAntialiasingRegionWidth   = _05pixels;
-      wm.LineAntialiasingRegionWidth         = _10pixels;
-      wm.PointRasterizationRule              = RASTRULE_UPPER_RIGHT;
+   struct GENX(3DSTATE_WM) wm = {
+      GENX(3DSTATE_WM_header),
+   };
+   wm.StatisticsEnable                    = true;
+   wm.LineEndCapAntialiasingRegionWidth   = _05pixels;
+   wm.LineAntialiasingRegionWidth         = _10pixels;
+   wm.PointRasterizationRule              = RASTRULE_UPPER_RIGHT;
 
-      if (anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT)) {
-         if (wm_prog_data->early_fragment_tests) {
+   if (anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT)) {
+      if (wm_prog_data->early_fragment_tests) {
             wm.EarlyDepthStencilControl         = EDSC_PREPS;
-         } else if (wm_prog_data->has_side_effects) {
-            wm.EarlyDepthStencilControl         = EDSC_PSEXEC;
-         } else {
-            wm.EarlyDepthStencilControl         = EDSC_NORMAL;
-         }
+      } else if (wm_prog_data->has_side_effects) {
+         wm.EarlyDepthStencilControl         = EDSC_PSEXEC;
+      } else {
+         wm.EarlyDepthStencilControl         = EDSC_NORMAL;
+      }
 
 #if GFX_VER >= 8
-         /* Gfx8 hardware tries to compute ThreadDispatchEnable for us but
-          * doesn't take into account KillPixels when no depth or stencil
-          * writes are enabled.  In order for occlusion queries to work
-          * correctly with no attachments, we need to force-enable PS thread
-          * dispatch.
-          *
-          * The BDW docs are pretty clear that that this bit isn't validated
-          * and probably shouldn't be used in production:
-          *
-          *    "This must always be set to Normal. This field should not be
-          *    tested for functional validation."
-          *
-          * Unfortunately, however, the other mechanism we have for doing this
-          * is 3DSTATE_PS_EXTRA::PixelShaderHasUAV which causes hangs on BDW.
-          * Given two bad options, we choose the one which works.
-          */
-         if ((wm_prog_data->has_side_effects || wm_prog_data->uses_kill) &&
-             !has_color_buffer_write_enabled(pipeline, blend))
-            wm.ForceThreadDispatchEnable = ForceON;
+      /* Gen8 hardware tries to compute ThreadDispatchEnable for us but
+       * doesn't take into account KillPixels when no depth or stencil
+       * writes are enabled.  In order for occlusion queries to work
+       * correctly with no attachments, we need to force-enable PS thread
+       * dispatch.
+       *
+       * The BDW docs are pretty clear that that this bit isn't validated
+       * and probably shouldn't be used in production:
+       *
+       *    "This must always be set to Normal. This field should not be
+       *    tested for functional validation."
+       *
+       * Unfortunately, however, the other mechanism we have for doing this
+       * is 3DSTATE_PS_EXTRA::PixelShaderHasUAV which causes hangs on BDW.
+       * Given two bad options, we choose the one which works.
+       */
+      pipeline->force_fragment_thread_dispatch =
+         wm_prog_data->has_side_effects ||
+         wm_prog_data->uses_kill;
+
+      if (pipeline->force_fragment_thread_dispatch ||
+          !has_color_buffer_write_enabled(pipeline, blend)) {
+         /* Only set this value in non dynamic mode. */
+         wm.ForceThreadDispatchEnable =
+            !(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE) ? ForceON : 0;
+      }
 #endif
 
-         wm.BarycentricInterpolationMode =
-            wm_prog_data->barycentric_interp_modes;
+      wm.BarycentricInterpolationMode =
+         wm_prog_data->barycentric_interp_modes;
 
 #if GFX_VER < 8
-         wm.PixelShaderComputedDepthMode  = wm_prog_data->computed_depth_mode;
-         wm.PixelShaderUsesSourceDepth    = wm_prog_data->uses_src_depth;
-         wm.PixelShaderUsesSourceW        = wm_prog_data->uses_src_w;
-         wm.PixelShaderUsesInputCoverageMask = wm_prog_data->uses_sample_mask;
+      wm.PixelShaderComputedDepthMode  = wm_prog_data->computed_depth_mode;
+      wm.PixelShaderUsesSourceDepth    = wm_prog_data->uses_src_depth;
+      wm.PixelShaderUsesSourceW        = wm_prog_data->uses_src_w;
+      wm.PixelShaderUsesInputCoverageMask = wm_prog_data->uses_sample_mask;
 
-         /* If the subpass has a depth or stencil self-dependency, then we
-          * need to force the hardware to do the depth/stencil write *after*
-          * fragment shader execution.  Otherwise, the writes may hit memory
-          * before we get around to fetching from the input attachment and we
-          * may get the depth or stencil value from the current draw rather
-          * than the previous one.
-          */
-         wm.PixelShaderKillsPixel         = subpass->has_ds_self_dep ||
-                                            wm_prog_data->uses_kill;
+      /* If the subpass has a depth or stencil self-dependency, then we
+       * need to force the hardware to do the depth/stencil write *after*
+       * fragment shader execution.  Otherwise, the writes may hit memory
+       * before we get around to fetching from the input attachment and we
+       * may get the depth or stencil value from the current draw rather
+       * than the previous one.
+       */
+      wm.PixelShaderKillsPixel         = subpass->has_ds_self_dep ||
+                                         wm_prog_data->uses_kill;
 
-         if (wm.PixelShaderComputedDepthMode != PSCDEPTH_OFF ||
-             wm_prog_data->has_side_effects ||
-             wm.PixelShaderKillsPixel ||
-             has_color_buffer_write_enabled(pipeline, blend))
-            wm.ThreadDispatchEnable = true;
+      pipeline->force_fragment_thread_dispatch =
+         wm.PixelShaderComputedDepthMode != PSCDEPTH_OFF ||
+         wm_prog_data->has_side_effects ||
+         wm.PixelShaderKillsPixel;
 
-         if (multisample && multisample->rasterizationSamples > 1) {
-            if (wm_prog_data->persample_dispatch) {
-               wm.MultisampleDispatchMode = MSDISPMODE_PERSAMPLE;
-            } else {
-               wm.MultisampleDispatchMode = MSDISPMODE_PERPIXEL;
-            }
-         } else {
+      if (pipeline->force_fragment_thread_dispatch ||
+          has_color_buffer_write_enabled(pipeline, blend)) {
+         /* Only set this value in non dynamic mode. */
+         wm.ThreadDispatchEnable = !(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE);
+      }
+
+      if (multisample && multisample->rasterizationSamples > 1) {
+         if (wm_prog_data->persample_dispatch) {
             wm.MultisampleDispatchMode = MSDISPMODE_PERSAMPLE;
+         } else {
+            wm.MultisampleDispatchMode = MSDISPMODE_PERPIXEL;
          }
-         wm.MultisampleRasterizationMode =
-            gfx7_ms_rast_mode(pipeline, ia, raster, multisample);
+      } else {
+         wm.MultisampleDispatchMode = MSDISPMODE_PERSAMPLE;
+      }
+      wm.MultisampleRasterizationMode =
+         gfx7_ms_rast_mode(pipeline, ia, raster, multisample);
 #endif
 
-         wm.LineStippleEnable = line && line->stippledLineEnable;
-      }
+      wm.LineStippleEnable = line && line->stippledLineEnable;
+   }
+
+   if (dynamic_states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE) {
+      const struct intel_device_info *devinfo = &pipeline->base.device->info;
+      uint32_t *dws = devinfo->ver >= 8 ? pipeline->gfx8.wm : pipeline->gfx7.wm;
+      GENX(3DSTATE_WM_pack)(NULL, dws, &wm);
+   } else {
+      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_WM), _wm)
+         _wm = wm;
    }
 }
 
@@ -2307,7 +2413,7 @@ genX(graphics_pipeline_create)(
                            urb_deref_block_size);
    emit_ms_state(pipeline, ms_info, dynamic_states);
    emit_ds_state(pipeline, ds_info, dynamic_states, pass, subpass);
-   emit_cb_state(pipeline, cb_info, ms_info);
+   emit_cb_state(pipeline, cb_info, ms_info, dynamic_states);
    compute_kill_pixel(pipeline, ms_info, subpass);
 
    emit_3dstate_clip(pipeline,
@@ -2347,7 +2453,7 @@ genX(graphics_pipeline_create)(
    emit_3dstate_wm(pipeline, subpass,
                    pCreateInfo->pInputAssemblyState,
                    pCreateInfo->pRasterizationState,
-                   cb_info, ms_info, line_info);
+                   cb_info, ms_info, line_info, dynamic_states);
    emit_3dstate_ps(pipeline, cb_info, ms_info);
 #if GFX_VER >= 8
    emit_3dstate_ps_extra(pipeline, subpass,

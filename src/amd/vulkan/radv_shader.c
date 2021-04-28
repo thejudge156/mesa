@@ -42,7 +42,6 @@
 #include "ac_exp_param.h"
 #include "ac_llvm_util.h"
 #include "ac_nir.h"
-#include "ac_nir_to_llvm.h"
 #include "ac_rtld.h"
 #include "aco_interface.h"
 #include "sid.h"
@@ -267,7 +266,8 @@ mark_geom_invariant(nir_shader *nir)
 }
 
 static bool
-lower_intrinsics(nir_shader *nir, const struct radv_pipeline_key *key)
+lower_intrinsics(nir_shader *nir, const struct radv_pipeline_key *key,
+                 const struct radv_pipeline_layout *layout)
 {
    nir_function_impl *entry = nir_shader_get_entrypoint(nir);
    bool progress = false;
@@ -285,7 +285,33 @@ lower_intrinsics(nir_shader *nir, const struct radv_pipeline_key *key)
 
          nir_ssa_def *def = NULL;
          if (intrin->intrinsic == nir_intrinsic_load_vulkan_descriptor) {
-            def = nir_vec2(&b, nir_channel(&b, intrin->src[0].ssa, 0), nir_imm_int(&b, 0));
+            def = nir_vec3(&b, nir_channel(&b, intrin->src[0].ssa, 0),
+                           nir_channel(&b, intrin->src[0].ssa, 1), nir_imm_int(&b, 0));
+         } else if (intrin->intrinsic == nir_intrinsic_vulkan_resource_index) {
+            unsigned desc_set = nir_intrinsic_desc_set(intrin);
+            unsigned binding = nir_intrinsic_binding(intrin);
+            struct radv_descriptor_set_layout *desc_layout = layout->set[desc_set].layout;
+
+            nir_ssa_def *new_res = nir_vulkan_resource_index(
+               &b, 3, 32, intrin->src[0].ssa, .desc_set = desc_set, .binding = binding,
+               .desc_type = nir_intrinsic_desc_type(intrin));
+            nir_ssa_def *set_ptr = nir_channel(&b, new_res, 0);
+            nir_ssa_def *binding_ptr = nir_channel(&b, new_res, 1);
+
+            nir_ssa_def *stride;
+            if (desc_layout->binding[binding].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+                desc_layout->binding[binding].type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC) {
+               stride = nir_imm_int(&b, 16);
+            } else {
+               stride = nir_imm_int(&b, desc_layout->binding[binding].size);
+            }
+            def = nir_vec3(&b, set_ptr, binding_ptr, stride);
+         } else if (intrin->intrinsic == nir_intrinsic_vulkan_resource_reindex) {
+            nir_ssa_def *set_ptr = nir_channel(&b, intrin->src[0].ssa, 0);
+            nir_ssa_def *binding_ptr = nir_channel(&b, intrin->src[0].ssa, 1);
+            nir_ssa_def *stride = nir_channel(&b, intrin->src[0].ssa, 2);
+            binding_ptr = nir_iadd(&b, binding_ptr, nir_imul(&b, intrin->src[1].ssa, stride));
+            def = nir_vec3(&b, set_ptr, binding_ptr, stride);
          } else if (intrin->intrinsic == nir_intrinsic_is_sparse_texels_resident) {
             def = nir_ieq_imm(&b, intrin->src[0].ssa, 0);
          } else if (intrin->intrinsic == nir_intrinsic_sparse_residency_code_and) {
@@ -434,8 +460,8 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
                .fragment_shading_rate = device->physical_device->rad_info.chip_class >= GFX10_3,
                .workgroup_memory_explicit_layout = true,
             },
-         .ubo_addr_format = nir_address_format_32bit_index_offset,
-         .ssbo_addr_format = nir_address_format_32bit_index_offset,
+         .ubo_addr_format = nir_address_format_vec2_index_32bit_offset,
+         .ssbo_addr_format = nir_address_format_vec2_index_32bit_offset,
          .phys_ssbo_addr_format = nir_address_format_64bit_global,
          .push_const_addr_format = nir_address_format_logical,
          .shared_addr_format = nir_address_format_32bit_offset,
@@ -613,9 +639,9 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
    NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_push_const, nir_address_format_32bit_offset);
 
    NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_ubo | nir_var_mem_ssbo,
-              nir_address_format_32bit_index_offset);
+              nir_address_format_vec2_index_32bit_offset);
 
-   NIR_PASS_V(nir, lower_intrinsics, key);
+   NIR_PASS_V(nir, lower_intrinsics, key, layout);
 
    /* Lower deref operations for compute shared memory. */
    if (nir->info.stage == MESA_SHADER_COMPUTE) {
@@ -644,7 +670,7 @@ radv_shader_compile_to_nir(struct radv_device *device, struct vk_shader_module *
     * bloat the instruction count of the loop and cause it to be
     * considered too large for unrolling.
     */
-   if (ac_lower_indirect_derefs(nir, device->physical_device->rad_info.chip_class) &&
+   if (ac_nir_lower_indirect_derefs(nir, device->physical_device->rad_info.chip_class) &&
        !(flags & VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT) &&
        nir->info.stage != MESA_SHADER_COMPUTE) {
       /* Optimize the lowered code before the linking optimizations. */
@@ -1156,9 +1182,6 @@ radv_shader_variant_create(struct radv_device *device, const struct radv_shader_
       if (device->physical_device->rad_info.chip_class >= GFX9 &&
           (binary->stage == MESA_SHADER_GEOMETRY || binary->info.is_ngg) &&
           !binary->is_gs_copy_shader) {
-         /* We add this symbol even on LLVM <= 8 to ensure that
-          * shader->config.lds_size is set correctly below.
-          */
          struct ac_rtld_symbol *sym = &lds_symbols[num_lds_symbols++];
          sym->name = "esgs_ring";
          sym->size = binary->info.ngg_info.esgs_ring_size;

@@ -30,7 +30,7 @@
 #include <stdio.h>
 #include "util/u_atomic.h"
 #include "util/u_debug.h"
-#include "util/u_dynarray.h"
+#include "util/u_queue.h"
 
 #include "adreno_common.xml.h"
 #include "adreno_pm4.xml.h"
@@ -85,16 +85,40 @@ struct fd_submit *fd_submit_new(struct fd_pipe *pipe);
  */
 void fd_submit_del(struct fd_submit *submit);
 
+struct fd_submit * fd_submit_ref(struct fd_submit *submit);
+
 /* Allocate a new rb from the submit. */
 struct fd_ringbuffer *fd_submit_new_ringbuffer(struct fd_submit *submit,
                                                uint32_t size,
                                                enum fd_ringbuffer_flags flags);
 
+/**
+ * Encapsulates submit out-fence(s), which consist of a 'timestamp' (per-
+ * pipe (submitqueue) sequence number) and optionally, if requested, an
+ * out-fence-fd
+ */
+struct fd_submit_fence {
+   /**
+    * The ready fence is signaled once the submit is actually flushed down
+    * to the kernel, and fence/fence_fd are populated.  You must wait for
+    * this fence to be signaled before reading fence/fence_fd.
+    */
+   struct util_queue_fence ready;
+
+   struct fd_fence fence;
+
+   /**
+    * Optional dma_fence fd, returned by submit if use_fence_fd is true
+    */
+   int fence_fd;
+   bool use_fence_fd;
+};
+
 /* in_fence_fd: -1 for no in-fence, else fence fd
- * out_fence_fd: NULL for no output-fence requested, else ptr to return out-fence
+ * out_fence can be NULL if no output fence is required
  */
 int fd_submit_flush(struct fd_submit *submit, int in_fence_fd,
-                    int *out_fence_fd, uint32_t *out_fence);
+                    struct fd_submit_fence *out_fence);
 
 struct fd_ringbuffer;
 struct fd_reloc;

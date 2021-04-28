@@ -271,7 +271,7 @@ struct pipe_context {
 
    bool (*is_intel_perf_query_ready)(struct pipe_context *pipe, struct pipe_query *q);
 
-   void (*get_intel_perf_query_data)(struct pipe_context *pipe,
+   bool (*get_intel_perf_query_data)(struct pipe_context *pipe,
                                      struct pipe_query *q,
                                      size_t data_size,
                                      uint32_t *data,
@@ -1101,6 +1101,14 @@ struct pipe_context {
    void (*set_context_param)(struct pipe_context *ctx,
                              enum pipe_context_param param,
                              unsigned value);
+
+   /**
+    * Creates a video buffer as decoding target, with modifiers.
+    */
+   struct pipe_video_buffer *(*create_video_buffer_with_modifiers)(struct pipe_context *context,
+                                                                   const struct pipe_video_buffer *templat,
+                                                                   const uint64_t *modifiers,
+                                                                   unsigned int modifiers_count);
 };
 
 

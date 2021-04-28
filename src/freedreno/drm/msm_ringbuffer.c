@@ -54,8 +54,6 @@ struct msm_submit {
    /* hash-set of associated rings: */
    struct set *ring_set;
 
-   struct fd_ringbuffer *primary;
-
    /* Allow for sub-allocation of stateobj ring buffers (ie. sharing
     * the same underlying bo)..
     *
@@ -246,11 +244,6 @@ msm_submit_new_ringbuffer(struct fd_submit *submit, uint32_t size,
    if (!msm_ringbuffer_init(msm_ring, size, flags))
       return NULL;
 
-   if (flags & FD_RINGBUFFER_PRIMARY) {
-      debug_assert(!msm_submit->primary);
-      msm_submit->primary = fd_ringbuffer_ref(&msm_ring->base);
-   }
-
    return &msm_ring->base;
 }
 
@@ -274,8 +267,8 @@ handle_stateobj_relocs(struct msm_submit *submit, struct msm_ringbuffer *ring)
 }
 
 static int
-msm_submit_flush(struct fd_submit *submit, int in_fence_fd, int *out_fence_fd,
-                 uint32_t *out_fence)
+msm_submit_flush(struct fd_submit *submit, int in_fence_fd,
+                 struct fd_submit_fence *out_fence)
 {
    struct msm_submit *msm_submit = to_msm_submit(submit);
    struct msm_pipe *msm_pipe = to_msm_pipe(submit->pipe);
@@ -285,10 +278,8 @@ msm_submit_flush(struct fd_submit *submit, int in_fence_fd, int *out_fence_fd,
    };
    int ret;
 
-   debug_assert(msm_submit->primary);
-
-   finalize_current_cmd(msm_submit->primary);
-   append_ring(msm_submit->ring_set, msm_submit->primary);
+   finalize_current_cmd(submit->primary);
+   append_ring(msm_submit->ring_set, submit->primary);
 
    unsigned nr_cmds = 0;
    unsigned nr_objs = 0;
@@ -299,7 +290,7 @@ msm_submit_flush(struct fd_submit *submit, int in_fence_fd, int *out_fence_fd,
          nr_cmds += 1;
          nr_objs += 1;
       } else {
-         if (ring != msm_submit->primary)
+         if (ring != submit->primary)
             finalize_current_cmd(ring);
          nr_cmds += to_msm_ringbuffer(ring)->u.nr_cmds;
       }
@@ -352,12 +343,18 @@ msm_submit_flush(struct fd_submit *submit, int in_fence_fd, int *out_fence_fd,
       }
    }
 
+   simple_mtx_lock(&table_lock);
+   for (unsigned j = 0; j < msm_submit->nr_bos; j++) {
+      fd_bo_add_fence(msm_submit->bos[j], submit->pipe, submit->fence);
+   }
+   simple_mtx_unlock(&table_lock);
+
    if (in_fence_fd != -1) {
       req.flags |= MSM_SUBMIT_FENCE_FD_IN | MSM_SUBMIT_NO_IMPLICIT;
       req.fence_fd = in_fence_fd;
    }
 
-   if (out_fence_fd) {
+   if (out_fence && out_fence->use_fence_fd) {
       req.flags |= MSM_SUBMIT_FENCE_FD_OUT;
    }
 
@@ -373,12 +370,10 @@ msm_submit_flush(struct fd_submit *submit, int in_fence_fd, int *out_fence_fd,
    if (ret) {
       ERROR_MSG("submit failed: %d (%s)", ret, strerror(errno));
       msm_dump_submit(&req);
-   } else if (!ret) {
-      if (out_fence)
-         *out_fence = req.fence;
-
-      if (out_fence_fd)
-         *out_fence_fd = req.fence_fd;
+   } else if (!ret && out_fence) {
+      out_fence->fence.kfence = req.fence;
+      out_fence->fence.ufence = submit->fence;
+      out_fence->fence_fd = req.fence_fd;
    }
 
    for (unsigned o = 0; o < nr_objs; o++)
@@ -399,8 +394,6 @@ msm_submit_destroy(struct fd_submit *submit)
 {
    struct msm_submit *msm_submit = to_msm_submit(submit);
 
-   if (msm_submit->primary)
-      fd_ringbuffer_del(msm_submit->primary);
    if (msm_submit->suballoc_ring)
       fd_ringbuffer_del(msm_submit->suballoc_ring);
 
@@ -440,7 +433,6 @@ msm_submit_new(struct fd_pipe *pipe)
    slab_create(&msm_submit->ring_pool, sizeof(struct msm_ringbuffer), 16);
 
    submit = &msm_submit->base;
-   submit->pipe = pipe;
    submit->funcs = &submit_funcs;
 
    return submit;

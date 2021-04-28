@@ -41,8 +41,7 @@
 #include "util/debug.h"
 #include "ac_binary.h"
 #include "ac_exp_param.h"
-#include "ac_llvm_util.h"
-#include "ac_nir_to_llvm.h"
+#include "ac_nir.h"
 #include "ac_shader_util.h"
 #include "aco_interface.h"
 #include "sid.h"
@@ -1615,8 +1614,6 @@ radv_pipeline_init_dynamic_state(struct radv_pipeline *pipeline,
     *    against does not use a depth/stencil attachment.
     */
    if (needed_states && subpass->depth_stencil_attachment) {
-      assert(pCreateInfo->pDepthStencilState);
-
       if (states & RADV_DYNAMIC_DEPTH_BOUNDS) {
          dynamic->depth_bounds.min = pCreateInfo->pDepthStencilState->minDepthBounds;
          dynamic->depth_bounds.max = pCreateInfo->pDepthStencilState->maxDepthBounds;
@@ -1731,6 +1728,15 @@ radv_pipeline_init_raster_state(struct radv_pipeline *pipeline,
                                 const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    const VkPipelineRasterizationStateCreateInfo *raster_info = pCreateInfo->pRasterizationState;
+   const VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *provoking_vtx_info =
+      vk_find_struct_const(raster_info->pNext,
+                           PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT);
+   bool provoking_vtx_last = false;
+
+   if (provoking_vtx_info &&
+       provoking_vtx_info->provokingVertexMode == VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT) {
+      provoking_vtx_last = true;
+   }
 
    pipeline->graphics.pa_su_sc_mode_cntl =
       S_028814_FACE(raster_info->frontFace) |
@@ -1741,7 +1747,8 @@ radv_pipeline_init_raster_state(struct radv_pipeline *pipeline,
       S_028814_POLYMODE_BACK_PTYPE(si_translate_fill(raster_info->polygonMode)) |
       S_028814_POLY_OFFSET_FRONT_ENABLE(raster_info->depthBiasEnable ? 1 : 0) |
       S_028814_POLY_OFFSET_BACK_ENABLE(raster_info->depthBiasEnable ? 1 : 0) |
-      S_028814_POLY_OFFSET_PARA_ENABLE(raster_info->depthBiasEnable ? 1 : 0);
+      S_028814_POLY_OFFSET_PARA_ENABLE(raster_info->depthBiasEnable ? 1 : 0) |
+      S_028814_PROVOKING_VTX_LAST(provoking_vtx_last);
 
    if (pipeline->device->physical_device->rad_info.chip_class >= GFX10) {
       /* It should also be set if PERPENDICULAR_ENDCAP_ENA is set. */
@@ -2339,16 +2346,16 @@ radv_link_shaders(struct radv_pipeline *pipeline, nir_shader **shaders,
 
       if (progress) {
          if (nir_lower_global_vars_to_local(ordered_shaders[i])) {
-            ac_lower_indirect_derefs(ordered_shaders[i],
-                                     pipeline->device->physical_device->rad_info.chip_class);
+            ac_nir_lower_indirect_derefs(ordered_shaders[i],
+                                         pipeline->device->physical_device->rad_info.chip_class);
             /* remove dead writes, which can remove input loads */
             nir_lower_vars_to_ssa(ordered_shaders[i]);
             nir_opt_dce(ordered_shaders[i]);
          }
 
          if (nir_lower_global_vars_to_local(ordered_shaders[i - 1])) {
-            ac_lower_indirect_derefs(ordered_shaders[i - 1],
-                                     pipeline->device->physical_device->rad_info.chip_class);
+            ac_nir_lower_indirect_derefs(ordered_shaders[i - 1],
+                                         pipeline->device->physical_device->rad_info.chip_class);
          }
       }
    }
@@ -2608,9 +2615,18 @@ radv_generate_graphics_pipeline_key(const struct radv_pipeline *pipeline,
       key.is_int10 = blend->col_format_is_int10;
    }
 
-   if (pipeline->device->physical_device->rad_info.chip_class >= GFX10)
+   if (pipeline->device->physical_device->rad_info.chip_class >= GFX10) {
       key.topology = pCreateInfo->pInputAssemblyState->topology;
 
+      const VkPipelineRasterizationStateCreateInfo *raster_info = pCreateInfo->pRasterizationState;
+      const VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *provoking_vtx_info =
+         vk_find_struct_const(raster_info->pNext,
+                              PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT);
+      if (provoking_vtx_info &&
+          provoking_vtx_info->provokingVertexMode == VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT) {
+         key.provoking_vtx_last = true;
+      }
+   }
    return key;
 }
 
@@ -2639,6 +2655,7 @@ radv_fill_shader_keys(struct radv_device *device, struct radv_shader_variant_key
       keys[MESA_SHADER_VERTEX].vs.alpha_adjust[i] = key->vertex_alpha_adjust[i];
    }
    keys[MESA_SHADER_VERTEX].vs.outprim = si_conv_prim_to_gs_out(key->topology);
+   keys[MESA_SHADER_VERTEX].vs.provoking_vtx_last = key->provoking_vtx_last;
 
    if (nir[MESA_SHADER_TESS_CTRL]) {
       keys[MESA_SHADER_VERTEX].vs_common_out.as_ls = true;
@@ -3035,8 +3052,16 @@ mem_vectorize_callback(unsigned align_mul, unsigned align_offset, unsigned bit_s
    case nir_intrinsic_store_ssbo:
    case nir_intrinsic_load_ssbo:
    case nir_intrinsic_load_ubo:
-   case nir_intrinsic_load_push_constant:
-      return align % (bit_size == 8 ? 2 : 4) == 0;
+   case nir_intrinsic_load_push_constant: {
+      unsigned max_components;
+      if (align % 4 == 0)
+         max_components = NIR_MAX_VEC_COMPONENTS;
+      else if (align % 2 == 0)
+         max_components = 16u / bit_size;
+      else
+         max_components = 8u / bit_size;
+      return (align % (bit_size / 8u)) == 0 && num_components <= max_components;
+   }
    case nir_intrinsic_load_deref:
    case nir_intrinsic_store_deref:
       assert(nir_deref_mode_is(nir_src_as_deref(low->src[0]), nir_var_mem_shared));
@@ -3147,6 +3172,14 @@ opt_vectorize_callback(const nir_instr *instr, void *_)
    default:
       return false;
    }
+}
+
+static nir_component_mask_t
+non_uniform_access_callback(const nir_src *src, void *_)
+{
+   if (src->ssa->num_components == 1)
+      return 0x1;
+   return nir_chase_binding(*src).success ? 0x2 : 0x3;
 }
 
 VkResult
@@ -3277,10 +3310,13 @@ radv_create_shaders(struct radv_pipeline *pipeline, struct radv_device *device,
          radv_start_feedback(stage_feedbacks[i]);
 
          if (!radv_use_llvm_for_stage(device, i)) {
-            NIR_PASS_V(nir[i], nir_lower_non_uniform_access,
-                       nir_lower_non_uniform_ubo_access | nir_lower_non_uniform_ssbo_access |
-                          nir_lower_non_uniform_texture_access |
-                          nir_lower_non_uniform_image_access);
+            nir_lower_non_uniform_access_options options = {
+               .types = nir_lower_non_uniform_ubo_access | nir_lower_non_uniform_ssbo_access |
+                        nir_lower_non_uniform_texture_access | nir_lower_non_uniform_image_access,
+               .callback = &non_uniform_access_callback,
+               .callback_data = NULL,
+            };
+            NIR_PASS_V(nir[i], nir_lower_non_uniform_access, &options);
          }
          NIR_PASS_V(nir[i], nir_lower_memory_model);
 
@@ -3293,7 +3329,7 @@ radv_create_shaders(struct radv_pipeline *pipeline, struct radv_device *device,
             .robust_modes = 0,
          };
 
-         if (device->robust_buffer_access) {
+         if (device->robust_buffer_access2) {
             vectorize_opts.robust_modes =
                nir_var_mem_ubo | nir_var_mem_ssbo | nir_var_mem_global | nir_var_mem_push_const;
          }

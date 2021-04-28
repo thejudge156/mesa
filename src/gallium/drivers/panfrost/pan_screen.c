@@ -50,6 +50,7 @@
 #include "pan_resource.h"
 #include "pan_public.h"
 #include "pan_util.h"
+#include "pan_indirect_dispatch.h"
 #include "pan_indirect_draw.h"
 #include "decode.h"
 
@@ -102,6 +103,10 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
         /* Don't expose MRT related CAPs on GPUs that don't implement them */
         bool has_mrt = !(dev->quirks & MIDGARD_SFBD);
+
+        /* Only kernel drivers >= 1.1 can allocate HEAP BOs */
+        bool has_heap = dev->kernel_version->version_major > 1 ||
+                        dev->kernel_version->version_minor >= 1;
 
         /* Bifrost is WIP */
         switch (param) {
@@ -303,7 +308,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return 0;
 
         case PIPE_CAP_DRAW_INDIRECT:
-                return is_deqp;
+                return has_heap && is_deqp;
 
         default:
                 return u_pipe_screen_get_param_defaults(screen, param);
@@ -696,6 +701,7 @@ panfrost_destroy_screen(struct pipe_screen *pscreen)
 {
         struct panfrost_device *dev = pan_device(pscreen);
 
+        pan_indirect_dispatch_cleanup(dev);
         panfrost_cleanup_indirect_draw_shaders(dev);
         pan_blitter_cleanup(dev);
         pan_blend_shaders_cleanup(dev);
@@ -872,6 +878,7 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         panfrost_resource_screen_init(&screen->base);
         pan_blend_shaders_init(dev);
         panfrost_init_indirect_draw_shaders(dev);
+        pan_indirect_dispatch_init(dev);
         pan_blitter_init(dev);
 
         return &screen->base;

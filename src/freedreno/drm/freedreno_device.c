@@ -33,8 +33,7 @@
 #include "freedreno_drmif.h"
 #include "freedreno_priv.h"
 
-struct fd_device *kgsl_device_new(int fd);
-struct fd_device *msm_device_new(int fd);
+struct fd_device *msm_device_new(int fd, drmVersionPtr version);
 
 struct fd_device *
 fd_device_new(int fd)
@@ -58,7 +57,7 @@ fd_device_new(int fd)
          goto out;
       }
 
-      dev = msm_device_new(fd);
+      dev = msm_device_new(fd, version);
       dev->version = version->version_minor;
 #if HAVE_FREEDRENO_KGSL
    } else if (!strcmp(version->name, "kgsl")) {
@@ -85,6 +84,9 @@ out:
    fd_bo_cache_init(&dev->bo_cache, false);
    fd_bo_cache_init(&dev->ring_cache, true);
 
+   list_inithead(&dev->deferred_submits);
+   simple_mtx_init(&dev->submit_lock, mtx_plain);
+
    return dev;
 }
 
@@ -110,12 +112,23 @@ fd_device_ref(struct fd_device *dev)
    return dev;
 }
 
+void
+fd_device_purge(struct fd_device *dev)
+{
+   simple_mtx_lock(&table_lock);
+   fd_bo_cache_cleanup(&dev->bo_cache, 0);
+   fd_bo_cache_cleanup(&dev->ring_cache, 0);
+   simple_mtx_unlock(&table_lock);
+}
+
 static void
 fd_device_del_impl(struct fd_device *dev)
 {
    int close_fd = dev->closefd ? dev->fd : -1;
 
    simple_mtx_assert_locked(&table_lock);
+
+   assert(list_is_empty(&dev->deferred_submits));
 
    fd_bo_cache_cleanup(&dev->bo_cache, 0);
    fd_bo_cache_cleanup(&dev->ring_cache, 0);

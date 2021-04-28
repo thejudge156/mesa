@@ -463,7 +463,7 @@ static void handle_graphics_pipeline(struct lvp_cmd_buffer_entry *cmd,
       state->rs_state.fill_front = vk_polygon_mode_to_pipe(rsc->polygonMode);
       state->rs_state.fill_back = vk_polygon_mode_to_pipe(rsc->polygonMode);
       state->rs_state.point_size_per_vertex = true;
-      state->rs_state.flatshade_first = true;
+      state->rs_state.flatshade_first = !pipeline->provoking_vertex_last;
       state->rs_state.point_quad_rasterization = true;
       state->rs_state.clip_halfz = true;
       state->rs_state.half_pixel_center = true;
@@ -1476,6 +1476,9 @@ static void render_pass_resolve(struct rendering_state *state)
       info.src.box.depth = state->vk_framebuffer->layers;
 
       info.dst.box = info.src.box;
+
+      info.src.level = src_imgv->subresourceRange.baseMipLevel;
+      info.dst.level = dst_imgv->subresourceRange.baseMipLevel;
 
       state->pctx->blit(state->pctx, &info);
    }

@@ -492,15 +492,20 @@ static LLVMValueRef enter_waterfall(struct ac_nir_context *ctx, struct waterfall
 
    ac_build_bgnloop(&ctx->ac, 6000);
 
-   LLVMValueRef scalar_value = ac_build_readlane(&ctx->ac, value, NULL);
+   LLVMValueRef active = LLVMConstInt(ctx->ac.i1, 1, false);
+   LLVMValueRef scalar_value[NIR_MAX_VEC_COMPONENTS];
 
-   LLVMValueRef active =
-      LLVMBuildICmp(ctx->ac.builder, LLVMIntEQ, value, scalar_value, "uniform_active");
+   for (unsigned i = 0; i < ac_get_llvm_num_components(value); i++) {
+      LLVMValueRef comp = ac_llvm_extract_elem(&ctx->ac, value, i);
+      scalar_value[i] = ac_build_readlane(&ctx->ac, comp, NULL);
+      active = LLVMBuildAnd(ctx->ac.builder, active,
+                            LLVMBuildICmp(ctx->ac.builder, LLVMIntEQ, comp, scalar_value[i], ""), "");
+   }
 
    wctx->phi_bb[0] = LLVMGetInsertBlock(ctx->ac.builder);
    ac_build_ifcc(&ctx->ac, active, 6001);
 
-   return scalar_value;
+   return ac_build_gather_values(&ctx->ac, scalar_value, ac_get_llvm_num_components(value));
 }
 
 static LLVMValueRef exit_waterfall(struct ac_nir_context *ctx, struct waterfall_context *wctx,
@@ -1539,17 +1544,6 @@ static LLVMValueRef build_tex_intrinsic(struct ac_nir_context *ctx, const nir_te
    }
 
    return ac_build_image_opcode(&ctx->ac, args);
-}
-
-static LLVMValueRef visit_vulkan_resource_reindex(struct ac_nir_context *ctx,
-                                                  nir_intrinsic_instr *instr)
-{
-   LLVMValueRef ptr = get_src(ctx, instr->src[0]);
-   LLVMValueRef index = get_src(ctx, instr->src[1]);
-
-   LLVMValueRef result = LLVMBuildGEP(ctx->ac.builder, ptr, &index, 1, "");
-   LLVMSetMetadata(result, ctx->ac.uniform_md_kind, ctx->ac.empty_md);
-   return result;
 }
 
 static LLVMValueRef visit_load_push_constant(struct ac_nir_context *ctx, nir_intrinsic_instr *instr)
@@ -3548,9 +3542,6 @@ static void visit_intrinsic(struct ac_nir_context *ctx, nir_intrinsic_instr *ins
       result = ctx->abi->load_resource(ctx->abi, index, desc_set, binding);
       break;
    }
-   case nir_intrinsic_vulkan_resource_reindex:
-      result = visit_vulkan_resource_reindex(ctx, instr);
-      break;
    case nir_intrinsic_store_ssbo:
       visit_store_ssbo(ctx, instr);
       break;
@@ -5125,47 +5116,6 @@ void ac_nir_translate(struct ac_llvm_context *ac, struct ac_shader_abi *abi,
    ralloc_free(ctx.vars);
    if (ctx.abi->kill_ps_if_inf_interp)
       ralloc_free(ctx.verified_interp);
-}
-
-bool ac_lower_indirect_derefs(struct nir_shader *nir, enum chip_class chip_class)
-{
-   bool progress = false;
-
-   /* Lower large variables to scratch first so that we won't bloat the
-    * shader by generating large if ladders for them. We later lower
-    * scratch to alloca's, assuming LLVM won't generate VGPR indexing.
-    */
-   NIR_PASS(progress, nir, nir_lower_vars_to_scratch, nir_var_function_temp, 256,
-            glsl_get_natural_size_align_bytes);
-
-   /* LLVM doesn't support VGPR indexing on GFX9. */
-   bool llvm_has_working_vgpr_indexing = chip_class != GFX9;
-
-   /* TODO: Indirect indexing of GS inputs is unimplemented.
-    *
-    * TCS and TES load inputs directly from LDS or offchip memory, so
-    * indirect indexing is trivial.
-    */
-   nir_variable_mode indirect_mask = 0;
-   if (nir->info.stage == MESA_SHADER_GEOMETRY ||
-       (nir->info.stage != MESA_SHADER_TESS_CTRL && nir->info.stage != MESA_SHADER_TESS_EVAL &&
-        !llvm_has_working_vgpr_indexing)) {
-      indirect_mask |= nir_var_shader_in;
-   }
-   if (!llvm_has_working_vgpr_indexing && nir->info.stage != MESA_SHADER_TESS_CTRL)
-      indirect_mask |= nir_var_shader_out;
-
-   /* TODO: We shouldn't need to do this, however LLVM isn't currently
-    * smart enough to handle indirects without causing excess spilling
-    * causing the gpu to hang.
-    *
-    * See the following thread for more details of the problem:
-    * https://lists.freedesktop.org/archives/mesa-dev/2017-July/162106.html
-    */
-   indirect_mask |= nir_var_function_temp;
-
-   progress |= nir_lower_indirect_derefs(nir, indirect_mask, UINT32_MAX);
-   return progress;
 }
 
 static unsigned get_inst_tessfactor_writemask(nir_intrinsic_instr *intrin)

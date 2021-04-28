@@ -106,6 +106,9 @@ bo_new(struct fd_device *dev, uint32_t size, uint32_t flags,
    bo = bo_from_handle(dev, size, handle);
    simple_mtx_unlock(&table_lock);
 
+   bo->max_fences = 1;
+   bo->fences = &bo->_inline_fence;
+
    VG_BO_ALLOC(bo);
 
    return bo;
@@ -134,7 +137,7 @@ _fd_bo_set_name(struct fd_bo *bo, const char *fmt, va_list ap)
 struct fd_bo *
 fd_bo_new_ring(struct fd_device *dev, uint32_t size)
 {
-   uint32_t flags = DRM_FREEDRENO_GEM_GPUREADONLY;
+   uint32_t flags = FD_BO_GPUREADONLY;
    struct fd_bo *bo = bo_new(dev, size, flags, &dev->ring_cache);
    if (bo) {
       bo->bo_reuse = RING_CACHE;
@@ -254,27 +257,73 @@ fd_bo_ref(struct fd_bo *bo)
    return bo;
 }
 
-void
-fd_bo_del(struct fd_bo *bo)
+static void
+bo_del_or_recycle(struct fd_bo *bo)
 {
    struct fd_device *dev = bo->dev;
+
+   simple_mtx_assert_locked(&table_lock);
+
+   if ((bo->bo_reuse == BO_CACHE) &&
+       (fd_bo_cache_free(&dev->bo_cache, bo) == 0))
+      return;
+
+   if ((bo->bo_reuse == RING_CACHE) &&
+       (fd_bo_cache_free(&dev->ring_cache, bo) == 0))
+      return;
+
+   bo_del(bo);
+}
+
+void
+fd_bo_del_locked(struct fd_bo *bo)
+{
+   simple_mtx_assert_locked(&table_lock);
 
    if (!p_atomic_dec_zero(&bo->refcnt))
       return;
 
+   bo_del_or_recycle(bo);
+}
+
+void
+fd_bo_del(struct fd_bo *bo)
+{
+   if (!p_atomic_dec_zero(&bo->refcnt))
+      return;
+
    simple_mtx_lock(&table_lock);
-
-   if ((bo->bo_reuse == BO_CACHE) &&
-       (fd_bo_cache_free(&dev->bo_cache, bo) == 0))
-      goto out;
-   if ((bo->bo_reuse == RING_CACHE) &&
-       (fd_bo_cache_free(&dev->ring_cache, bo) == 0))
-      goto out;
-
-   bo_del(bo);
-
-out:
+   bo_del_or_recycle(bo);
    simple_mtx_unlock(&table_lock);
+}
+
+/**
+ * Cleanup fences, dropping pipe references.  If 'expired' is true, only
+ * cleanup expired fences.
+ *
+ * Normally we expect at most a single fence, the exception being bo's
+ * shared between contexts
+ */
+static void
+cleanup_fences(struct fd_bo *bo, bool expired)
+{
+   simple_mtx_assert_locked(&table_lock);
+
+   for (int i = 0; i < bo->nr_fences; i++) {
+      struct fd_bo_fence *f = &bo->fences[i];
+
+      if (expired && fd_fence_before(f->pipe->control->fence, f->fence))
+         continue;
+
+      fd_pipe_del_locked(f->pipe);
+      bo->nr_fences--;
+
+      if (bo->nr_fences > 0) {
+         /* Shuffle up the last entry to replace the current slot: */
+         bo->fences[i] = bo->fences[bo->nr_fences];
+         i--;
+      }
+   }
 }
 
 /* Called under table_lock */
@@ -284,6 +333,10 @@ bo_del(struct fd_bo *bo)
    VG_BO_FREE(bo);
 
    simple_mtx_assert_locked(&table_lock);
+
+   cleanup_fences(bo, false);
+   if (bo->fences != &bo->_inline_fence)
+      free(bo->fences);
 
    if (bo->map)
       os_munmap(bo->map, bo->size);
@@ -305,6 +358,15 @@ bo_del(struct fd_bo *bo)
    bo->funcs->destroy(bo);
 }
 
+static void
+bo_flush(struct fd_bo *bo)
+{
+   for (int i = 0; i < bo->nr_fences; i++) {
+      struct fd_bo_fence *f = &bo->fences[i];
+      fd_pipe_flush(f->pipe, f->fence);
+   }
+}
+
 int
 fd_bo_get_name(struct fd_bo *bo, uint32_t *name)
 {
@@ -323,6 +385,8 @@ fd_bo_get_name(struct fd_bo *bo, uint32_t *name)
       set_name(bo, req.name);
       simple_mtx_unlock(&table_lock);
       bo->bo_reuse = NO_CACHE;
+      bo->shared = true;
+      bo_flush(bo);
    }
 
    *name = bo->name;
@@ -334,6 +398,8 @@ uint32_t
 fd_bo_handle(struct fd_bo *bo)
 {
    bo->bo_reuse = NO_CACHE;
+   bo->shared = true;
+   bo_flush(bo);
    return bo->handle;
 }
 
@@ -349,6 +415,8 @@ fd_bo_dmabuf(struct fd_bo *bo)
    }
 
    bo->bo_reuse = NO_CACHE;
+   bo->shared = true;
+   bo_flush(bo);
 
    return prime_fd;
 }
@@ -385,11 +453,92 @@ fd_bo_map(struct fd_bo *bo)
 int
 fd_bo_cpu_prep(struct fd_bo *bo, struct fd_pipe *pipe, uint32_t op)
 {
+   if (op & FD_BO_PREP_NOSYNC) {
+      simple_mtx_lock(&table_lock);
+      enum fd_bo_state state = fd_bo_state(bo);
+      simple_mtx_unlock(&table_lock);
+
+      switch (state) {
+      case FD_BO_STATE_IDLE:
+         return 0;
+      case FD_BO_STATE_BUSY:
+         if (op & FD_BO_PREP_FLUSH)
+            bo_flush(bo);
+         return -EBUSY;
+      case FD_BO_STATE_UNKNOWN:
+         break;
+      }
+   }
+
+   /* In case the bo is referenced by a deferred submit, flush up to the
+    * required fence now:
+    */
+   bo_flush(bo);
+
    return bo->funcs->cpu_prep(bo, pipe, op);
 }
 
 void
 fd_bo_cpu_fini(struct fd_bo *bo)
 {
-   bo->funcs->cpu_fini(bo);
+// TODO until we have cached buffers, the kernel side ioctl does nothing,
+//      so just skip it.  When we have cached buffers, we can make the
+//      ioctl conditional
+//   bo->funcs->cpu_fini(bo);
 }
+
+void
+fd_bo_add_fence(struct fd_bo *bo, struct fd_pipe *pipe, uint32_t fence)
+{
+   simple_mtx_assert_locked(&table_lock);
+
+   if (bo->nosync)
+      return;
+
+   /* The common case is bo re-used on the same pipe it had previously
+    * been used on:
+    */
+   for (int i = 0; i < bo->nr_fences; i++) {
+      struct fd_bo_fence *f = &bo->fences[i];
+      if (f->pipe == pipe) {
+         assert(fd_fence_before(f->fence, fence));
+         f->fence = fence;
+         return;
+      }
+   }
+
+   cleanup_fences(bo, true);
+
+   /* The first time we grow past a single fence, we need some special
+    * handling, as we've been using the embedded _inline_fence to avoid
+    * a separate allocation:
+    */
+   if (unlikely((bo->nr_fences == 1) &&
+                (bo->fences == &bo->_inline_fence))) {
+      bo->nr_fences = bo->max_fences = 0;
+      bo->fences = NULL;
+      APPEND(bo, fences, bo->_inline_fence);
+   }
+
+   APPEND(bo, fences, (struct fd_bo_fence){
+      .pipe = fd_pipe_ref_locked(pipe),
+      .fence = fence,
+   });
+}
+
+enum fd_bo_state
+fd_bo_state(struct fd_bo *bo)
+{
+   simple_mtx_assert_locked(&table_lock);
+
+   cleanup_fences(bo, true);
+
+   if (bo->shared || bo->nosync)
+      return FD_BO_STATE_UNKNOWN;
+
+   if (!bo->nr_fences)
+      return FD_BO_STATE_IDLE;
+
+   return FD_BO_STATE_BUSY;
+}
+

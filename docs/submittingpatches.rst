@@ -165,7 +165,7 @@ to test this is to make use of the \`git rebase\` command, to run your
 tests on each commit. Assuming your branch is based off
 ``origin/master``, you can run:
 
-::
+.. code-block:: console
 
    $ git rebase --interactive --exec "meson test -C build/" origin/master
 
@@ -359,6 +359,21 @@ appropriate. The MR should be based on and target the
 staging/year.quarter branch, not on the year.quarter branch, per the
 stable branch policy. Assigning the MR to release maintainer for said
 branch or mentioning them is helpful, but not required.
+
+Documentation patches
+---------------------
+
+Our documentation is written as `reStructuredText`_ files in the
+:file:`docs` folder, and built using `Sphinx`_.
+
+The preferred language of the documentation is US English. This
+doesn't mean that everyone is expected to pay close attention to
+the different English variants, but it does mean someone might
+suggest a spelling-change, either during review or as a follow-up
+merge-request.
+
+.. _reStructuredText: https://docutils.sourceforge.io/rst.html
+.. _Sphinx: https://www.sphinx-doc.org/
 
 Git tips
 --------

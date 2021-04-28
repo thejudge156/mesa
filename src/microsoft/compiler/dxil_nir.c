@@ -1295,3 +1295,173 @@ dxil_nir_lower_double_math(nir_shader *shader)
 
    return progress;
 }
+
+typedef struct {
+   gl_system_value *values;
+   uint32_t count;
+} zero_system_values_state;
+
+static bool
+lower_system_value_to_zero_filter(const nir_instr* instr, const void* cb_state)
+{
+   if (instr->type != nir_instr_type_intrinsic) {
+      return false;
+   }
+
+   nir_intrinsic_instr* intrin = nir_instr_as_intrinsic(instr);
+
+   /* All the intrinsics we care about are loads */
+   if (!nir_intrinsic_infos[intrin->intrinsic].has_dest)
+      return false;
+
+   assert(intrin->dest.is_ssa);
+
+   zero_system_values_state* state = (zero_system_values_state*)cb_state;
+   for (uint32_t i = 0; i < state->count; ++i) {
+      gl_system_value value = state->values[i];
+      nir_intrinsic_op value_op = nir_intrinsic_from_system_value(value);
+
+      if (intrin->intrinsic == value_op) {
+         return true;
+      } else if (intrin->intrinsic == nir_intrinsic_load_deref) {
+         nir_deref_instr* deref = nir_src_as_deref(intrin->src[0]);
+         if (!nir_deref_mode_is(deref, nir_var_system_value))
+            return false;
+
+         nir_variable* var = deref->var;
+         if (var->data.location == value) {
+            return true;
+         }
+      }
+   }
+
+   return false;
+}
+
+static nir_ssa_def*
+lower_system_value_to_zero_instr(nir_builder* b, nir_instr* instr, void* _state)
+{
+   return nir_imm_int(b, 0);
+}
+
+bool
+dxil_nir_lower_system_values_to_zero(nir_shader* shader,
+                                     gl_system_value* system_values,
+                                     uint32_t count)
+{
+   zero_system_values_state state = { system_values, count };
+   return nir_shader_lower_instructions(shader,
+      lower_system_value_to_zero_filter,
+      lower_system_value_to_zero_instr,
+      &state);
+}
+
+static const struct glsl_type *
+get_bare_samplers_for_type(const struct glsl_type *type)
+{
+   if (glsl_type_is_sampler(type)) {
+      if (glsl_sampler_type_is_shadow(type))
+         return glsl_bare_shadow_sampler_type();
+      else
+         return glsl_bare_sampler_type();
+   } else if (glsl_type_is_array(type)) {
+      return glsl_array_type(
+         get_bare_samplers_for_type(glsl_get_array_element(type)),
+         glsl_get_length(type),
+         0 /*explicit size*/);
+   }
+   assert(!"Unexpected type");
+   return NULL;
+}
+
+static bool
+redirect_sampler_derefs(struct nir_builder *b, nir_instr *instr, void *data)
+{
+   if (instr->type != nir_instr_type_tex)
+      return false;
+
+   nir_tex_instr *tex = nir_instr_as_tex(instr);
+   if (!nir_tex_instr_need_sampler(tex))
+      return false;
+
+   int sampler_idx = nir_tex_instr_src_index(tex, nir_tex_src_sampler_deref);
+   if (sampler_idx == -1) {
+      /* No derefs, must be using indices */
+      struct hash_entry *hash_entry = _mesa_hash_table_u64_search(data, tex->sampler_index);
+
+      /* Already have a bare sampler here */
+      if (hash_entry)
+         return false;
+
+      nir_variable *typed_sampler = NULL;
+      nir_foreach_variable_with_modes(var, b->shader, nir_var_uniform) {
+         if (var->data.binding <= tex->sampler_index &&
+             var->data.binding + glsl_type_get_sampler_count(var->type) > tex->sampler_index) {
+            /* Already have a bare sampler for this binding, add it to the table */
+            if (glsl_get_sampler_result_type(glsl_without_array(var->type)) == GLSL_TYPE_VOID) {
+               _mesa_hash_table_u64_insert(data, tex->sampler_index, var);
+               return false;
+            }
+
+            typed_sampler = var;
+         }
+      }
+
+      /* Clone the typed sampler to a bare sampler and we're done */
+      assert(typed_sampler);
+      nir_variable *bare_sampler = nir_variable_clone(typed_sampler, b->shader);
+      bare_sampler->type = get_bare_samplers_for_type(typed_sampler->type);
+      nir_shader_add_variable(b->shader, bare_sampler);
+      _mesa_hash_table_u64_insert(data, tex->sampler_index, bare_sampler);
+      return true;
+   }
+
+   /* Using derefs, means we have to rewrite the deref chain in addition to cloning */
+   nir_deref_instr *final_deref = nir_src_as_deref(tex->src[sampler_idx].src);
+   nir_deref_path path;
+   nir_deref_path_init(&path, final_deref, NULL);
+
+   nir_deref_instr *old_tail = path.path[0];
+   assert(old_tail->deref_type == nir_deref_type_var);
+   nir_variable *old_var = old_tail->var;
+   if (glsl_get_sampler_result_type(glsl_without_array(old_var->type)) == GLSL_TYPE_VOID) {
+      nir_deref_path_finish(&path);
+      return false;
+   }
+
+   struct hash_entry *hash_entry = _mesa_hash_table_u64_search(data, old_var->data.binding);
+   nir_variable *new_var;
+   if (hash_entry) {
+      new_var = hash_entry->data;
+   } else {
+      new_var = nir_variable_clone(old_var, b->shader);
+      new_var->type = get_bare_samplers_for_type(old_var->type);
+      nir_shader_add_variable(b->shader, new_var);
+      _mesa_hash_table_u64_insert(data, old_var->data.binding, new_var);
+   }
+
+   b->cursor = nir_after_instr(&old_tail->instr);
+   nir_deref_instr *new_tail = nir_build_deref_var(b, new_var);
+
+   for (unsigned i = 1; path.path[i]; ++i) {
+      b->cursor = nir_after_instr(&path.path[i]->instr);
+      new_tail = nir_build_deref_follower(b, new_tail, path.path[i]);
+   }
+
+   nir_deref_path_finish(&path);
+   nir_instr_rewrite_src_ssa(&tex->instr, &tex->src[sampler_idx].src, &new_tail->dest.ssa);
+
+   return true;
+}
+
+bool
+dxil_nir_create_bare_samplers(nir_shader *nir)
+{
+   struct hash_table_u64 *sampler_to_bare = _mesa_hash_table_u64_create(NULL);
+
+   bool progress = nir_shader_instructions_pass(nir, redirect_sampler_derefs,
+      nir_metadata_block_index | nir_metadata_dominance | nir_metadata_loop_analysis, sampler_to_bare);
+
+   _mesa_hash_table_u64_destroy(sampler_to_bare, NULL);
+   return progress;
+}

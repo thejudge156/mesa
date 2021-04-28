@@ -77,17 +77,23 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
       fd_fence_set_batch(*fencep, batch);
       fd_fence_ref(&batch->fence, *fencep);
 
-      /* We (a) cannot substitute the provided fence with last_fence,
-       * and (b) need fd_fence_populate() to be eventually called on
-       * the fence that was pre-created in frontend-thread:
+      /* If we have nothing to flush, update the pre-created unflushed
+       * fence with the current state of the last-fence:
        */
-      fd_fence_ref(&ctx->last_fence, NULL);
+      if (ctx->last_fence) {
+         fd_fence_repopulate(*fencep, ctx->last_fence);
+         fd_fence_ref(&fence, *fencep);
+         fd_bc_dump(ctx->screen, "%p: (deferred) reuse last_fence, remaining:\n", ctx);
+         goto out;
+      }
 
       /* async flush is not compatible with deferred flush, since
        * nothing triggers the batch flush which fence_flush() would
        * be waiting for
        */
       flags &= ~PIPE_FLUSH_DEFERRED;
+   } else if (!batch->fence) {
+      batch->fence = fd_fence_create(batch);
    }
 
    /* In some sequence of events, we can end up with a last_fence that is
@@ -111,10 +117,15 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
    fd_fence_ref(&fence, batch->fence);
 
    if (flags & PIPE_FLUSH_FENCE_FD)
-      batch->needs_out_fence_fd = true;
+      fence->submit_fence.use_fence_fd = true;
 
    fd_bc_dump(ctx->screen, "%p: flushing %p<%u>, flags=0x%x, pending:\n", ctx,
               batch, batch->seqno, flags);
+
+   /* If we get here, we need to flush for a fence, even if there is
+    * no rendering yet:
+    */
+   batch->needs_flush = true;
 
    if (!ctx->screen->reorder) {
       fd_batch_flush(batch);
@@ -366,6 +377,7 @@ fd_context_destroy(struct pipe_context *pctx)
    }
 
    fd_device_del(ctx->dev);
+   fd_pipe_purge(ctx->pipe);
    fd_pipe_del(ctx->pipe);
 
    simple_mtx_destroy(&ctx->gmem_lock);
@@ -465,7 +477,12 @@ fd_trace_read_ts(struct u_trace_context *utctx,
 
    /* Only need to stall on results for the first entry: */
    if (idx == 0) {
-      int ret = fd_bo_cpu_prep(ts_bo, ctx->pipe, DRM_FREEDRENO_PREP_READ);
+      /* Avoid triggering deferred submits from flushing, since that
+       * changes the behavior of what we are trying to measure:
+       */
+      while (fd_bo_cpu_prep(ts_bo, ctx->pipe, FD_BO_PREP_NOSYNC))
+         usleep(10000);
+      int ret = fd_bo_cpu_prep(ts_bo, ctx->pipe, FD_BO_PREP_READ);
       if (ret)
          return U_TRACE_NO_TIMESTAMP;
    }

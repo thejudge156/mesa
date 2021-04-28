@@ -545,7 +545,7 @@ zink_descriptor_program_init(struct zink_context *ctx,
 
    unsigned total_descs = 0;
    for (unsigned i = 0; i < ZINK_DESCRIPTOR_TYPES; i++) {
-      total_descs += num_bindings[i];;
+      total_descs += num_bindings[i];
    }
    if (!total_descs)
       return true;
@@ -971,46 +971,46 @@ handle_image_descriptor(struct zink_screen *screen, struct zink_resource *res, e
                         struct zink_sampler_state *sampler,
                         VkImageView imageview, VkBufferView bufferview, bool do_set)
 {
-    if (!res) {
-        /* if we're hitting this assert often, we can probably just throw a junk buffer in since
-         * the results of this codepath are undefined in ARB_texture_buffer_object spec
-         */
-        assert(screen->info.rb2_feats.nullDescriptor);
-        
-        switch (vktype) {
-        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-        case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-           *buffer_info = VK_NULL_HANDLE;
-           if (do_set)
-              wd->pTexelBufferView = buffer_info;
-           ++(*num_buffer_info);
-           break;
-        case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-        case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-           image_info->imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-           image_info->imageView = VK_NULL_HANDLE;
-           image_info->sampler = sampler ? sampler->sampler : VK_NULL_HANDLE;
-           if (do_set)
-              wd->pImageInfo = image_info;
-           ++(*num_image_info);
-           break;
-        default:
-           unreachable("unknown descriptor type");
-        }
-     } else if (res->base.b.target != PIPE_BUFFER) {
-        assert(layout != VK_IMAGE_LAYOUT_UNDEFINED);
-        image_info->imageLayout = layout;
-        image_info->imageView = imageview;
-        image_info->sampler = sampler ? sampler->sampler : VK_NULL_HANDLE;
-        if (do_set)
-           wd->pImageInfo = image_info;
-        ++(*num_image_info);
-     } else {
-        if (do_set)
-           wd->pTexelBufferView = buffer_info;
-        *buffer_info = bufferview;
-        ++(*num_buffer_info);
-     }
+   if (!res) {
+      /* if we're hitting this assert often, we can probably just throw a junk buffer in since
+       * the results of this codepath are undefined in ARB_texture_buffer_object spec
+       */
+      assert(screen->info.rb2_feats.nullDescriptor);
+
+      switch (vktype) {
+      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+         *buffer_info = VK_NULL_HANDLE;
+         if (do_set)
+            wd->pTexelBufferView = buffer_info;
+         ++(*num_buffer_info);
+         break;
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+         image_info->imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+         image_info->imageView = VK_NULL_HANDLE;
+         image_info->sampler = sampler ? sampler->sampler : VK_NULL_HANDLE;
+         if (do_set)
+            wd->pImageInfo = image_info;
+         ++(*num_image_info);
+         break;
+      default:
+         unreachable("unknown descriptor type");
+      }
+   } else if (res->base.b.target != PIPE_BUFFER) {
+      assert(layout != VK_IMAGE_LAYOUT_UNDEFINED);
+      image_info->imageLayout = layout;
+      image_info->imageView = imageview;
+      image_info->sampler = sampler ? sampler->sampler : VK_NULL_HANDLE;
+      if (do_set)
+         wd->pImageInfo = image_info;
+      ++(*num_image_info);
+   } else {
+      if (do_set)
+         wd->pTexelBufferView = buffer_info;
+      *buffer_info = bufferview;
+      ++(*num_buffer_info);
+   }
 }
 
 static void
@@ -1224,7 +1224,7 @@ zink_descriptors_update(struct zink_context *ctx, struct zink_screen *screen, bo
                                                is_compute, cache_hit[ZINK_DESCRIPTOR_TYPE_IMAGE],
                                                need_resource_refs[ZINK_DESCRIPTOR_TYPE_IMAGE]);
 
-   for (int h = 0; zds[h] && h < ZINK_DESCRIPTOR_TYPES; h++) {
+   for (int h = 0; h < ZINK_DESCRIPTOR_TYPES && zds[h]; h++) {
       /* skip null descriptor sets since they have no resources */
       if (!zds[h]->hash)
          continue;

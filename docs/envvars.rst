@@ -212,8 +212,6 @@ the :doc:`Xlib software driver page <xlibdriver>` for details.
 
 ``MESA_RGB_VISUAL``
    specifies the X visual and depth for RGB mode
-``MESA_CI_VISUAL``
-   specifies the X visual and depth for CI mode
 ``MESA_BACK_BUFFER``
    specifies how to implement the back color buffer, either ``pixmap``
    or ``ximage``
@@ -597,8 +595,6 @@ RADV driver environment variables
       disable out-of-order rasterization
    ``notccompatcmask``
       disable TC-compat CMASK for MSAA surfaces
-   ``nothreadllvm``
-      disable LLVM threaded compilation
    ``noumr``
       disable UMR dumps during GPU hang detection (only with RADV_DEBUG=hang)
    ``novrsflatshading``
@@ -651,8 +647,6 @@ RADV driver environment variables
       enable wave32 for pixel shaders (GFX10+)
    ``sam``
       enable optimizations to move more driver internal objects to VRAM.
-   ``tccompatcmask``
-      enable TC-compat cmask for MSAA images
 
 ``RADV_TEX_ANISO``
    force anisotropy filter (up to 16)
@@ -684,102 +678,234 @@ radeonsi driver environment variables
 
 ``AMD_DEBUG``
    a comma-separated list of named flags, which do various things:
-``nodcc``
-   Disable DCC.
-``nodccclear``
-   Disable DCC fast clear.
-``nodccfb``
-   Disable separate DCC on the main framebuffer
-``nodccmsaa``
-   Disable DCC for MSAA
-``nodpbb``
-   Disable DPBB.
-``nodfsm``
-   Disable DFSM.
-``notiling``
-   Disable tiling
-``nofmask``
-   Disable MSAA compression
-``nohyperz``
-   Disable Hyper-Z
-``no2d``
-   Disable 2D tiling
-``info``
-   Print driver information
-``tex``
-   Print texture info
-``compute``
-   Print compute info
-``vm``
-   Print virtual addresses when creating resources
-``vs``
-   Print vertex shaders
-``ps``
-   Print pixel shaders
-``gs``
-   Print geometry shaders
-``tcs``
-   Print tessellation control shaders
-``tes``
-   Print tessellation evaluation shaders
-``cs``
-   Print compute shaders
-``noir``
-   Don't print the LLVM IR
-``nonir``
-   Don't print NIR when printing shaders
-``noasm``
-   Don't print disassembled shaders
-``preoptir``
-   Print the LLVM IR before initial optimizations
-``gisel``
-   Enable LLVM global instruction selector.
-``w32ge``
-   Use Wave32 for vertex, tessellation, and geometry shaders.
-``w32ps``
-   Use Wave32 for pixel shaders.
-``w32cs``
-   Use Wave32 for computes shaders.
-``w64ge``
-   Use Wave64 for vertex, tessellation, and geometry shaders.
-``w64ps``
-   Use Wave64 for pixel shaders.
-``w64cs``
-   Use Wave64 for computes shaders.
-``checkir``
-   Enable additional sanity checks on shader IR
-``mono``
-   Use old-style monolithic shaders compiled on demand
-``nooptvariant``
-   Disable compiling optimized shader variants.
-``nowc``
-   Disable GTT write combining
-``check_vm``
-   Check VM faults and dump debug info.
-``reserve_vmid``
-   Force VMID reservation per context.
-``nogfx``
-   Disable graphics. Only multimedia compute paths can be used.
-``nongg``
-   Disable NGG and use the legacy pipeline.
-``nggc``
-   Always use NGG culling even when it can hurt.
-``nonggc``
-   Disable NGG culling.
-``alwayspd``
-   Always enable the primitive discard compute shader.
-``pd``
-   Enable the primitive discard compute shader for large draw calls.
-``nopd``
-   Disable the primitive discard compute shader.
-``switch_on_eop``
-   Program WD/IA to switch on end-of-packet.
-``nooutoforder``
-   Disable out-of-order rasterization
-``dpbb``
-   Enable DPBB.
-``dfsm``
-   Enable DFSM.
+
+   ``nodcc``
+      Disable DCC.
+   ``nodccclear``
+      Disable DCC fast clear.
+   ``nodccfb``
+      Disable separate DCC on the main framebuffer
+   ``nodccmsaa``
+      Disable DCC for MSAA
+   ``nodpbb``
+      Disable DPBB.
+   ``nodfsm``
+      Disable DFSM.
+   ``notiling``
+      Disable tiling
+   ``nofmask``
+      Disable MSAA compression
+   ``nohyperz``
+      Disable Hyper-Z
+   ``no2d``
+      Disable 2D tiling
+   ``info``
+      Print driver information
+   ``tex``
+      Print texture info
+   ``compute``
+      Print compute info
+   ``vm``
+      Print virtual addresses when creating resources
+   ``vs``
+      Print vertex shaders
+   ``ps``
+      Print pixel shaders
+   ``gs``
+      Print geometry shaders
+   ``tcs``
+      Print tessellation control shaders
+   ``tes``
+      Print tessellation evaluation shaders
+   ``cs``
+      Print compute shaders
+   ``noir``
+      Don't print the LLVM IR
+   ``nonir``
+      Don't print NIR when printing shaders
+   ``noasm``
+      Don't print disassembled shaders
+   ``preoptir``
+      Print the LLVM IR before initial optimizations
+   ``gisel``
+      Enable LLVM global instruction selector.
+   ``w32ge``
+      Use Wave32 for vertex, tessellation, and geometry shaders.
+   ``w32ps``
+      Use Wave32 for pixel shaders.
+   ``w32cs``
+      Use Wave32 for computes shaders.
+   ``w64ge``
+      Use Wave64 for vertex, tessellation, and geometry shaders.
+   ``w64ps``
+      Use Wave64 for pixel shaders.
+   ``w64cs``
+      Use Wave64 for computes shaders.
+   ``checkir``
+      Enable additional sanity checks on shader IR
+   ``mono``
+      Use old-style monolithic shaders compiled on demand
+   ``nooptvariant``
+      Disable compiling optimized shader variants.
+   ``nowc``
+      Disable GTT write combining
+   ``check_vm``
+      Check VM faults and dump debug info.
+   ``reserve_vmid``
+      Force VMID reservation per context.
+   ``nogfx``
+      Disable graphics. Only multimedia compute paths can be used.
+   ``nongg``
+      Disable NGG and use the legacy pipeline.
+   ``nggc``
+      Always use NGG culling even when it can hurt.
+   ``nonggc``
+      Disable NGG culling.
+   ``alwayspd``
+      Always enable the primitive discard compute shader.
+   ``pd``
+      Enable the primitive discard compute shader for large draw calls.
+   ``nopd``
+      Disable the primitive discard compute shader.
+   ``switch_on_eop``
+      Program WD/IA to switch on end-of-packet.
+   ``nooutoforder``
+      Disable out-of-order rasterization
+   ``dpbb``
+      Enable DPBB.
+   ``dfsm``
+      Enable DFSM.
+
+r600 driver environment variables
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``R600_DEBUG``
+   a comma-separated list of named flags, which do various things:
+
+   ``nocpdma``
+      Disable CP DMA
+   ``nosb``
+      Disable sb backend for graphics shaders
+   ``sbcl``
+      Enable sb backend for compute shaders
+   ``sbdry``
+      Don't use optimized bytecode (just print the dumps)
+   ``sbstat``
+      Print optimization statistics for shaders
+   ``sbdump``
+      Print IR dumps after some optimization passes
+   ``sbnofallback``
+      Abort on errors instead of fallback
+   ``sbdisasm``
+      Use sb disassembler for shader dumps
+   ``sbsafemath``
+      Disable unsafe math optimizations
+   ``nirsb``
+      Enable NIR with SB optimizer
+   ``tex``
+      Print texture info
+   ``nir``
+      Enable experimental NIR shaders
+   ``compute``
+      Print compute info
+   ``vm``
+      Print virtual addresses when creating resources
+   ``info``
+      Print driver information
+   ``fs``
+      Print fetch shaders
+   ``vs``
+      Print vertex shaders
+   ``gs``
+      Print geometry shaders
+   ``ps``
+      Print pixel shaders
+   ``cs``
+      Print compute shaders
+   ``tcs``
+      Print tessellation control shaders
+   ``tes``
+      Print tessellation evaluation shaders
+   ``noir``
+      Don't print the LLVM IR
+   ``notgsi``
+      Don't print the TGSI
+   ``noasm``
+      Don't print disassembled shaders
+   ``preoptir``
+      Print the LLVM IR before initial optimizations
+   ``checkir``
+      Enable additional sanity checks on shader IR
+   ``nooptvariant``
+      Disable compiling optimized shader variants.
+   ``testdma``
+      Invoke SDMA tests and exit.
+   ``testvmfaultcp``
+      Invoke a CP VM fault test and exit.
+   ``testvmfaultsdma``
+      Invoke a SDMA VM fault test and exit.
+   ``testvmfaultshader``
+      Invoke a shader VM fault test and exit.
+   ``nodma``
+      Disable asynchronous DMA
+   ``nohyperz``
+      Disable Hyper-Z
+   ``noinvalrange``
+      Disable handling of INVALIDATE_RANGE map flags
+   ``no2d``
+      Disable 2D tiling
+   ``notiling``
+      Disable tiling
+   ``switch_on_eop``
+      Program WD/IA to switch on end-of-packet.
+   ``forcedma``
+      Use asynchronous DMA for all operations when possible.
+   ``precompile``
+      Compile one shader variant at shader creation.
+   ``nowc``
+      Disable GTT write combining
+   ``check_vm``
+      Check VM faults and dump debug info.
+   ``unsafemath``
+      Enable unsafe math shader optimizations
+
+``R600_DEBUG_COMPUTE``
+   if set to ``true``, various compute-related debug information will
+   be printed to stderr. Defaults to ``false``.
+``R600_DUMP_SHADERS``
+   if set to ``true``, NIR shaders will be printed to stderr. Defaults
+   to ``false``.
+``R600_HYPERZ``
+   If set to ``false``, disables HyperZ optimizations. Defaults to ``true``.
+``R600_NIR_DEBUG``
+   a comma-separated list of named flags, which do various things:
+
+   ``instr``
+      Log all consumed nir instructions
+   ``ir``
+      Log created R600 IR
+   ``cc``
+      Log R600 IR to assembly code creation
+   ``noerr``
+      Don't log shader conversion errors
+   ``si``
+      Log shader info (non-zero values)
+   ``reg``
+      Log register allocation and lookup
+   ``io``
+      Log shader in and output
+   ``ass``
+      Log IR to assembly conversion
+   ``flow``
+      Log control flow instructions
+   ``merge``
+      Log register merge operations
+   ``nomerge``
+      Skip register merge step
+   ``tex``
+      Log texture ops
+   ``trans``
+      Log generic translation messages
 
 Other Gallium drivers have their own environment variables. These may
 change frequently so the source code should be consulted for details.

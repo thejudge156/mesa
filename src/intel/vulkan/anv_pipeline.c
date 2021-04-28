@@ -764,8 +764,11 @@ anv_pipeline_lower_nir(struct anv_pipeline *pipeline,
     * handled naturally by falling back to A64 messages.
     */
    NIR_PASS_V(nir, nir_lower_non_uniform_access,
-              nir_lower_non_uniform_texture_access |
-              nir_lower_non_uniform_image_access);
+              &(nir_lower_non_uniform_access_options) {
+                  .types = nir_lower_non_uniform_texture_access |
+                           nir_lower_non_uniform_image_access,
+                  .callback = NULL,
+              });
 
    anv_nir_compute_push_layout(pdevice, pipeline->device->robust_buffer_access,
                                nir, prog_data, &stage->bind_map, mem_ctx);
@@ -2079,12 +2082,32 @@ copy_non_dynamic_state(struct anv_graphics_pipeline *pipeline,
       }
    }
 
+   if (states & ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE) {
+      if (!pCreateInfo->pRasterizationState->rasterizerDiscardEnable &&
+          uses_color_att) {
+         assert(pCreateInfo->pColorBlendState);
+         const VkPipelineColorWriteCreateInfoEXT *color_write_info =
+            vk_find_struct_const(pCreateInfo->pColorBlendState->pNext,
+                                 PIPELINE_COLOR_WRITE_CREATE_INFO_EXT);
+
+         if (color_write_info) {
+            dynamic->color_writes = 0;
+            for (uint32_t i = 0; i < color_write_info->attachmentCount; i++) {
+               dynamic->color_writes |=
+                  color_write_info->pColorWriteEnables[i] ? (1u << i) : 0;
+            }
+         }
+      }
+   }
+
    pipeline->dynamic_state_mask = states;
 
    /* For now that only state that can be either dynamic or baked in the
-    * pipeline is the sample location.
+    * pipeline is the sample location & color blend.
     */
-   pipeline->static_state_mask = states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS;
+   pipeline->static_state_mask = states &
+      (ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS |
+       ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE);
 }
 
 static void

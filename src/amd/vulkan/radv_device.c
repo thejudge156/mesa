@@ -37,6 +37,7 @@
 #include "vk_util.h"
 #ifdef _WIN32
 typedef void *drmDevicePtr;
+#include <io.h>
 #else
 #include <amdgpu.h>
 #include <xf86drm.h>
@@ -454,6 +455,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_pipeline_creation_feedback = true,
       .EXT_post_depth_coverage = device->rad_info.chip_class >= GFX10,
       .EXT_private_data = true,
+      .EXT_provoking_vertex = true,
       .EXT_queue_family_foreign = true,
       .EXT_robustness2 = true,
       .EXT_sample_locations = device->rad_info.chip_class < GFX10,
@@ -693,7 +695,9 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
 
 fail_disk_cache:
    disk_cache_destroy(device->disk_cache);
+#ifdef ENABLE_SHADER_CACHE
 fail_wsi:
+#endif
    device->ws->destroy(device->ws);
 fail_base:
    vk_physical_device_finish(&device->vk);
@@ -769,7 +773,6 @@ static const struct debug_control radv_debug_options[] = {
    {"errors", RADV_DEBUG_ERRORS},
    {"startup", RADV_DEBUG_STARTUP},
    {"checkir", RADV_DEBUG_CHECKIR},
-   {"nothreadllvm", RADV_DEBUG_NOTHREADLLVM},
    {"nobinning", RADV_DEBUG_NOBINNING},
    {"nongg", RADV_DEBUG_NO_NGG},
    {"metashaders", RADV_DEBUG_DUMP_META_SHADERS},
@@ -795,7 +798,7 @@ radv_get_debug_option_name(int id)
 
 static const struct debug_control radv_perftest_options[] = {
    {"localbos", RADV_PERFTEST_LOCAL_BOS},   {"dccmsaa", RADV_PERFTEST_DCC_MSAA},
-   {"bolist", RADV_PERFTEST_BO_LIST},       {"tccompatcmask", RADV_PERFTEST_TC_COMPAT_CMASK},
+   {"bolist", RADV_PERFTEST_BO_LIST},
    {"cswave32", RADV_PERFTEST_CS_WAVE_32},  {"pswave32", RADV_PERFTEST_PS_WAVE_32},
    {"gewave32", RADV_PERFTEST_GE_WAVE_32},  {"dfsm", RADV_PERFTEST_DFSM},
    {"nosam", RADV_PERFTEST_NO_SAM},         {"sam", RADV_PERFTEST_SAM},
@@ -914,38 +917,7 @@ radv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    }
 
    instance->debug_flags = parse_debug_string(getenv("RADV_DEBUG"), radv_debug_options);
-
-   const char *radv_perftest_str = getenv("RADV_PERFTEST");
-   instance->perftest_flags = parse_debug_string(radv_perftest_str, radv_perftest_options);
-
-   if (radv_perftest_str) {
-      /* Output warnings for famous RADV_PERFTEST options that no
-       * longer exist or are deprecated.
-       */
-      if (strstr(radv_perftest_str, "aco")) {
-         fprintf(
-            stderr,
-            "*******************************************************************************\n");
-         fprintf(
-            stderr,
-            "* WARNING: Unknown option RADV_PERFTEST='aco'. ACO is enabled by default now. *\n");
-         fprintf(
-            stderr,
-            "*******************************************************************************\n");
-      }
-      if (strstr(radv_perftest_str, "llvm")) {
-         fprintf(
-            stderr,
-            "*********************************************************************************\n");
-         fprintf(
-            stderr,
-            "* WARNING: Unknown option 'RADV_PERFTEST=llvm'. Did you mean 'RADV_DEBUG=llvm'? *\n");
-         fprintf(
-            stderr,
-            "*********************************************************************************\n");
-         abort();
-      }
-   }
+   instance->perftest_flags = parse_debug_string(getenv("RADV_PERFTEST"), radv_perftest_options);
 
    if (instance->debug_flags & RADV_DEBUG_STARTUP)
       radv_logi("Created an instance");
@@ -1637,6 +1609,13 @@ radv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->shaderZeroInitializeWorkgroupMemory = true;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT: {
+         VkPhysicalDeviceProvokingVertexFeaturesEXT *features =
+            (VkPhysicalDeviceProvokingVertexFeaturesEXT *)ext;
+         features->provokingVertexLast = true;
+         features->transformFeedbackPreservesProvokingVertex = true;
+         break;
+      }
       default:
          break;
       }
@@ -2300,6 +2279,13 @@ radv_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          props->fragmentShadingRateWithFragmentShaderInterlock = false;
          props->fragmentShadingRateWithCustomSampleLocations = true;
          props->fragmentShadingRateStrictMultiplyCombiner = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_PROPERTIES_EXT: {
+         VkPhysicalDeviceProvokingVertexPropertiesEXT *props =
+            (VkPhysicalDeviceProvokingVertexPropertiesEXT *)ext;
+         props->provokingVertexModePerPipeline = true;
+         props->transformFeedbackPreservesTriangleFanProvokingVertex = true;
          break;
       }
       default:

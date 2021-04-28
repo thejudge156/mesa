@@ -135,7 +135,7 @@ compile_nir(struct d3d12_context *ctx, struct d3d12_shader_selector *sel,
    sel->current = shader;
 
    NIR_PASS_V(nir, nir_lower_samplers);
-   NIR_PASS_V(nir, d3d12_create_bare_samplers);
+   NIR_PASS_V(nir, dxil_nir_create_bare_samplers);
 
    if (key->samples_int_textures)
       NIR_PASS_V(nir, dxil_lower_sample_to_txf_for_integer_tex,
@@ -175,16 +175,17 @@ compile_nir(struct d3d12_context *ctx, struct d3d12_shader_selector *sel,
    }
 
    // Non-ubo variables
+   shader->begin_srv_binding = (UINT_MAX);
    nir_foreach_variable_with_modes(var, nir, nir_var_uniform) {
       auto type = glsl_without_array(var->type);
       if (glsl_type_is_sampler(type) && glsl_get_sampler_result_type(type) != GLSL_TYPE_VOID) {
          unsigned count = glsl_type_is_array(var->type) ? glsl_get_aoa_size(var->type) : 1;
          for (unsigned i = 0; i < count; ++i) {
-            shader->srv_bindings[shader->num_srv_bindings].index = var->data.binding + i;
-            shader->srv_bindings[shader->num_srv_bindings].binding = var->data.binding;
-            shader->srv_bindings[shader->num_srv_bindings].dimension = resource_dimension(glsl_get_sampler_dim(type));
-            shader->num_srv_bindings++;
+            shader->srv_bindings[var->data.binding + i].binding = var->data.binding;
+            shader->srv_bindings[var->data.binding + i].dimension = resource_dimension(glsl_get_sampler_dim(type));
          }
+         shader->begin_srv_binding = MIN2(var->data.binding, shader->begin_srv_binding);
+         shader->end_srv_binding = MAX2(var->data.binding + count, shader->end_srv_binding);
       }
    }
 
@@ -848,7 +849,7 @@ select_shader_variant(struct d3d12_selection_context *sel_ctx, d3d12_shader_sele
       NIR_PASS_V(new_nir_variant, d3d12_add_missing_dual_src_target,
                  key.fs.missing_dual_src_outputs);
    } else if (key.fs.frag_result_color_lowering) {
-      NIR_PASS_V(new_nir_variant, d3d12_lower_frag_result,
+      NIR_PASS_V(new_nir_variant, nir_lower_fragcolor,
                  key.fs.frag_result_color_lowering);
    }
 
