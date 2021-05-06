@@ -20,7 +20,7 @@
 # IN THE SOFTWARE.
 # 
 # Authors:
-#    Hoe Hao Cheng <haochengho12907@gmail.com>
+#    Hoe Hao Cheng <haochengho12907@gmail.com> zink_get_physical_device_info
 # 
 
 from mako.template import Template
@@ -273,7 +273,7 @@ impl_code = """
 #include "zink_screen.h"
 
 bool
-zink_get_physical_device_info(struct zink_screen *screen) 
+zink_get_physical_device_info(struct zink_screen *screen);
 {
    struct zink_device_info *info = &screen->info;
 %for ext in extensions:
