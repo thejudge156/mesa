@@ -20,7 +20,7 @@
 # IN THE SOFTWARE.
 # 
 # Authors:
-#    Hoe Hao Cheng <haochengho12907@gmail.com> zink_get_physical_device_info
+#    Hoe Hao Cheng <haochengho12907@gmail.com>
 # 
 
 from mako.template import Template
