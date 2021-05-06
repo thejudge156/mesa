@@ -25,6 +25,7 @@
 #include "target-helpers/inline_debug_helper.h"
 
 #include "sw/null/null_sw_winsys.h"
+#include <stdio.h>
 
 
 struct pipe_screen *

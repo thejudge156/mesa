@@ -7,8 +7,8 @@
 const __DRIextension **__driDriverGetExtensions_##drivername(void);       \
 PUBLIC const __DRIextension **__driDriverGetExtensions_##drivername(void) \
 {                                                                         \
-   globalDriverAPI = &galliumdrm_driver_api;                              \
-   return galliumdrm_driver_extensions;                                   \
+   printf("STUB: __driDriverGetExtensions\n"); \
+   return NULL; \
 }
 
 #if defined(GALLIUM_SOFTPIPE)
@@ -27,8 +27,8 @@ const __DRIextension **__driDriverGetExtensions_kms_swrast(void);
 
 PUBLIC const __DRIextension **__driDriverGetExtensions_kms_swrast(void)
 {
-   globalDriverAPI = &dri_kms_driver_api;
-   return galliumdrm_driver_extensions;
+   printf("STUB: __driDriverGetExtensions_swrast\n");
+   return NULL;
 }
 
 #endif

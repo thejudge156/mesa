@@ -26,6 +26,10 @@
 #include "vulkan.h"
 #include <stdbool.h>
 
+#ifdef __APPLE__
+# include "vulkan_metal.h"
+#endif
+
 // Loader-ICD version negotiation API.  Versions add the following features:
 //   Version 0 - Initial.  Doesn't support vk_icdGetInstanceProcAddr
 //               or vk_icdNegotiateLoaderICDInterfaceVersion.
