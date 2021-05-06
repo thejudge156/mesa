@@ -109,6 +109,7 @@ struct zink_screen {
    PFN_vkGetPhysicalDeviceProperties2 vk_GetPhysicalDeviceProperties2;
    PFN_vkGetPhysicalDeviceFormatProperties2 vk_GetPhysicalDeviceFormatProperties2;
    PFN_vkGetPhysicalDeviceImageFormatProperties2 vk_GetPhysicalDeviceImageFormatProperties2;
+   PFN_vkGetPhysicalDeviceMemoryProperties2 vk_GetPhysicalDeviceMemoryProperties2;
 
    PFN_vkCmdDrawIndirectCount vk_CmdDrawIndirectCount;
    PFN_vkCmdDrawIndexedIndirectCount vk_CmdDrawIndexedIndirectCount;
@@ -156,11 +157,16 @@ struct zink_screen {
       bool inline_uniforms;
    } driconf;
 
+   PFN_vkGetImageDrmFormatModifierPropertiesEXT vk_GetImageDrmFormatModifierPropertiesEXT;
+
    VkFormatProperties format_props[PIPE_FORMAT_COUNT];
    struct {
       uint32_t image_view;
       uint32_t buffer_view;
    } null_descriptor_hashes;
+
+   PFN_vkGetPhysicalDeviceMultisamplePropertiesEXT vk_GetPhysicalDeviceMultisamplePropertiesEXT;
+   PFN_vkCmdSetSampleLocationsEXT vk_CmdSetSampleLocationsEXT;
 };
 
 
@@ -201,6 +207,23 @@ zink_screen_check_last_finished(struct zink_screen *screen, uint32_t batch_id)
 bool
 zink_screen_init_semaphore(struct zink_screen *screen);
 
+static inline bool
+zink_screen_handle_vkresult(struct zink_screen *screen, VkResult ret)
+{
+   bool success = false;
+   switch (ret) {
+   case VK_SUCCESS:
+      success = true;
+      break;
+   case VK_ERROR_DEVICE_LOST:
+      screen->device_lost = true;
+      FALLTHROUGH;
+   default:
+      success = false;
+      break;
+   }
+   return success;
+}
 
 static inline struct zink_screen *
 zink_screen(struct pipe_screen *pipe)

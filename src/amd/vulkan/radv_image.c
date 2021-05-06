@@ -920,6 +920,10 @@ gfx10_make_texture_descriptor(struct radv_device *device, struct radv_image *ima
                   S_00A018_ALPHA_IS_ON_MSB(vi_alpha_is_on_msb(device, vk_format));
    }
 
+   if (radv_image_get_iterate256(device, image)) {
+      state[6] |= S_00A018_ITERATE_256(1);
+   }
+
    /* Initialize the sampler view for FMASK. */
    if (fmask_state) {
       if (radv_image_has_fmask(image)) {
@@ -2001,7 +2005,9 @@ radv_layout_fmask_compressed(const struct radv_device *device, const struct radv
        (queue_mask & (1u << RADV_QUEUE_COMPUTE)))
       return false;
 
-   return layout != VK_IMAGE_LAYOUT_GENERAL;
+   /* Only compress concurrent images if TC-compat CMASK is enabled (no FMASK decompression). */
+   return layout != VK_IMAGE_LAYOUT_GENERAL &&
+          (queue_mask == (1u << RADV_QUEUE_GENERAL) || radv_image_is_tc_compat_cmask(image));
 }
 
 unsigned

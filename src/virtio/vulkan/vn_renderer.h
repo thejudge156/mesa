@@ -8,45 +8,19 @@
 
 #include "vn_common.h"
 
-struct vn_renderer_bo_ops {
-   void (*destroy)(struct vn_renderer_bo *bo);
-
-   /* allocate a CPU shared memory as the storage */
-   VkResult (*init_cpu)(struct vn_renderer_bo *bo, VkDeviceSize size);
-
-   /* import a VkDeviceMemory as the storage */
-   VkResult (*init_gpu)(struct vn_renderer_bo *bo,
-                        VkDeviceSize size,
-                        vn_object_id mem_id,
-                        VkMemoryPropertyFlags flags,
-                        VkExternalMemoryHandleTypeFlags external_handles);
-
-   /* import a dmabuf as the storage */
-   VkResult (*init_dmabuf)(struct vn_renderer_bo *bo,
-                           VkDeviceSize size,
-                           int fd,
-                           VkMemoryPropertyFlags flags,
-                           VkExternalMemoryHandleTypeFlags external_handles);
-
-   int (*export_dmabuf)(struct vn_renderer_bo *bo);
-
-   /* map is not thread-safe */
-   void *(*map)(struct vn_renderer_bo *bo);
-
-   void (*flush)(struct vn_renderer_bo *bo,
-                 VkDeviceSize offset,
-                 VkDeviceSize size);
-   void (*invalidate)(struct vn_renderer_bo *bo,
-                      VkDeviceSize offset,
-                      VkDeviceSize size);
+struct vn_renderer_shmem {
+   atomic_int refcount;
+   uint32_t res_id;
+   size_t mmap_size; /* for internal use only (i.e., munmap) */
+   void *mmap_ptr;
 };
 
 struct vn_renderer_bo {
    atomic_int refcount;
-
    uint32_t res_id;
-
-   struct vn_renderer_bo_ops ops;
+   /* for internal use only */
+   size_t mmap_size;
+   void *mmap_ptr;
 };
 
 enum vn_renderer_sync_flags {
@@ -187,13 +161,55 @@ struct vn_renderer_ops {
    VkResult (*wait)(struct vn_renderer *renderer,
                     const struct vn_renderer_wait *wait);
 
-   struct vn_renderer_bo *(*bo_create)(struct vn_renderer *renderer);
-
    struct vn_renderer_sync *(*sync_create)(struct vn_renderer *renderer);
+};
+
+struct vn_renderer_shmem_ops {
+   struct vn_renderer_shmem *(*create)(struct vn_renderer *renderer,
+                                       size_t size);
+   void (*destroy)(struct vn_renderer *renderer,
+                   struct vn_renderer_shmem *shmem);
+};
+
+struct vn_renderer_bo_ops {
+   VkResult (*create_from_device_memory)(
+      struct vn_renderer *renderer,
+      VkDeviceSize size,
+      vn_object_id mem_id,
+      VkMemoryPropertyFlags flags,
+      VkExternalMemoryHandleTypeFlags external_handles,
+      struct vn_renderer_bo **out_bo);
+
+   VkResult (*create_from_dmabuf)(
+      struct vn_renderer *renderer,
+      VkDeviceSize size,
+      int fd,
+      VkMemoryPropertyFlags flags,
+      VkExternalMemoryHandleTypeFlags external_handles,
+      struct vn_renderer_bo **out_bo);
+
+   bool (*destroy)(struct vn_renderer *renderer, struct vn_renderer_bo *bo);
+
+   int (*export_dmabuf)(struct vn_renderer *renderer,
+                        struct vn_renderer_bo *bo);
+
+   /* map is not thread-safe */
+   void *(*map)(struct vn_renderer *renderer, struct vn_renderer_bo *bo);
+
+   void (*flush)(struct vn_renderer *renderer,
+                 struct vn_renderer_bo *bo,
+                 VkDeviceSize offset,
+                 VkDeviceSize size);
+   void (*invalidate)(struct vn_renderer *renderer,
+                      struct vn_renderer_bo *bo,
+                      VkDeviceSize offset,
+                      VkDeviceSize size);
 };
 
 struct vn_renderer {
    struct vn_renderer_ops ops;
+   struct vn_renderer_shmem_ops shmem_ops;
+   struct vn_renderer_bo_ops bo_ops;
 };
 
 VkResult
@@ -264,79 +280,94 @@ vn_renderer_wait(struct vn_renderer *renderer,
    return renderer->ops.wait(renderer, wait);
 }
 
-static inline VkResult
-vn_renderer_bo_create_cpu(struct vn_renderer *renderer,
-                          VkDeviceSize size,
-                          struct vn_renderer_bo **_bo)
+static inline struct vn_renderer_shmem *
+vn_renderer_shmem_create(struct vn_renderer *renderer, size_t size)
 {
-   struct vn_renderer_bo *bo = renderer->ops.bo_create(renderer);
-   if (!bo)
-      return VK_ERROR_OUT_OF_HOST_MEMORY;
-
-   VkResult result = bo->ops.init_cpu(bo, size);
-   if (result != VK_SUCCESS) {
-      bo->ops.destroy(bo);
-      return result;
+   struct vn_renderer_shmem *shmem =
+      renderer->shmem_ops.create(renderer, size);
+   if (shmem) {
+      assert(atomic_load(&shmem->refcount) == 1);
+      assert(shmem->res_id);
+      assert(shmem->mmap_size >= size);
+      assert(shmem->mmap_ptr);
    }
 
-   atomic_init(&bo->refcount, 1);
+   return shmem;
+}
 
-   *_bo = bo;
+static inline struct vn_renderer_shmem *
+vn_renderer_shmem_ref(struct vn_renderer *renderer,
+                      struct vn_renderer_shmem *shmem)
+{
+   const int old =
+      atomic_fetch_add_explicit(&shmem->refcount, 1, memory_order_relaxed);
+   assert(old >= 1);
+
+   return shmem;
+}
+
+static inline void
+vn_renderer_shmem_unref(struct vn_renderer *renderer,
+                        struct vn_renderer_shmem *shmem)
+{
+   const int old =
+      atomic_fetch_sub_explicit(&shmem->refcount, 1, memory_order_release);
+   assert(old >= 1);
+
+   if (old == 1) {
+      atomic_thread_fence(memory_order_acquire);
+      renderer->shmem_ops.destroy(renderer, shmem);
+   }
+}
+
+static inline VkResult
+vn_renderer_bo_create_from_device_memory(
+   struct vn_renderer *renderer,
+   VkDeviceSize size,
+   vn_object_id mem_id,
+   VkMemoryPropertyFlags flags,
+   VkExternalMemoryHandleTypeFlags external_handles,
+   struct vn_renderer_bo **out_bo)
+{
+   struct vn_renderer_bo *bo;
+   VkResult result = renderer->bo_ops.create_from_device_memory(
+      renderer, size, mem_id, flags, external_handles, &bo);
+   if (result != VK_SUCCESS)
+      return result;
+
+   assert(atomic_load(&bo->refcount) == 1);
+   assert(bo->res_id);
+   assert(!bo->mmap_size || bo->mmap_size >= size);
+
+   *out_bo = bo;
    return VK_SUCCESS;
 }
 
 static inline VkResult
-vn_renderer_bo_create_gpu(struct vn_renderer *renderer,
-                          VkDeviceSize size,
-                          vn_object_id mem_id,
-                          VkMemoryPropertyFlags flags,
-                          VkExternalMemoryHandleTypeFlags external_handles,
-                          struct vn_renderer_bo **_bo)
+vn_renderer_bo_create_from_dmabuf(
+   struct vn_renderer *renderer,
+   VkDeviceSize size,
+   int fd,
+   VkMemoryPropertyFlags flags,
+   VkExternalMemoryHandleTypeFlags external_handles,
+   struct vn_renderer_bo **out_bo)
 {
-   struct vn_renderer_bo *bo = renderer->ops.bo_create(renderer);
-   if (!bo)
-      return VK_ERROR_OUT_OF_HOST_MEMORY;
-
-   VkResult result =
-      bo->ops.init_gpu(bo, size, mem_id, flags, external_handles);
-   if (result != VK_SUCCESS) {
-      bo->ops.destroy(bo);
+   struct vn_renderer_bo *bo;
+   VkResult result = renderer->bo_ops.create_from_dmabuf(
+      renderer, size, fd, flags, external_handles, &bo);
+   if (result != VK_SUCCESS)
       return result;
-   }
 
-   atomic_init(&bo->refcount, 1);
+   assert(atomic_load(&bo->refcount) >= 1);
+   assert(bo->res_id);
+   assert(!bo->mmap_size || bo->mmap_size >= size);
 
-   *_bo = bo;
-   return VK_SUCCESS;
-}
-
-static inline VkResult
-vn_renderer_bo_create_dmabuf(struct vn_renderer *renderer,
-                             VkDeviceSize size,
-                             int fd,
-                             VkMemoryPropertyFlags flags,
-                             VkExternalMemoryHandleTypeFlags external_handles,
-                             struct vn_renderer_bo **_bo)
-{
-   struct vn_renderer_bo *bo = renderer->ops.bo_create(renderer);
-   if (!bo)
-      return VK_ERROR_OUT_OF_HOST_MEMORY;
-
-   VkResult result =
-      bo->ops.init_dmabuf(bo, size, fd, flags, external_handles);
-   if (result != VK_SUCCESS) {
-      bo->ops.destroy(bo);
-      return result;
-   }
-
-   atomic_init(&bo->refcount, 1);
-
-   *_bo = bo;
+   *out_bo = bo;
    return VK_SUCCESS;
 }
 
 static inline struct vn_renderer_bo *
-vn_renderer_bo_ref(struct vn_renderer_bo *bo)
+vn_renderer_bo_ref(struct vn_renderer *renderer, struct vn_renderer_bo *bo)
 {
    const int old =
       atomic_fetch_add_explicit(&bo->refcount, 1, memory_order_relaxed);
@@ -346,7 +377,7 @@ vn_renderer_bo_ref(struct vn_renderer_bo *bo)
 }
 
 static inline bool
-vn_renderer_bo_unref(struct vn_renderer_bo *bo)
+vn_renderer_bo_unref(struct vn_renderer *renderer, struct vn_renderer_bo *bo)
 {
    const int old =
       atomic_fetch_sub_explicit(&bo->refcount, 1, memory_order_release);
@@ -354,39 +385,41 @@ vn_renderer_bo_unref(struct vn_renderer_bo *bo)
 
    if (old == 1) {
       atomic_thread_fence(memory_order_acquire);
-      bo->ops.destroy(bo);
-      return true;
+      return renderer->bo_ops.destroy(renderer, bo);
    }
 
    return false;
 }
 
 static inline int
-vn_renderer_bo_export_dmabuf(struct vn_renderer_bo *bo)
+vn_renderer_bo_export_dmabuf(struct vn_renderer *renderer,
+                             struct vn_renderer_bo *bo)
 {
-   return bo->ops.export_dmabuf(bo);
+   return renderer->bo_ops.export_dmabuf(renderer, bo);
 }
 
 static inline void *
-vn_renderer_bo_map(struct vn_renderer_bo *bo)
+vn_renderer_bo_map(struct vn_renderer *renderer, struct vn_renderer_bo *bo)
 {
-   return bo->ops.map(bo);
+   return renderer->bo_ops.map(renderer, bo);
 }
 
 static inline void
-vn_renderer_bo_flush(struct vn_renderer_bo *bo,
+vn_renderer_bo_flush(struct vn_renderer *renderer,
+                     struct vn_renderer_bo *bo,
                      VkDeviceSize offset,
                      VkDeviceSize end)
 {
-   bo->ops.flush(bo, offset, end);
+   renderer->bo_ops.flush(renderer, bo, offset, end);
 }
 
 static inline void
-vn_renderer_bo_invalidate(struct vn_renderer_bo *bo,
+vn_renderer_bo_invalidate(struct vn_renderer *renderer,
+                          struct vn_renderer_bo *bo,
                           VkDeviceSize offset,
                           VkDeviceSize size)
 {
-   bo->ops.invalidate(bo, offset, size);
+   renderer->bo_ops.invalidate(renderer, bo, offset, size);
 }
 
 static inline VkResult

@@ -2721,7 +2721,21 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
                   : desc->image_view->planes[binding->plane].storage_surface_state;
                surface_state = sstate.state;
                assert(surface_state.alloc_size);
-               if (need_client_mem_relocs)
+               if (surface_state.offset == 0) {
+                  mesa_loge("Bound a image to a descriptor where the "
+                            "descriptor does not have NonReadable "
+                            "set and the image does not have a "
+                            "corresponding SPIR-V format enum.");
+                  vk_debug_report(&cmd_buffer->device->physical->instance->vk,
+                                  VK_DEBUG_REPORT_ERROR_BIT_EXT,
+                                  &desc->image_view->base,
+                                  __LINE__, 0, "anv",
+                                  "Bound a image to a descriptor where the "
+                                  "descriptor does not have NonReadable "
+                                  "set and the image does not have a "
+                                  "corresponding SPIR-V format enum.");
+               }
+               if (surface_state.offset && need_client_mem_relocs)
                   add_surface_state_relocs(cmd_buffer, sstate);
             } else {
                surface_state = cmd_buffer->device->null_surface_state;
@@ -4559,12 +4573,15 @@ emit_compute_walker(struct anv_cmd_buffer *cmd_buffer,
    struct anv_cmd_compute_state *comp_state = &cmd_buffer->state.compute;
    const struct anv_shader_bin *cs_bin = pipeline->cs;
    bool predicate = cmd_buffer->state.conditional_render_enabled;
-   const struct anv_cs_parameters cs_params = anv_cs_parameters(pipeline);
+
+   const struct intel_device_info *devinfo = &pipeline->base.device->info;
+   const struct brw_cs_dispatch_info dispatch =
+      brw_cs_get_dispatch_info(devinfo, prog_data, NULL);
 
    anv_batch_emit(&cmd_buffer->batch, GENX(COMPUTE_WALKER), cw) {
       cw.IndirectParameterEnable        = indirect;
       cw.PredicateEnable                = predicate;
-      cw.SIMDSize                       = cs_params.simd_size / 16;
+      cw.SIMDSize                       = dispatch.simd_size / 16;
       cw.IndirectDataStartAddress       = comp_state->push_data.offset;
       cw.IndirectDataLength             = comp_state->push_data.alloc_size;
       cw.LocalXMaximum                  = prog_data->local_size[0] - 1;
@@ -4573,7 +4590,7 @@ emit_compute_walker(struct anv_cmd_buffer *cmd_buffer,
       cw.ThreadGroupIDXDimension        = groupCountX;
       cw.ThreadGroupIDYDimension        = groupCountY;
       cw.ThreadGroupIDZDimension        = groupCountZ;
-      cw.ExecutionMask                  = pipeline->cs_right_mask;
+      cw.ExecutionMask                  = dispatch.right_mask;
 
       cw.InterfaceDescriptor = (struct GENX(INTERFACE_DESCRIPTOR_DATA)) {
          .KernelStartPointer = cs_bin->kernel.offset,
@@ -4583,7 +4600,7 @@ emit_compute_walker(struct anv_cmd_buffer *cmd_buffer,
             cmd_buffer->state.binding_tables[MESA_SHADER_COMPUTE].offset,
          .BindingTableEntryCount =
             1 + MIN2(pipeline->cs->bind_map.surface_count, 30),
-         .NumberofThreadsinGPGPUThreadGroup = cs_params.threads,
+         .NumberofThreadsinGPGPUThreadGroup = dispatch.threads,
          .SharedLocalMemorySize = encode_slm_size(GFX_VER,
                                                   prog_data->base.total_shared),
          .BarrierEnable = prog_data->uses_barrier,
@@ -4602,19 +4619,22 @@ emit_gpgpu_walker(struct anv_cmd_buffer *cmd_buffer,
 {
    bool predicate = (GFX_VER <= 7 && indirect) ||
       cmd_buffer->state.conditional_render_enabled;
-   const struct anv_cs_parameters cs_params = anv_cs_parameters(pipeline);
+
+   const struct intel_device_info *devinfo = &pipeline->base.device->info;
+   const struct brw_cs_dispatch_info dispatch =
+      brw_cs_get_dispatch_info(devinfo, prog_data, NULL);
 
    anv_batch_emit(&cmd_buffer->batch, GENX(GPGPU_WALKER), ggw) {
       ggw.IndirectParameterEnable      = indirect;
       ggw.PredicateEnable              = predicate;
-      ggw.SIMDSize                     = cs_params.simd_size / 16;
+      ggw.SIMDSize                     = dispatch.simd_size / 16;
       ggw.ThreadDepthCounterMaximum    = 0;
       ggw.ThreadHeightCounterMaximum   = 0;
-      ggw.ThreadWidthCounterMaximum    = cs_params.threads - 1;
+      ggw.ThreadWidthCounterMaximum    = dispatch.threads - 1;
       ggw.ThreadGroupIDXDimension      = groupCountX;
       ggw.ThreadGroupIDYDimension      = groupCountY;
       ggw.ThreadGroupIDZDimension      = groupCountZ;
-      ggw.RightExecutionMask           = pipeline->cs_right_mask;
+      ggw.RightExecutionMask           = dispatch.right_mask;
       ggw.BottomExecutionMask          = 0xffffffff;
    }
 

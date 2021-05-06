@@ -282,6 +282,8 @@ ntq_add_pending_tmu_flush(struct v3d_compile *c,
 
         if (c->disable_tmu_pipelining)
                 ntq_flush_tmu(c);
+        else if (c->tmu.flush_count > 1)
+                c->pipelined_any_tmu = true;
 }
 
 enum emit_mode {
@@ -1774,7 +1776,7 @@ mem_vectorize_callback(unsigned align_mul, unsigned align_offset,
 }
 
 void
-v3d_optimize_nir(struct nir_shader *s)
+v3d_optimize_nir(struct v3d_compile *c, struct nir_shader *s)
 {
         bool progress;
         unsigned lower_flrp =
@@ -1825,6 +1827,17 @@ v3d_optimize_nir(struct nir_shader *s)
 
                 NIR_PASS(progress, s, nir_opt_undef);
                 NIR_PASS(progress, s, nir_lower_undef_to_zero);
+
+                if (c && !c->disable_loop_unrolling &&
+                    s->options->max_unroll_iterations > 0) {
+                       bool local_progress = false;
+                       NIR_PASS(local_progress, s, nir_opt_loop_unroll,
+                                nir_var_shader_in |
+                                nir_var_shader_out |
+                                nir_var_function_temp);
+                       c->unrolled_any_loops |= local_progress;
+                       progress |= local_progress;
+                }
         } while (progress);
 
         nir_move_options sink_opts =
@@ -3726,46 +3739,6 @@ nir_to_vir(struct v3d_compile *c)
                 ntq_emit_impl(c, function->impl);
         }
 }
-
-const nir_shader_compiler_options v3d_nir_options = {
-        .lower_add_sat = true,
-        .lower_all_io_to_temps = true,
-        .lower_extract_byte = true,
-        .lower_extract_word = true,
-        .lower_bitfield_insert_to_shifts = true,
-        .lower_bitfield_extract_to_shifts = true,
-        .lower_bitfield_reverse = true,
-        .lower_bit_count = true,
-        .lower_cs_local_id_from_index = true,
-        .lower_ffract = true,
-        .lower_fmod = true,
-        .lower_pack_unorm_2x16 = true,
-        .lower_pack_snorm_2x16 = true,
-        .lower_pack_unorm_4x8 = true,
-        .lower_pack_snorm_4x8 = true,
-        .lower_unpack_unorm_4x8 = true,
-        .lower_unpack_snorm_4x8 = true,
-        .lower_pack_half_2x16 = true,
-        .lower_unpack_half_2x16 = true,
-        .lower_fdiv = true,
-        .lower_find_lsb = true,
-	.lower_ffma16 = true,
-	.lower_ffma32 = true,
-	.lower_ffma64 = true,
-        .lower_flrp32 = true,
-        .lower_fpow = true,
-        .lower_fsat = true,
-        .lower_fsqrt = true,
-        .lower_ifind_msb = true,
-        .lower_isign = true,
-        .lower_ldexp = true,
-        .lower_mul_high = true,
-        .lower_wpos_pntc = true,
-        .lower_rotate = true,
-        .lower_to_scalar = true,
-        .has_fsub = true,
-        .has_isub = true,
-};
 
 /**
  * When demoting a shader down to single-threaded, removes the THRSW

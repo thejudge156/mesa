@@ -2074,12 +2074,13 @@ static inline void r600_emit_rasterizer_prim_state(struct r600_context *rctx)
 }
 
 static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info,
+                          unsigned drawid_offset,
                           const struct pipe_draw_indirect_info *indirect,
-                          const struct pipe_draw_start_count *draws,
+                          const struct pipe_draw_start_count_bias *draws,
                           unsigned num_draws)
 {
 	if (num_draws > 1) {
-		util_draw_multi(ctx, info, indirect, draws, num_draws);
+		util_draw_multi(ctx, info, drawid_offset, indirect, draws, num_draws);
 		return;
 	}
 
@@ -2223,7 +2224,7 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 			index_offset -= start_offset;
 			has_user_indices = false;
 		}
-		index_bias = info->index_bias;
+		index_bias = draws->index_bias;
 	} else {
 		index_bias = indirect ? 0 : draws[0].start;
 	}

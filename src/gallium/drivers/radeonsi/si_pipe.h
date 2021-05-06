@@ -337,7 +337,6 @@ struct si_resource {
 struct si_transfer {
    struct threaded_transfer b;
    struct si_resource *staging;
-   unsigned offset;
 };
 
 struct si_texture {
@@ -886,8 +885,9 @@ struct si_small_prim_cull_info {
 
 typedef void (*pipe_draw_vbo_func)(struct pipe_context *pipe,
                                    const struct pipe_draw_info *info,
+                                   unsigned drawid_offset,
                                    const struct pipe_draw_indirect_info *indirect,
-                                   const struct pipe_draw_start_count *draws,
+                                   const struct pipe_draw_start_count_bias *draws,
                                    unsigned num_draws);
 
 struct si_context {
@@ -1481,7 +1481,8 @@ enum si_prim_discard_outcome
 void si_build_prim_discard_compute_shader(struct si_shader_context *ctx);
 enum si_prim_discard_outcome
 si_prepare_prim_discard_or_split_draw(struct si_context *sctx, const struct pipe_draw_info *info,
-                                      const struct pipe_draw_start_count *draws,
+                                      unsigned drawid_offset,
+                                      const struct pipe_draw_start_count_bias *draws,
                                       unsigned num_draws, bool primitive_restart,
                                       unsigned total_count);
 void si_compute_signal_gfx(struct si_context *sctx);
@@ -1656,7 +1657,7 @@ static inline unsigned si_get_minimum_num_gfx_cs_dwords(struct si_context *sctx,
     * Also reserve space for stopping queries at the end of IB, because
     * the number of active queries is unlimited in theory.
     */
-   return 2048 + sctx->num_cs_dw_queries_suspend + num_draws * 9;
+   return 2048 + sctx->num_cs_dw_queries_suspend + num_draws * 10;
 }
 
 static inline void si_context_add_resource_size(struct si_context *sctx, struct pipe_resource *r)

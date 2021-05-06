@@ -267,7 +267,7 @@ lima_pipe_format_to_attrib_type(enum pipe_format format)
 
 static void
 lima_pack_vs_cmd(struct lima_context *ctx, const struct pipe_draw_info *info,
-                 const struct pipe_draw_start_count *draw)
+                 const struct pipe_draw_start_count_bias *draw)
 {
    struct lima_context_constant_buffer *ccb =
       ctx->const_buffer + PIPE_SHADER_VERTEX;
@@ -316,7 +316,7 @@ lima_pack_vs_cmd(struct lima_context *ctx, const struct pipe_draw_info *info,
 
 static void
 lima_pack_plbu_cmd(struct lima_context *ctx, const struct pipe_draw_info *info,
-                   const struct pipe_draw_start_count *draw)
+                   const struct pipe_draw_start_count_bias *draw)
 {
    struct lima_vs_compiled_shader *vs = ctx->vs;
    struct pipe_scissor_state *cscissor = &ctx->clipped_scissor;
@@ -808,7 +808,7 @@ lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *in
 
 static void
 lima_update_gp_attribute_info(struct lima_context *ctx, const struct pipe_draw_info *info,
-                              const struct pipe_draw_start_count *draw)
+                              const struct pipe_draw_start_count_bias *draw)
 {
    struct lima_job *job = lima_job_get(ctx);
    struct lima_vertex_element_state *ve = ctx->vertex_elements;
@@ -830,7 +830,7 @@ lima_update_gp_attribute_info(struct lima_context *ctx, const struct pipe_draw_i
 
       lima_job_add_bo(job, LIMA_PIPE_GP, res->bo, LIMA_SUBMIT_BO_READ);
 
-      unsigned start = info->index_size ? (ctx->min_index + info->index_bias) : draw->start;
+      unsigned start = info->index_size ? (ctx->min_index + draw->index_bias) : draw->start;
       attribute[n++] = res->bo->va + pvb->buffer_offset + pve->src_offset
          + start * pvb->stride;
       attribute[n++] = (pvb->stride << 11) |
@@ -924,7 +924,7 @@ lima_update_pp_uniform(struct lima_context *ctx)
 
 static void
 lima_update_varying(struct lima_context *ctx, const struct pipe_draw_info *info,
-                    const struct pipe_draw_start_count *draw)
+                    const struct pipe_draw_start_count_bias *draw)
 {
    struct lima_job *job = lima_job_get(ctx);
    struct lima_screen *screen = lima_screen(ctx->base.screen);
@@ -1009,7 +1009,7 @@ lima_update_varying(struct lima_context *ctx, const struct pipe_draw_info *info,
 static void
 lima_draw_vbo_update(struct pipe_context *pctx,
                      const struct pipe_draw_info *info,
-                     const struct pipe_draw_start_count *draw)
+                     const struct pipe_draw_start_count_bias *draw)
 {
    struct lima_context *ctx = lima_context(pctx);
    struct lima_context_framebuffer *fb = &ctx->framebuffer;
@@ -1064,7 +1064,7 @@ lima_draw_vbo_update(struct pipe_context *pctx,
 static void
 lima_draw_vbo_indexed(struct pipe_context *pctx,
                       const struct pipe_draw_info *info,
-                      const struct pipe_draw_start_count *draw)
+                      const struct pipe_draw_start_count_bias *draw)
 {
    struct lima_context *ctx = lima_context(pctx);
    struct lima_job *job = lima_job_get(ctx);
@@ -1108,11 +1108,11 @@ lima_draw_vbo_indexed(struct pipe_context *pctx,
 static void
 lima_draw_vbo_count(struct pipe_context *pctx,
                     const struct pipe_draw_info *info,
-                    const struct pipe_draw_start_count *draw)
+                    const struct pipe_draw_start_count_bias *draw)
 {
    static const uint32_t max_verts = 65535;
 
-   struct pipe_draw_start_count local_draw = *draw;
+   struct pipe_draw_start_count_bias local_draw = *draw;
    unsigned start = draw->start;
    unsigned count = draw->count;
 
@@ -1135,12 +1135,13 @@ lima_draw_vbo_count(struct pipe_context *pctx,
 static void
 lima_draw_vbo(struct pipe_context *pctx,
               const struct pipe_draw_info *info,
+              unsigned drawid_offset,
               const struct pipe_draw_indirect_info *indirect,
-              const struct pipe_draw_start_count *draws,
+              const struct pipe_draw_start_count_bias *draws,
               unsigned num_draws)
 {
    if (num_draws > 1) {
-      util_draw_multi(pctx, info, indirect, draws, num_draws);
+      util_draw_multi(pctx, info, drawid_offset, indirect, draws, num_draws);
       return;
    }
 

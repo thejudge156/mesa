@@ -30,6 +30,18 @@
  */
 #define VN_MIN_RENDERER_VERSION VK_API_VERSION_1_1
 
+/* max advertised version at both instance and device levels */
+#ifdef ANDROID
+#define VN_MAX_API_VERSION VK_MAKE_VERSION(1, 1, VK_HEADER_VERSION)
+#else
+#define VN_MAX_API_VERSION VK_MAKE_VERSION(1, 2, VK_HEADER_VERSION)
+#endif
+
+#define VN_EXTENSION_TABLE_INDEX(tbl, ext)                                   \
+   ((const bool *)((const void *)(&(tbl)) +                                  \
+                   offsetof(__typeof__(tbl), ext)) -                         \
+    (tbl).extensions)
+
 /*
  * Instance extensions add instance-level or physical-device-level
  * functionalities.  It seems renderer support is either unnecessary or
@@ -74,37 +86,43 @@ static const driOptionDescription vn_dri_options[] = {
 };
 
 static VkResult
-vn_instance_init_version(struct vn_instance *instance)
+vn_instance_init_renderer_versions(struct vn_instance *instance)
 {
-   uint32_t renderer_version = 0;
+   uint32_t instance_version = 0;
    VkResult result =
-      vn_call_vkEnumerateInstanceVersion(instance, &renderer_version);
+      vn_call_vkEnumerateInstanceVersion(instance, &instance_version);
    if (result != VK_SUCCESS) {
       if (VN_DEBUG(INIT))
          vn_log(instance, "failed to enumerate renderer instance version");
       return result;
    }
 
-   if (renderer_version < VN_MIN_RENDERER_VERSION) {
+   if (instance_version < VN_MIN_RENDERER_VERSION) {
       if (VN_DEBUG(INIT)) {
          vn_log(instance, "unsupported renderer instance version %d.%d",
-                VK_VERSION_MAJOR(instance->renderer_version),
-                VK_VERSION_MINOR(instance->renderer_version));
+                VK_VERSION_MAJOR(instance_version),
+                VK_VERSION_MINOR(instance_version));
       }
       return VK_ERROR_INITIALIZATION_FAILED;
    }
 
-   instance->renderer_version =
-      instance->base.base.app_info.api_version > VN_MIN_RENDERER_VERSION
-         ? instance->base.base.app_info.api_version
-         : VN_MIN_RENDERER_VERSION;
-
    if (VN_DEBUG(INIT)) {
-      vn_log(instance, "vk instance version %d.%d.%d",
-             VK_VERSION_MAJOR(instance->renderer_version),
-             VK_VERSION_MINOR(instance->renderer_version),
-             VK_VERSION_PATCH(instance->renderer_version));
+      vn_log(instance, "renderer instance version %d.%d.%d",
+             VK_VERSION_MAJOR(instance_version),
+             VK_VERSION_MINOR(instance_version),
+             VK_VERSION_PATCH(instance_version));
    }
+
+   /* request at least VN_MIN_RENDERER_VERSION internally */
+   instance->renderer_api_version =
+      MAX2(instance->base.base.app_info.api_version, VN_MIN_RENDERER_VERSION);
+
+   /* instance version for internal use is capped */
+   instance_version = MIN3(instance_version, instance->renderer_api_version,
+                           instance->renderer_info.vk_xml_version);
+   assert(instance_version >= VN_MIN_RENDERER_VERSION);
+
+   instance->renderer_version = instance_version;
 
    return VK_SUCCESS;
 }
@@ -117,31 +135,26 @@ vn_instance_init_ring(struct vn_instance *instance)
    struct vn_ring_layout layout;
    vn_ring_get_layout(extra_size, &layout);
 
-   void *ring_ptr;
-   VkResult result = vn_renderer_bo_create_cpu(
-      instance->renderer, layout.bo_size, &instance->ring.bo);
-   if (result == VK_SUCCESS) {
-      ring_ptr = vn_renderer_bo_map(instance->ring.bo);
-      if (!ring_ptr)
-         result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
-   }
-   if (result != VK_SUCCESS) {
+   instance->ring.shmem =
+      vn_renderer_shmem_create(instance->renderer, layout.shmem_size);
+   if (!instance->ring.shmem) {
       if (VN_DEBUG(INIT))
-         vn_log(instance, "failed to allocate/map ring bo");
-      return result;
+         vn_log(instance, "failed to allocate/map ring shmem");
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
 
    mtx_init(&instance->ring.mutex, mtx_plain);
 
    struct vn_ring *ring = &instance->ring.ring;
-   vn_ring_init(ring, &layout, ring_ptr);
+   vn_ring_init(ring, instance->renderer, &layout,
+                instance->ring.shmem->mmap_ptr);
 
    instance->ring.id = (uintptr_t)ring;
 
    const struct VkRingCreateInfoMESA info = {
       .sType = VK_STRUCTURE_TYPE_RING_CREATE_INFO_MESA,
-      .resourceId = instance->ring.bo->res_id,
-      .size = layout.bo_size,
+      .resourceId = instance->ring.shmem->res_id,
+      .size = layout.shmem_size,
       .idleTimeout = 50ull * 1000 * 1000,
       .headOffset = layout.head_offset,
       .tailOffset = layout.tail_offset,
@@ -153,8 +166,8 @@ vn_instance_init_ring(struct vn_instance *instance)
    };
 
    uint32_t create_ring_data[64];
-   struct vn_cs_encoder local_enc =
-      VN_CS_ENCODER_INITIALIZER(create_ring_data, sizeof(create_ring_data));
+   struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER_LOCAL(
+      create_ring_data, sizeof(create_ring_data));
    vn_encode_vkCreateRingMESA(&local_enc, 0, instance->ring.id, &info);
    vn_renderer_submit_simple(instance->renderer, create_ring_data,
                              vn_cs_encoder_get_len(&local_enc));
@@ -240,7 +253,7 @@ vn_instance_submit_roundtrip(struct vn_instance *instance,
                              uint32_t *roundtrip_seqno)
 {
    uint32_t write_ring_extra_data[8];
-   struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER(
+   struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER_LOCAL(
       write_ring_extra_data, sizeof(write_ring_extra_data));
 
    /* submit a vkWriteRingExtraMESA through the renderer */
@@ -298,7 +311,7 @@ vn_instance_submission_indirect_cs(struct vn_instance_submission *submit,
       const struct vn_cs_encoder_buffer *buf = &cs->buffers[i];
       if (buf->committed_size) {
          descs[desc_count++] = (VkCommandStreamDescriptionMESA){
-            .resourceId = buf->bo->res_id,
+            .resourceId = buf->shmem->res_id,
             .offset = buf->offset,
             .size = buf->committed_size,
          };
@@ -315,7 +328,7 @@ vn_instance_submission_indirect_cs(struct vn_instance_submission *submit,
    }
 
    struct vn_cs_encoder local_enc =
-      VN_CS_ENCODER_INITIALIZER(exec_data, exec_size);
+      VN_CS_ENCODER_INITIALIZER_LOCAL(exec_data, exec_size);
    vn_encode_vkExecuteCommandStreamsMESA(&local_enc, 0, desc_count, descs,
                                          NULL, 0, NULL, 0);
 
@@ -353,22 +366,26 @@ vn_instance_submission_direct_cs(struct vn_instance_submission *submit,
 static struct vn_ring_submit *
 vn_instance_submission_get_ring_submit(struct vn_ring *ring,
                                        const struct vn_cs_encoder *cs,
-                                       struct vn_renderer_bo *extra_bo,
+                                       struct vn_renderer_shmem *extra_shmem,
                                        bool direct)
 {
-   const uint32_t bo_count =
-      (direct ? 0 : cs->buffer_count) + (extra_bo ? 1 : 0);
-   struct vn_ring_submit *submit = vn_ring_get_submit(ring, bo_count);
+   const uint32_t shmem_count =
+      (direct ? 0 : cs->buffer_count) + (extra_shmem ? 1 : 0);
+   struct vn_ring_submit *submit = vn_ring_get_submit(ring, shmem_count);
    if (!submit)
       return NULL;
 
-   submit->bo_count = bo_count;
+   submit->shmem_count = shmem_count;
    if (!direct) {
-      for (uint32_t i = 0; i < cs->buffer_count; i++)
-         submit->bos[i] = vn_renderer_bo_ref(cs->buffers[i].bo);
+      for (uint32_t i = 0; i < cs->buffer_count; i++) {
+         submit->shmems[i] =
+            vn_renderer_shmem_ref(ring->renderer, cs->buffers[i].shmem);
+      }
    }
-   if (extra_bo)
-      submit->bos[bo_count - 1] = vn_renderer_bo_ref(extra_bo);
+   if (extra_shmem) {
+      submit->shmems[shmem_count - 1] =
+         vn_renderer_shmem_ref(ring->renderer, extra_shmem);
+   }
 
    return submit;
 }
@@ -386,7 +403,7 @@ static VkResult
 vn_instance_submission_prepare(struct vn_instance_submission *submit,
                                const struct vn_cs_encoder *cs,
                                struct vn_ring *ring,
-                               struct vn_renderer_bo *extra_bo,
+                               struct vn_renderer_shmem *extra_shmem,
                                bool direct)
 {
    if (direct) {
@@ -400,7 +417,7 @@ vn_instance_submission_prepare(struct vn_instance_submission *submit,
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    submit->submit =
-      vn_instance_submission_get_ring_submit(ring, cs, extra_bo, direct);
+      vn_instance_submission_get_ring_submit(ring, cs, extra_shmem, direct);
    if (!submit->submit) {
       vn_instance_submission_cleanup(submit, cs);
       return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -441,7 +458,7 @@ vn_instance_ring_cs_upload_locked(struct vn_instance *instance,
 static VkResult
 vn_instance_ring_submit_locked(struct vn_instance *instance,
                                const struct vn_cs_encoder *cs,
-                               struct vn_renderer_bo *extra_bo,
+                               struct vn_renderer_shmem *extra_shmem,
                                uint32_t *ring_seqno)
 {
    struct vn_ring *ring = &instance->ring.ring;
@@ -456,7 +473,7 @@ vn_instance_ring_submit_locked(struct vn_instance *instance,
 
    struct vn_instance_submission submit;
    VkResult result =
-      vn_instance_submission_prepare(&submit, cs, ring, extra_bo, direct);
+      vn_instance_submission_prepare(&submit, cs, ring, extra_shmem, direct);
    if (result != VK_SUCCESS)
       return result;
 
@@ -465,7 +482,7 @@ vn_instance_ring_submit_locked(struct vn_instance *instance,
                                       submit.cs_size, &seqno);
    if (notify) {
       uint32_t notify_ring_data[8];
-      struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER(
+      struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER_LOCAL(
          notify_ring_data, sizeof(notify_ring_data));
       vn_encode_vkNotifyRingMESA(&local_enc, 0, instance->ring.id, seqno, 0);
       vn_renderer_submit_simple(instance->renderer, notify_ring_data,
@@ -492,54 +509,48 @@ vn_instance_ring_submit(struct vn_instance *instance,
 }
 
 static bool
-vn_instance_grow_reply_bo_locked(struct vn_instance *instance, size_t size)
+vn_instance_grow_reply_shmem_locked(struct vn_instance *instance, size_t size)
 {
-   const size_t min_bo_size = 1 << 20;
+   const size_t min_shmem_size = 1 << 20;
 
-   size_t bo_size = instance->reply.size ? instance->reply.size : min_bo_size;
-   while (bo_size < size) {
-      bo_size <<= 1;
-      if (!bo_size)
+   size_t shmem_size =
+      instance->reply.size ? instance->reply.size : min_shmem_size;
+   while (shmem_size < size) {
+      shmem_size <<= 1;
+      if (!shmem_size)
          return false;
    }
 
-   struct vn_renderer_bo *bo;
-   VkResult result =
-      vn_renderer_bo_create_cpu(instance->renderer, bo_size, &bo);
-   if (result != VK_SUCCESS)
+   struct vn_renderer_shmem *shmem =
+      vn_renderer_shmem_create(instance->renderer, shmem_size);
+   if (!shmem)
       return false;
 
-   void *ptr = vn_renderer_bo_map(bo);
-   if (!ptr) {
-      vn_renderer_bo_unref(bo);
-      return false;
-   }
-
-   if (instance->reply.bo)
-      vn_renderer_bo_unref(instance->reply.bo);
-   instance->reply.bo = bo;
-   instance->reply.size = bo_size;
+   if (instance->reply.shmem)
+      vn_renderer_shmem_unref(instance->renderer, instance->reply.shmem);
+   instance->reply.shmem = shmem;
+   instance->reply.size = shmem_size;
    instance->reply.used = 0;
-   instance->reply.ptr = ptr;
+   instance->reply.ptr = shmem->mmap_ptr;
 
    return true;
 }
 
-static struct vn_renderer_bo *
-vn_instance_get_reply_bo_locked(struct vn_instance *instance,
-                                size_t size,
-                                void **ptr)
+static struct vn_renderer_shmem *
+vn_instance_get_reply_shmem_locked(struct vn_instance *instance,
+                                   size_t size,
+                                   void **ptr)
 {
    if (unlikely(instance->reply.used + size > instance->reply.size)) {
-      if (!vn_instance_grow_reply_bo_locked(instance, size))
+      if (!vn_instance_grow_reply_shmem_locked(instance, size))
          return NULL;
 
       uint32_t set_reply_command_stream_data[16];
-      struct vn_cs_encoder local_enc =
-         VN_CS_ENCODER_INITIALIZER(set_reply_command_stream_data,
-                                   sizeof(set_reply_command_stream_data));
+      struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER_LOCAL(
+         set_reply_command_stream_data,
+         sizeof(set_reply_command_stream_data));
       const struct VkCommandStreamDescriptionMESA stream = {
-         .resourceId = instance->reply.bo->res_id,
+         .resourceId = instance->reply.shmem->res_id,
          .size = instance->reply.size,
       };
       vn_encode_vkSetReplyCommandStreamMESA(&local_enc, 0, &stream);
@@ -551,7 +562,7 @@ vn_instance_get_reply_bo_locked(struct vn_instance *instance,
 
    /* TODO avoid this seek command and go lock-free? */
    uint32_t seek_reply_command_stream_data[8];
-   struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER(
+   struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER_LOCAL(
       seek_reply_command_stream_data, sizeof(seek_reply_command_stream_data));
    const size_t offset = instance->reply.used;
    vn_encode_vkSeekReplyCommandStreamMESA(&local_enc, 0, offset);
@@ -561,7 +572,7 @@ vn_instance_get_reply_bo_locked(struct vn_instance *instance,
    *ptr = instance->reply.ptr + offset;
    instance->reply.used += size;
 
-   return vn_renderer_bo_ref(instance->reply.bo);
+   return vn_renderer_shmem_ref(instance->renderer, instance->reply.shmem);
 }
 
 void
@@ -569,7 +580,7 @@ vn_instance_submit_command(struct vn_instance *instance,
                            struct vn_instance_submit_command *submit)
 {
    void *reply_ptr;
-   submit->reply_bo = NULL;
+   submit->reply_shmem = NULL;
 
    mtx_lock(&instance->ring.mutex);
 
@@ -578,15 +589,15 @@ vn_instance_submit_command(struct vn_instance *instance,
    vn_cs_encoder_commit(&submit->command);
 
    if (submit->reply_size) {
-      submit->reply_bo = vn_instance_get_reply_bo_locked(
+      submit->reply_shmem = vn_instance_get_reply_shmem_locked(
          instance, submit->reply_size, &reply_ptr);
-      if (!submit->reply_bo)
+      if (!submit->reply_shmem)
          goto fail;
    }
 
    uint32_t ring_seqno;
    VkResult result = vn_instance_ring_submit_locked(
-      instance, &submit->command, submit->reply_bo, &ring_seqno);
+      instance, &submit->command, submit->reply_shmem, &ring_seqno);
 
    mtx_unlock(&instance->ring.mutex);
 
@@ -1246,15 +1257,14 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
    if (version_override) {
       props->apiVersion = version_override;
    } else {
-      if (props->apiVersion > VK_HEADER_VERSION_COMPLETE)
-         props->apiVersion = VK_HEADER_VERSION_COMPLETE;
-      if (props->apiVersion > vn_info_vk_xml_version())
-         props->apiVersion = vn_info_vk_xml_version();
-#ifdef ANDROID
-      if (props->apiVersion >= VK_API_VERSION_1_2)
-         props->apiVersion =
-            VK_MAKE_VERSION(1, 1, VK_VERSION_PATCH(props->apiVersion));
-#endif
+      /* cap the advertised api version */
+      uint32_t version = MIN3(props->apiVersion, VN_MAX_API_VERSION,
+                              instance->renderer_info.vk_xml_version);
+      if (VK_VERSION_PATCH(version) > VK_VERSION_PATCH(props->apiVersion)) {
+         version = version - VK_VERSION_PATCH(version) +
+                   VK_VERSION_PATCH(props->apiVersion);
+      }
+      props->apiVersion = version;
    }
 
    props->driverVersion = vk_get_driver_version();
@@ -1338,21 +1348,39 @@ vn_physical_device_init_memory_properties(
 }
 
 static void
-vn_physical_device_init_external_memory_handles(
+vn_physical_device_init_external_memory(
    struct vn_physical_device *physical_dev)
 {
+   /* When a renderer VkDeviceMemory is exportable, we can create a
+    * vn_renderer_bo from it.  The vn_renderer_bo can be freely exported as an
+    * opaque fd or a dma-buf.
+    *
+    * However, to know if a rendender VkDeviceMemory is exportable, we have to
+    * start from VkPhysicalDeviceExternalImageFormatInfo (or
+    * vkGetPhysicalDeviceExternalBufferProperties).  That means we need to
+    * know the handle type that the renderer will use to make those queries.
+    *
+    * XXX We also assume that a vn_renderer_bo can be created as long as the
+    * renderer VkDeviceMemory has a mappable memory type.  That is plain
+    * wrong.  It is impossible to fix though until some new extension is
+    * created and supported by the driver, and that the renderer switches to
+    * the extension.
+    */
+
    if (!physical_dev->instance->renderer_info.has_dmabuf_import)
       return;
 
-   /* We have export support but we don't advertise it.  It is for WSI only at
-    * the moment.  For import support, we need to be able to serialize
-    * vkGetMemoryFdPropertiesKHR and VkImportMemoryFdInfoKHR.  We can
-    * serialize fd to bo->res_id, but we probably want to add new
-    * commands/structs first (using VK_MESA_venus_protocol).
-    *
-    * We also create a BO when a vn_device_memory is mappable.  We don't know
-    * which handle type the renderer uses.  That seems fine though.
+   /* TODO We assume the renderer uses dma-bufs here.  This should be
+    * negotiated by adding a new function to VK_MESA_venus_protocol.
     */
+   if (physical_dev->renderer_extensions.EXT_external_memory_dma_buf) {
+      physical_dev->external_memory.renderer_handle_type =
+         VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+      physical_dev->external_memory.supported_handle_types =
+         VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT |
+         VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+   }
 }
 
 static void
@@ -1404,23 +1432,46 @@ vn_physical_device_init_external_semaphore_handles(
 }
 
 static void
-vn_physical_device_get_supported_extensions(
-   const struct vn_physical_device *device,
-   struct vk_device_extension_table *supported,
-   struct vk_device_extension_table *recognized)
+vn_physical_device_get_native_extensions(
+   const struct vn_physical_device *physical_dev,
+   struct vk_device_extension_table *exts)
 {
-   *supported = (struct vk_device_extension_table){
-#ifdef VN_USE_WSI_PLATFORM
-      .KHR_incremental_present = true,
-      .KHR_swapchain = true,
-      .KHR_swapchain_mutable_format = true,
-#endif
-#ifdef ANDROID
-      .ANDROID_native_buffer = true,
-#endif
-   };
+   const struct vn_instance *instance = physical_dev->instance;
+   const struct vn_renderer_info *renderer_info = &instance->renderer_info;
+   const struct vk_device_extension_table *renderer_exts =
+      &physical_dev->renderer_extensions;
 
-   *recognized = (struct vk_device_extension_table){
+   memset(exts, 0, sizeof(*exts));
+
+   /* see vn_physical_device_init_external_memory */
+   if (renderer_exts->EXT_external_memory_dma_buf &&
+       renderer_info->has_dmabuf_import) {
+      exts->KHR_external_memory_fd = true;
+      exts->EXT_external_memory_dma_buf = true;
+   }
+
+   /* TODO join Android to do proper checks */
+#ifdef VN_USE_WSI_PLATFORM
+   exts->KHR_incremental_present = true;
+   exts->KHR_swapchain = true;
+   exts->KHR_swapchain_mutable_format = true;
+#endif
+
+#ifdef ANDROID
+   if (renderer_exts->EXT_image_drm_format_modifier &&
+       renderer_exts->EXT_queue_family_foreign &&
+       exts->EXT_external_memory_dma_buf) {
+      exts->ANDROID_native_buffer = true;
+   }
+#endif
+}
+
+static void
+vn_physical_device_get_passthrough_extensions(
+   const struct vn_physical_device *physical_dev,
+   struct vk_device_extension_table *exts)
+{
+   *exts = (struct vk_device_extension_table){
       /* promoted to VK_VERSION_1_1 */
       .KHR_16bit_storage = true,
       .KHR_bind_memory2 = true,
@@ -1469,12 +1520,51 @@ vn_physical_device_get_supported_extensions(
 
       /* EXT */
       .EXT_image_drm_format_modifier = true,
+      .EXT_queue_family_foreign = true,
       .EXT_transform_feedback = true,
    };
 }
 
+static void
+vn_physical_device_init_supported_extensions(
+   struct vn_physical_device *physical_dev)
+{
+   struct vk_device_extension_table native;
+   struct vk_device_extension_table passthrough;
+   vn_physical_device_get_native_extensions(physical_dev, &native);
+   vn_physical_device_get_passthrough_extensions(physical_dev, &passthrough);
+
+   for (uint32_t i = 0; i < VK_DEVICE_EXTENSION_COUNT; i++) {
+      const VkExtensionProperties *props = &vk_device_extensions[i];
+
+#ifdef ANDROID
+      if (!vk_android_allowed_device_extensions.extensions[i])
+         continue;
+#endif
+
+      if (native.extensions[i]) {
+         physical_dev->base.base.supported_extensions.extensions[i] = true;
+         physical_dev->extension_spec_versions[i] = props->specVersion;
+      } else if (passthrough.extensions[i] &&
+                 physical_dev->renderer_extensions.extensions[i]) {
+         physical_dev->base.base.supported_extensions.extensions[i] = true;
+         physical_dev->extension_spec_versions[i] = MIN2(
+            physical_dev->extension_spec_versions[i], props->specVersion);
+      }
+   }
+
+   /* override VK_ANDROID_native_buffer spec version */
+   if (native.ANDROID_native_buffer) {
+      const uint32_t index =
+         VN_EXTENSION_TABLE_INDEX(native, ANDROID_native_buffer);
+      physical_dev->extension_spec_versions[index] =
+         VN_ANDROID_NATIVE_BUFFER_SPEC_VERSION;
+   }
+}
+
 static VkResult
-vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
+vn_physical_device_init_renderer_extensions(
+   struct vn_physical_device *physical_dev)
 {
    struct vn_instance *instance = physical_dev->instance;
    const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
@@ -1503,11 +1593,6 @@ vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
       }
    }
 
-   struct vk_device_extension_table supported;
-   struct vk_device_extension_table recognized;
-   vn_physical_device_get_supported_extensions(physical_dev, &supported,
-                                               &recognized);
-
    physical_dev->extension_spec_versions =
       vk_zalloc(alloc,
                 sizeof(*physical_dev->extension_spec_versions) *
@@ -1520,52 +1605,22 @@ vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
 
    for (uint32_t i = 0; i < VK_DEVICE_EXTENSION_COUNT; i++) {
       const VkExtensionProperties *props = &vk_device_extensions[i];
-      const VkExtensionProperties *renderer_props = NULL;
-
       for (uint32_t j = 0; j < count; j++) {
-         if (!strcmp(props->extensionName, exts[j].extensionName)) {
-            physical_dev->renderer_extensions.extensions[i] = true;
-            renderer_props = &exts[j];
-            break;
-         }
+         if (strcmp(props->extensionName, exts[j].extensionName))
+            continue;
+
+         /* check encoder support */
+         const uint32_t spec_version =
+            vn_info_extension_spec_version(props->extensionName);
+         if (!spec_version)
+            continue;
+
+         physical_dev->renderer_extensions.extensions[i] = true;
+         physical_dev->extension_spec_versions[i] =
+            MIN2(exts[j].specVersion, spec_version);
+
+         break;
       }
-
-#ifdef ANDROID
-      if (!vk_android_allowed_device_extensions.extensions[i])
-         continue;
-#endif
-
-      /* does not depend on renderer (e.g., WSI) */
-      if (supported.extensions[i]) {
-         physical_dev->base.base.supported_extensions.extensions[i] = true;
-         physical_dev->extension_spec_versions[i] = props->specVersion;
-#ifdef ANDROID
-         /* override VK_ANDROID_native_buffer spec version */
-         if (!strcmp(props->extensionName,
-                     VK_ANDROID_NATIVE_BUFFER_EXTENSION_NAME))
-            physical_dev->extension_spec_versions[i] =
-               VN_ANDROID_NATIVE_BUFFER_SPEC_VERSION;
-#endif
-         continue;
-      }
-
-      /* no driver support */
-      if (!recognized.extensions[i])
-         continue;
-
-      /* check renderer support */
-      if (!renderer_props)
-         continue;
-
-      /* check encoder support */
-      const uint32_t spec_version =
-         vn_info_extension_spec_version(props->extensionName);
-      if (!spec_version)
-         continue;
-
-      physical_dev->base.base.supported_extensions.extensions[i] = true;
-      physical_dev->extension_spec_versions[i] =
-         MIN2(renderer_props->specVersion, spec_version);
    }
 
    vk_free(alloc, exts);
@@ -1574,7 +1629,8 @@ vn_physical_device_init_extensions(struct vn_physical_device *physical_dev)
 }
 
 static VkResult
-vn_physical_device_init_version(struct vn_physical_device *physical_dev)
+vn_physical_device_init_renderer_version(
+   struct vn_physical_device *physical_dev)
 {
    struct vn_instance *instance = physical_dev->instance;
 
@@ -1594,9 +1650,10 @@ vn_physical_device_init_version(struct vn_physical_device *physical_dev)
       return VK_ERROR_INITIALIZATION_FAILED;
    }
 
-   physical_dev->renderer_version = props.apiVersion;
-   if (physical_dev->renderer_version > instance->renderer_version)
-      physical_dev->renderer_version = instance->renderer_version;
+   /* device version for internal use is capped */
+   physical_dev->renderer_version =
+      MIN3(props.apiVersion, instance->renderer_api_version,
+           instance->renderer_info.vk_xml_version);
 
    return VK_SUCCESS;
 }
@@ -1607,13 +1664,15 @@ vn_physical_device_init(struct vn_physical_device *physical_dev)
    struct vn_instance *instance = physical_dev->instance;
    const VkAllocationCallbacks *alloc = &instance->base.base.alloc;
 
-   VkResult result = vn_physical_device_init_version(physical_dev);
+   VkResult result = vn_physical_device_init_renderer_version(physical_dev);
    if (result != VK_SUCCESS)
       return result;
 
-   result = vn_physical_device_init_extensions(physical_dev);
+   result = vn_physical_device_init_renderer_extensions(physical_dev);
    if (result != VK_SUCCESS)
       return result;
+
+   vn_physical_device_init_supported_extensions(physical_dev);
 
    /* TODO query all caps with minimal round trips */
    vn_physical_device_init_features(physical_dev);
@@ -1625,7 +1684,7 @@ vn_physical_device_init(struct vn_physical_device *physical_dev)
 
    vn_physical_device_init_memory_properties(physical_dev);
 
-   vn_physical_device_init_external_memory_handles(physical_dev);
+   vn_physical_device_init_external_memory(physical_dev);
    vn_physical_device_init_external_fence_handles(physical_dev);
    vn_physical_device_init_external_semaphore_handles(physical_dev);
 
@@ -1753,7 +1812,7 @@ out:
 VkResult
 vn_EnumerateInstanceVersion(uint32_t *pApiVersion)
 {
-   *pApiVersion = VK_HEADER_VERSION_COMPLETE;
+   *pApiVersion = VN_MAX_API_VERSION;
    return VK_SUCCESS;
 }
 
@@ -1826,26 +1885,26 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    if (result != VK_SUCCESS)
       goto fail;
 
-   result = vn_instance_init_version(instance);
+   result = vn_instance_init_renderer_versions(instance);
    if (result != VK_SUCCESS)
       goto fail;
 
-   VkInstanceCreateInfo local_create_info;
-   local_create_info = *pCreateInfo;
+   VkInstanceCreateInfo local_create_info = *pCreateInfo;
    local_create_info.ppEnabledExtensionNames = NULL;
    local_create_info.enabledExtensionCount = 0;
    pCreateInfo = &local_create_info;
 
-   /* request at least instance->renderer_version */
-   VkApplicationInfo local_app_info = {
-      .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-      .apiVersion = instance->renderer_version,
-   };
+   VkApplicationInfo local_app_info;
    if (instance->base.base.app_info.api_version <
-       instance->renderer_version) {
+       instance->renderer_api_version) {
       if (pCreateInfo->pApplicationInfo) {
          local_app_info = *pCreateInfo->pApplicationInfo;
-         local_app_info.apiVersion = instance->renderer_version;
+         local_app_info.apiVersion = instance->renderer_api_version;
+      } else {
+         local_app_info = (const VkApplicationInfo){
+            .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            .apiVersion = instance->renderer_api_version,
+         };
       }
       local_create_info.pApplicationInfo = &local_app_info;
    }
@@ -1870,19 +1929,19 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    return VK_SUCCESS;
 
 fail:
-   if (instance->reply.bo)
-      vn_renderer_bo_unref(instance->reply.bo);
+   if (instance->reply.shmem)
+      vn_renderer_shmem_unref(instance->renderer, instance->reply.shmem);
 
-   if (instance->ring.bo) {
+   if (instance->ring.shmem) {
       uint32_t destroy_ring_data[4];
-      struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER(
+      struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER_LOCAL(
          destroy_ring_data, sizeof(destroy_ring_data));
       vn_encode_vkDestroyRingMESA(&local_enc, 0, instance->ring.id);
       vn_renderer_submit_simple(instance->renderer, destroy_ring_data,
                                 vn_cs_encoder_get_len(&local_enc));
 
       vn_cs_encoder_fini(&instance->ring.upload);
-      vn_renderer_bo_unref(instance->ring.bo);
+      vn_renderer_shmem_unref(instance->renderer, instance->ring.shmem);
       vn_ring_fini(&instance->ring.ring);
       mtx_destroy(&instance->ring.mutex);
    }
@@ -1919,11 +1978,11 @@ vn_DestroyInstance(VkInstance _instance,
 
    vn_call_vkDestroyInstance(instance, _instance, NULL);
 
-   vn_renderer_bo_unref(instance->reply.bo);
+   vn_renderer_shmem_unref(instance->renderer, instance->reply.shmem);
 
    uint32_t destroy_ring_data[4];
-   struct vn_cs_encoder local_enc =
-      VN_CS_ENCODER_INITIALIZER(destroy_ring_data, sizeof(destroy_ring_data));
+   struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER_LOCAL(
+      destroy_ring_data, sizeof(destroy_ring_data));
    vn_encode_vkDestroyRingMESA(&local_enc, 0, instance->ring.id);
    vn_renderer_submit_simple(instance->renderer, destroy_ring_data,
                              vn_cs_encoder_get_len(&local_enc));
@@ -1931,7 +1990,7 @@ vn_DestroyInstance(VkInstance _instance,
    vn_cs_encoder_fini(&instance->ring.upload);
    vn_ring_fini(&instance->ring.ring);
    mtx_destroy(&instance->ring.mutex);
-   vn_renderer_bo_unref(instance->ring.bo);
+   vn_renderer_shmem_unref(instance->renderer, instance->ring.shmem);
 
    mtx_destroy(&instance->roundtrip_mutex);
    vn_renderer_destroy(instance->renderer, alloc);
@@ -2642,6 +2701,55 @@ vn_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
       physical_dev->instance, physicalDevice, format, pFormatProperties);
 }
 
+struct vn_physical_device_image_format_info {
+   VkPhysicalDeviceImageFormatInfo2 format;
+   VkPhysicalDeviceExternalImageFormatInfo external;
+   VkImageFormatListCreateInfo list;
+   VkImageStencilUsageCreateInfo stencil_usage;
+};
+
+static const VkPhysicalDeviceImageFormatInfo2 *
+vn_physical_device_fix_image_format_info(
+   struct vn_physical_device *physical_dev,
+   const VkPhysicalDeviceImageFormatInfo2 *info,
+   struct vn_physical_device_image_format_info *local_info)
+{
+   local_info->format = *info;
+   VkBaseOutStructure *dst = (void *)&local_info->format;
+
+   /* we should generate deep copy functions... */
+   vk_foreach_struct_const(src, info->pNext) {
+      void *pnext = NULL;
+      switch (src->sType) {
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO:
+         memcpy(&local_info->external, src, sizeof(local_info->external));
+         local_info->external.handleType =
+            physical_dev->external_memory.renderer_handle_type;
+         pnext = &local_info->external;
+         break;
+      case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO:
+         memcpy(&local_info->list, src, sizeof(local_info->list));
+         pnext = &local_info->list;
+         break;
+      case VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO_EXT:
+         memcpy(&local_info->stencil_usage, src,
+                sizeof(local_info->stencil_usage));
+         pnext = &local_info->stencil_usage;
+         break;
+      default:
+         break;
+      }
+
+      if (pnext) {
+         dst->pNext = pnext;
+         dst = pnext;
+      }
+   }
+
+   dst->pNext = NULL;
+   return &local_info->format;
+}
+
 VkResult
 vn_GetPhysicalDeviceImageFormatProperties2(
    VkPhysicalDevice physicalDevice,
@@ -2650,6 +2758,10 @@ vn_GetPhysicalDeviceImageFormatProperties2(
 {
    struct vn_physical_device *physical_dev =
       vn_physical_device_from_handle(physicalDevice);
+   const VkExternalMemoryHandleTypeFlagBits renderer_handle_type =
+      physical_dev->external_memory.renderer_handle_type;
+   const VkExternalMemoryHandleTypeFlags supported_handle_types =
+      physical_dev->external_memory.supported_handle_types;
 
    const VkPhysicalDeviceExternalImageFormatInfo *external_info =
       vk_find_struct_const(pImageFormatInfo->pNext,
@@ -2657,9 +2769,18 @@ vn_GetPhysicalDeviceImageFormatProperties2(
    if (external_info && !external_info->handleType)
       external_info = NULL;
 
-   if (external_info &&
-       !(external_info->handleType & physical_dev->external_memory_handles))
-      return vn_error(physical_dev->instance, VK_ERROR_FORMAT_NOT_SUPPORTED);
+   struct vn_physical_device_image_format_info local_info;
+   if (external_info) {
+      if (!(external_info->handleType & supported_handle_types)) {
+         return vn_error(physical_dev->instance,
+                         VK_ERROR_FORMAT_NOT_SUPPORTED);
+      }
+
+      if (external_info->handleType != renderer_handle_type) {
+         pImageFormatInfo = vn_physical_device_fix_image_format_info(
+            physical_dev, pImageFormatInfo, &local_info);
+      }
+   }
 
    VkResult result;
    /* TODO per-device cache */
@@ -2673,10 +2794,11 @@ vn_GetPhysicalDeviceImageFormatProperties2(
       VkExternalMemoryProperties *mem_props =
          &img_props->externalMemoryProperties;
 
-      mem_props->compatibleHandleTypes &=
-         physical_dev->external_memory_handles;
-      mem_props->exportFromImportedHandleTypes &=
-         physical_dev->external_memory_handles;
+      mem_props->compatibleHandleTypes = supported_handle_types;
+      mem_props->exportFromImportedHandleTypes =
+         (mem_props->exportFromImportedHandleTypes & renderer_handle_type)
+            ? supported_handle_types
+            : 0;
    }
 
    return vn_result(physical_dev->instance, result);
@@ -2706,15 +2828,25 @@ vn_GetPhysicalDeviceExternalBufferProperties(
 {
    struct vn_physical_device *physical_dev =
       vn_physical_device_from_handle(physicalDevice);
+   const VkExternalMemoryHandleTypeFlagBits renderer_handle_type =
+      physical_dev->external_memory.renderer_handle_type;
+   const VkExternalMemoryHandleTypeFlags supported_handle_types =
+      physical_dev->external_memory.supported_handle_types;
+
    VkExternalMemoryProperties *props =
       &pExternalBufferProperties->externalMemoryProperties;
-
-   if (!(pExternalBufferInfo->handleType &
-         physical_dev->external_memory_handles)) {
+   if (!(pExternalBufferInfo->handleType & supported_handle_types)) {
       props->compatibleHandleTypes = pExternalBufferInfo->handleType;
       props->exportFromImportedHandleTypes = 0;
       props->externalMemoryFeatures = 0;
       return;
+   }
+
+   VkPhysicalDeviceExternalBufferInfo local_info;
+   if (pExternalBufferInfo->handleType != renderer_handle_type) {
+      local_info = *pExternalBufferInfo;
+      local_info.handleType = renderer_handle_type;
+      pExternalBufferInfo = &local_info;
    }
 
    /* TODO per-device cache */
@@ -2722,9 +2854,11 @@ vn_GetPhysicalDeviceExternalBufferProperties(
       physical_dev->instance, physicalDevice, pExternalBufferInfo,
       pExternalBufferProperties);
 
-   props->compatibleHandleTypes &= physical_dev->external_memory_handles;
-   props->exportFromImportedHandleTypes &=
-      physical_dev->external_memory_handles;
+   props->compatibleHandleTypes = supported_handle_types;
+   props->exportFromImportedHandleTypes =
+      (props->exportFromImportedHandleTypes & renderer_handle_type)
+         ? supported_handle_types
+         : 0;
 }
 
 void
@@ -2961,21 +3095,70 @@ vn_device_fix_create_info(const struct vn_device *dev,
                           const VkAllocationCallbacks *alloc,
                           VkDeviceCreateInfo *local_info)
 {
+   const struct vn_physical_device *physical_dev = dev->physical_device;
+   const struct vk_device_extension_table *app_exts =
+      &dev->base.base.enabled_extensions;
    /* extra_exts and block_exts must not overlap */
-   const char *extra_exts[8];
-   const char *block_exts[8];
+   const char *extra_exts[16];
+   const char *block_exts[16];
    uint32_t extra_count = 0;
    uint32_t block_count = 0;
 
-#if defined(VN_USE_WSI_PLATFORM) || defined(ANDROID)
-   if (dev->physical_device->base.base.supported_extensions
-          .EXT_image_drm_format_modifier)
-      extra_exts[extra_count++] =
-         VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME;
-#endif
+   /* fix for WSI */
+   const bool has_wsi =
+      app_exts->KHR_swapchain || app_exts->ANDROID_native_buffer;
+   if (has_wsi) {
+      if (!app_exts->EXT_image_drm_format_modifier) {
+         extra_exts[extra_count++] =
+            VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME;
 
-   if (dev->base.base.enabled_extensions.ANDROID_native_buffer)
-      block_exts[block_count++] = VK_ANDROID_NATIVE_BUFFER_EXTENSION_NAME;
+         if (physical_dev->renderer_version < VK_API_VERSION_1_2 &&
+             !app_exts->KHR_image_format_list) {
+            extra_exts[extra_count++] =
+               VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME;
+         }
+      }
+
+      if (!app_exts->EXT_queue_family_foreign) {
+         extra_exts[extra_count++] =
+            VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME;
+      }
+
+      if (app_exts->KHR_swapchain) {
+         /* see vn_physical_device_get_native_extensions */
+         block_exts[block_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+         block_exts[block_count++] =
+            VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME;
+         block_exts[block_count++] =
+            VK_KHR_INCREMENTAL_PRESENT_EXTENSION_NAME;
+      } else {
+         block_exts[block_count++] = VK_ANDROID_NATIVE_BUFFER_EXTENSION_NAME;
+      }
+   }
+
+   if (app_exts->KHR_external_memory_fd ||
+       app_exts->EXT_external_memory_dma_buf || has_wsi) {
+      switch (physical_dev->external_memory.renderer_handle_type) {
+      case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
+         if (!app_exts->EXT_external_memory_dma_buf) {
+            extra_exts[extra_count++] =
+               VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
+         }
+         FALLTHROUGH;
+      case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
+         if (!app_exts->KHR_external_memory_fd) {
+            extra_exts[extra_count++] =
+               VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+         }
+         break;
+      default:
+         /* TODO other handle types */
+         break;
+      }
+   }
+
+   assert(extra_count <= ARRAY_SIZE(extra_exts));
+   assert(block_count <= ARRAY_SIZE(block_exts));
 
    if (!extra_count && (!block_count || !dev_info->enabledExtensionCount))
       return dev_info;
@@ -3022,6 +3205,7 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
 
    dev->instance = instance;
    dev->physical_device = physical_dev;
+   dev->renderer = instance->renderer;
 
    VkDeviceCreateInfo local_create_info;
    pCreateInfo =
@@ -3041,6 +3225,12 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
    if (result != VK_SUCCESS) {
       vn_call_vkDestroyDevice(instance, dev_handle, NULL);
       goto fail;
+   }
+
+   if (dev->base.base.enabled_extensions.ANDROID_native_buffer) {
+      result = vn_android_wsi_init(dev, alloc);
+      if (result != VK_SUCCESS)
+         goto fail;
    }
 
    for (uint32_t i = 0; i < ARRAY_SIZE(dev->memory_pools); i++) {
@@ -3072,6 +3262,9 @@ vn_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
 
    if (!dev)
       return;
+
+   if (dev->base.base.enabled_extensions.ANDROID_native_buffer)
+      vn_android_wsi_fini(dev, alloc);
 
    for (uint32_t i = 0; i < ARRAY_SIZE(dev->memory_pools); i++)
       vn_device_memory_pool_fini(dev, i);

@@ -1578,7 +1578,7 @@ static void handle_draw(struct lvp_cmd_buffer_entry *cmd,
    state->info.instance_count = cmd->u.draw.instance_count;
    state->info.view_mask = subpass->view_mask;
 
-   state->pctx->draw_vbo(state->pctx, &state->info, NULL, cmd->u.draw.draws, cmd->u.draw.draw_count);
+   state->pctx->draw_vbo(state->pctx, &state->info, 0, NULL, cmd->u.draw.draws, cmd->u.draw.draw_count);
 }
 
 static void handle_set_viewport(struct lvp_cmd_buffer_entry *cmd,
@@ -2140,7 +2140,6 @@ static void handle_draw_indexed(struct lvp_cmd_buffer_entry *cmd,
    state->info.index.resource = state->index_buffer;
    state->info.start_instance = cmd->u.draw_indexed.first_instance;
    state->info.instance_count = cmd->u.draw_indexed.instance_count;
-   state->info.index_bias = cmd->u.draw_indexed.vertex_offset;
    state->info.view_mask = subpass->view_mask;
 
    if (state->info.primitive_restart)
@@ -2151,14 +2150,14 @@ static void handle_draw_indexed(struct lvp_cmd_buffer_entry *cmd,
          cmd->u.draw_indexed.draws[i].start = (state->index_offset / state->index_size) + cmd->u.draw_indexed.draws[i].start;
       cmd->u.draw_indexed.calc_start = false;
    }
-   state->pctx->draw_vbo(state->pctx, &state->info, NULL, cmd->u.draw_indexed.draws, cmd->u.draw_indexed.draw_count);
+   state->pctx->draw_vbo(state->pctx, &state->info, 0, NULL, cmd->u.draw_indexed.draws, cmd->u.draw_indexed.draw_count);
 }
 
 static void handle_draw_indirect(struct lvp_cmd_buffer_entry *cmd,
                                  struct rendering_state *state, bool indexed)
 {
    const struct lvp_subpass *subpass = &state->pass->subpasses[state->subpass];
-   struct pipe_draw_start_count draw = {0};
+   struct pipe_draw_start_count_bias draw = {0};
    if (indexed) {
       state->info.index_bounds_valid = false;
       state->info.index_size = state->index_size;
@@ -2172,7 +2171,7 @@ static void handle_draw_indirect(struct lvp_cmd_buffer_entry *cmd,
    state->indirect_info.buffer = cmd->u.draw_indirect.buffer->bo;
    state->info.view_mask = subpass->view_mask;
 
-   state->pctx->draw_vbo(state->pctx, &state->info, &state->indirect_info, &draw, 1);
+   state->pctx->draw_vbo(state->pctx, &state->info, 0, &state->indirect_info, &draw, 1);
 }
 
 static void handle_index_buffer(struct lvp_cmd_buffer_entry *cmd,
@@ -2629,7 +2628,7 @@ static void handle_draw_indirect_count(struct lvp_cmd_buffer_entry *cmd,
                                        struct rendering_state *state, bool indexed)
 {
    const struct lvp_subpass *subpass = &state->pass->subpasses[state->subpass];
-   struct pipe_draw_start_count draw = {0};
+   struct pipe_draw_start_count_bias draw = {0};
    if (indexed) {
       state->info.index_bounds_valid = false;
       state->info.index_size = state->index_size;
@@ -2645,7 +2644,7 @@ static void handle_draw_indirect_count(struct lvp_cmd_buffer_entry *cmd,
    state->indirect_info.indirect_draw_count = cmd->u.draw_indirect_count.count_buffer->bo;
    state->info.view_mask = subpass->view_mask;
 
-   state->pctx->draw_vbo(state->pctx, &state->info, &state->indirect_info, &draw, 1);
+   state->pctx->draw_vbo(state->pctx, &state->info, 0, &state->indirect_info, &draw, 1);
 }
 
 static void handle_compute_push_descriptor_set(struct lvp_cmd_buffer_entry *cmd,
@@ -2806,7 +2805,7 @@ static void handle_draw_indirect_byte_count(struct lvp_cmd_buffer_entry *cmd,
 {
    struct lvp_cmd_draw_indirect_byte_count *dibc = &cmd->u.draw_indirect_byte_count;
    const struct lvp_subpass *subpass = &state->pass->subpasses[state->subpass];
-   struct pipe_draw_start_count draw = {0};
+   struct pipe_draw_start_count_bias draw = {0};
 
    pipe_buffer_read(state->pctx,
                     dibc->counter_buffer->bo,
@@ -2819,7 +2818,7 @@ static void handle_draw_indirect_byte_count(struct lvp_cmd_buffer_entry *cmd,
 
    draw.count /= cmd->u.draw_indirect_byte_count.vertex_stride;
    state->info.view_mask = subpass->view_mask;
-   state->pctx->draw_vbo(state->pctx, &state->info, &state->indirect_info, &draw, 1);
+   state->pctx->draw_vbo(state->pctx, &state->info, 0, &state->indirect_info, &draw, 1);
 }
 
 static void handle_begin_conditional_rendering(struct lvp_cmd_buffer_entry *cmd,

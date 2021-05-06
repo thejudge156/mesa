@@ -3220,7 +3220,7 @@ NineDevice9_ProcessVertices( struct NineDevice9 *This,
     struct pipe_stream_output_info so;
     struct pipe_stream_output_target *target;
     struct pipe_draw_info draw;
-    struct pipe_draw_start_count sc;
+    struct pipe_draw_start_count_bias sc;
     struct pipe_box box;
     bool programmable_vs = This->state.vs && !(This->state.vdecl && This->state.vdecl->position_t);
     unsigned offsets[1] = {0};
@@ -3308,14 +3308,14 @@ NineDevice9_ProcessVertices( struct NineDevice9 *This,
     draw.instance_count = 1;
     draw.index_size = 0;
     sc.start = 0;
-    draw.index_bias = 0;
+    sc.index_bias = 0;
     draw.min_index = 0;
     draw.max_index = VertexCount - 1;
 
 
     pipe_sw->set_stream_output_targets(pipe_sw, 1, &target, offsets);
 
-    pipe_sw->draw_vbo(pipe_sw, &draw, NULL, &sc, 1);
+    pipe_sw->draw_vbo(pipe_sw, &draw, 0, NULL, &sc, 1);
 
     pipe_sw->set_stream_output_targets(pipe_sw, 0, NULL, 0);
     pipe_sw->stream_output_target_destroy(pipe_sw, target);

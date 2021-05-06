@@ -99,12 +99,13 @@ util_primconvert_save_rasterizer_state(struct primconvert_context *pc,
 void
 util_primconvert_draw_vbo(struct primconvert_context *pc,
                           const struct pipe_draw_info *info,
+                          unsigned drawid_offset,
                           const struct pipe_draw_indirect_info *indirect,
-                          const struct pipe_draw_start_count *draws,
+                          const struct pipe_draw_start_count_bias *draws,
                           unsigned num_draws)
 {
    struct pipe_draw_info new_info;
-   struct pipe_draw_start_count new_draw;
+   struct pipe_draw_start_count_bias new_draw;
    struct pipe_transfer *src_transfer = NULL;
    u_translate_func trans_func;
    u_generate_func gen_func;
@@ -124,11 +125,11 @@ util_primconvert_draw_vbo(struct primconvert_context *pc,
    }
 
    if (num_draws > 1) {
-      util_draw_multi(pc->pipe, info, indirect, draws, num_draws);
+      util_draw_multi(pc->pipe, info, drawid_offset, indirect, draws, num_draws);
       return;
    }
 
-   const struct pipe_draw_start_count *draw = &draws[0];
+   const struct pipe_draw_start_count_bias *draw = &draws[0];
 
    /* Filter out degenerate primitives, u_upload_alloc() will assert
     * on size==0 so just bail:
@@ -141,7 +142,6 @@ util_primconvert_draw_vbo(struct primconvert_context *pc,
    new_info.index_bounds_valid = info->index_bounds_valid;
    new_info.min_index = info->min_index;
    new_info.max_index = info->max_index;
-   new_info.index_bias = info->index_size ? info->index_bias : 0;
    new_info.start_instance = info->start_instance;
    new_info.instance_count = info->instance_count;
    new_info.primitive_restart = info->primitive_restart;
@@ -181,6 +181,7 @@ util_primconvert_draw_vbo(struct primconvert_context *pc,
    u_upload_alloc(pc->pipe->stream_uploader, 0, new_info.index_size * new_draw.count, 4,
                   &ib_offset, &new_info.index.resource, &dst);
    new_draw.start = ib_offset / new_info.index_size;
+   new_draw.index_bias = info->index_size ? draw->index_bias : 0;
 
    if (info->index_size) {
       trans_func(src, draw->start, draw->count, new_draw.count, info->restart_index, dst);
@@ -203,7 +204,7 @@ util_primconvert_draw_vbo(struct primconvert_context *pc,
    u_upload_unmap(pc->pipe->stream_uploader);
 
    /* to the translated draw: */
-   pc->pipe->draw_vbo(pc->pipe, &new_info, NULL, &new_draw, 1);
+   pc->pipe->draw_vbo(pc->pipe, &new_info, drawid_offset, NULL, &new_draw, 1);
 
    pipe_resource_reference(&new_info.index.resource, NULL);
 }

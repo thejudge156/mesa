@@ -531,7 +531,7 @@ glXQueryVersion(Display * dpy, int *major, int *minor)
       return False;
 
    if (major)
-      *major = priv->majorVersion;
+      *major = GLX_MAJOR_VERSION;
    if (minor)
       *minor = priv->minorVersion;
    return True;
@@ -678,28 +678,13 @@ glXCopyContext(Display * dpy, GLXContext source_user,
 }
 
 
-/**
- * \todo
- * Shouldn't this function \b always return \c False when
- * \c GLX_DIRECT_RENDERING is not defined?  Do we really need to bother with
- * the GLX protocol here at all?
- */
 _GLX_PUBLIC Bool
 glXIsDirect(Display * dpy, GLXContext gc_user)
 {
    struct glx_context *gc = (struct glx_context *) gc_user;
 
-   if (!gc) {
-      return False;
-   }
-   else if (gc->isDirect) {
-      return True;
-   }
-#ifdef GLX_USE_APPLEGL  /* TODO: indirect on darwin */
-   return False;
-#else
-   return __glXIsDirect(dpy, gc->xid, NULL);
-#endif
+   /* This is set for us at context creation */
+   return gc ? gc->isDirect : False;
 }
 
 _GLX_PUBLIC GLXPixmap
@@ -1329,6 +1314,7 @@ glXQueryExtensionsString(Display * dpy, int screen)
 {
    struct glx_screen *psc;
    struct glx_display *priv;
+   int is_direct_capable = GL_FALSE;
 
    if (GetGLXPrivScreenConfig(dpy, screen, &priv, &psc) != Success) {
       return NULL;
@@ -1337,17 +1323,13 @@ glXQueryExtensionsString(Display * dpy, int screen)
    if (!psc->effectiveGLXexts) {
       if (!psc->serverGLXexts) {
          psc->serverGLXexts =
-            __glXQueryServerString(dpy, priv->majorOpcode, screen,
-                                   GLX_EXTENSIONS);
+            __glXQueryServerString(dpy, screen, GLX_EXTENSIONS);
       }
 
-      __glXCalculateUsableExtensions(psc,
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
-                                     (psc->driScreen != NULL),
-#else
-                                     GL_FALSE,
+      is_direct_capable = (psc->driScreen != NULL);
 #endif
-                                     priv->minorVersion);
+      __glXCalculateUsableExtensions(psc, is_direct_capable);
    }
 
    return psc->effectiveGLXexts;
@@ -1377,17 +1359,16 @@ glXQueryServerString(Display * dpy, int screen, int name)
    struct glx_display *priv;
    const char **str;
 
-
    if (GetGLXPrivScreenConfig(dpy, screen, &priv, &psc) != Success) {
       return NULL;
    }
 
    switch (name) {
    case GLX_VENDOR:
-      str = &priv->serverGLXvendor;
+      str = &psc->serverGLXvendor;
       break;
    case GLX_VERSION:
-      str = &priv->serverGLXversion;
+      str = &psc->serverGLXversion;
       break;
    case GLX_EXTENSIONS:
       str = &psc->serverGLXexts;
@@ -1397,7 +1378,7 @@ glXQueryServerString(Display * dpy, int screen, int name)
    }
 
    if (*str == NULL) {
-      *str = __glXQueryServerString(dpy, priv->majorOpcode, screen, name);
+      *str = __glXQueryServerString(dpy, screen, name);
    }
 
    return *str;
@@ -1461,7 +1442,7 @@ glXImportContextEXT(Display *dpy, GLXContextID contextID)
    /* Send the glXQueryContextInfoEXT request */
    LockDisplay(dpy);
 
-   if (priv->majorVersion > 1 || priv->minorVersion >= 3) {
+   if (priv->minorVersion >= 3) {
       xGLXQueryContextReq *req;
 
       GetReq(GLXQueryContext, req);
@@ -1755,7 +1736,7 @@ glXSwapIntervalSGI(int interval)
    xGLXVendorPrivateReq *req;
    struct glx_context *gc = __glXGetCurrentContext();
 #ifdef GLX_DIRECT_RENDERING
-   struct glx_screen *psc;
+   struct glx_screen *psc = gc->psc;
 #endif
    Display *dpy;
    CARD32 *interval_ptr;
@@ -1770,8 +1751,6 @@ glXSwapIntervalSGI(int interval)
    }
 
 #ifdef GLX_DIRECT_RENDERING
-   psc = GetGLXScreenConfigs( gc->currentDpy, gc->screen);
-
    if (gc->isDirect && psc && psc->driScreen &&
           psc->driScreen->setSwapInterval) {
       __GLXDRIdrawable *pdraw =
@@ -1823,9 +1802,7 @@ glXSwapIntervalMESA(unsigned int interval)
       return GLX_BAD_VALUE;
 
    if (gc != &dummyContext && gc->isDirect) {
-      struct glx_screen *psc;
-
-      psc = GetGLXScreenConfigs( gc->currentDpy, gc->screen);
+      struct glx_screen *psc = gc->psc;
       if (psc && psc->driScreen && psc->driScreen->setSwapInterval) {
          __GLXDRIdrawable *pdraw =
 	    GetGLXDRIDrawable(gc->currentDpy, gc->currentDrawable);
@@ -1852,9 +1829,7 @@ glXGetSwapIntervalMESA(void)
    struct glx_context *gc = __glXGetCurrentContext();
 
    if (gc != &dummyContext && gc->isDirect) {
-      struct glx_screen *psc;
-
-      psc = GetGLXScreenConfigs( gc->currentDpy, gc->screen);
+      struct glx_screen *psc = gc->psc;
       if (psc && psc->driScreen && psc->driScreen->getSwapInterval) {
          __GLXDRIdrawable *pdraw =
 	    GetGLXDRIDrawable(gc->currentDpy, gc->currentDrawable);
@@ -1907,7 +1882,7 @@ glXGetVideoSyncSGI(unsigned int *count)
    int64_t ust, msc, sbc;
    int ret;
    struct glx_context *gc = __glXGetCurrentContext();
-   struct glx_screen *psc;
+   struct glx_screen *psc = gc->psc;
    __GLXDRIdrawable *pdraw;
 
    if (gc == &dummyContext)
@@ -1919,7 +1894,6 @@ glXGetVideoSyncSGI(unsigned int *count)
    if (!gc->currentDrawable)
       return GLX_BAD_CONTEXT;
 
-   psc = GetGLXScreenConfigs(gc->currentDpy, gc->screen);
    pdraw = GetGLXDRIDrawable(gc->currentDpy, gc->currentDrawable);
 
    /* FIXME: Looking at the GLX_SGI_video_sync spec in the extension registry,
@@ -1941,7 +1915,7 @@ glXWaitVideoSyncSGI(int divisor, int remainder, unsigned int *count)
 {
    struct glx_context *gc = __glXGetCurrentContext();
 #ifdef GLX_DIRECT_RENDERING
-   struct glx_screen *psc;
+   struct glx_screen *psc = gc->psc;
    __GLXDRIdrawable *pdraw;
    int64_t ust, msc, sbc;
    int ret;
@@ -1960,7 +1934,6 @@ glXWaitVideoSyncSGI(int divisor, int remainder, unsigned int *count)
    if (!gc->currentDrawable)
       return GLX_BAD_CONTEXT;
 
-   psc = GetGLXScreenConfigs( gc->currentDpy, gc->screen);
    pdraw = GetGLXDRIDrawable(gc->currentDpy, gc->currentDrawable);
 
    if (psc && psc->driScreen && psc->driScreen->waitForMSC) {

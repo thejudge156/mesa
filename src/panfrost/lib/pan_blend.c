@@ -30,11 +30,9 @@
 #include "util/format/u_format.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
+#include "compiler/nir/nir_conversion_builder.h"
 
-/* Implements fixed-function blending on Midgard. */
-
-/* Check if this is a special edge case blend factor, which may require the use
- * of clip modifiers */
+/* Fixed function blending */
 
 static bool
 factor_is_supported(enum blend_factor factor)
@@ -104,6 +102,11 @@ can_blend_constant(const struct panfrost_device *dev,
         if (dev->arch == 6)
                 return false;
 
+        /* v7 only uses the constant from RT 0 (TODO: what if it's the same
+         * constant? or a constant is shared?) */
+        if (dev->arch == 7 && rt > 0)
+                return false;
+
         unsigned first_constant = ffs(constant_mask) - 1;
         float constant = state->constants[first_constant];
 
@@ -160,41 +163,32 @@ pan_blend_can_fixed_function(const struct panfrost_device *dev,
                                            rt_state->equation.alpha_dst_factor);
 }
 
-static void
-to_c_factor(enum blend_factor factor, bool invert_factor,
-            struct MALI_BLEND_FUNCTION *function)
+static enum mali_blend_operand_c
+to_c_factor(enum blend_factor factor)
 {
-        function->invert_c = invert_factor;
-
         switch (factor) {
         case BLEND_FACTOR_ZERO:
-                function->c = MALI_BLEND_OPERAND_C_ZERO;
-                break;
+                return MALI_BLEND_OPERAND_C_ZERO;
 
         case BLEND_FACTOR_SRC_ALPHA:
-                function->c = MALI_BLEND_OPERAND_C_SRC_ALPHA;
-                break;
+                return MALI_BLEND_OPERAND_C_SRC_ALPHA;
 
         case BLEND_FACTOR_DST_ALPHA:
-                function->c = MALI_BLEND_OPERAND_C_DEST_ALPHA;
-                break;
+                return MALI_BLEND_OPERAND_C_DEST_ALPHA;
 
         case BLEND_FACTOR_SRC_COLOR:
-                function->c = MALI_BLEND_OPERAND_C_SRC;
-                break;
+                return MALI_BLEND_OPERAND_C_SRC;
 
         case BLEND_FACTOR_DST_COLOR:
-                function->c = MALI_BLEND_OPERAND_C_DEST;
-                break;
+                return MALI_BLEND_OPERAND_C_DEST;
 
         case BLEND_FACTOR_CONSTANT_COLOR:
         case BLEND_FACTOR_CONSTANT_ALPHA:
-                function->c = MALI_BLEND_OPERAND_C_CONSTANT;
-                break;
-        default:
-                unreachable("Invalid blend factor");
-        }
+                return MALI_BLEND_OPERAND_C_CONSTANT;
 
+        default:
+                unreachable("Unsupported blend factor");
+        }
 }
 
 static void
@@ -212,7 +206,8 @@ to_panfrost_function(enum blend_func blend_func,
                 function->b = MALI_BLEND_OPERAND_B_DEST;
                 if (blend_func == BLEND_FUNC_SUBTRACT)
                         function->negate_b = true;
-                to_c_factor(dest_factor, invert_dest, function);
+                function->invert_c = invert_dest;
+                function->c = to_c_factor(dest_factor);
         } else if (src_factor == BLEND_FACTOR_ZERO && invert_src) {
                 function->a = MALI_BLEND_OPERAND_A_SRC;
                 function->b = MALI_BLEND_OPERAND_B_DEST;
@@ -220,13 +215,15 @@ to_panfrost_function(enum blend_func blend_func,
                         function->negate_b = true;
                 else if (blend_func == BLEND_FUNC_REVERSE_SUBTRACT)
                         function->negate_a = true;
-                to_c_factor(dest_factor, invert_dest, function);
+                function->invert_c = invert_dest;
+                function->c = to_c_factor(dest_factor);
         } else if (dest_factor == BLEND_FACTOR_ZERO && !invert_dest) {
                 function->a = MALI_BLEND_OPERAND_A_ZERO;
                 function->b = MALI_BLEND_OPERAND_B_SRC;
                 if (blend_func == BLEND_FUNC_REVERSE_SUBTRACT)
                         function->negate_b = true;
-                to_c_factor(src_factor, invert_src, function);
+                function->invert_c = invert_src;
+                function->c = to_c_factor(src_factor);
         } else if (dest_factor == BLEND_FACTOR_ZERO && invert_dest) {
                 function->a = MALI_BLEND_OPERAND_A_DEST;
                 function->b = MALI_BLEND_OPERAND_B_SRC;
@@ -234,10 +231,12 @@ to_panfrost_function(enum blend_func blend_func,
                         function->negate_a = true;
                 else if (blend_func == BLEND_FUNC_REVERSE_SUBTRACT)
                         function->negate_b = true;
-                to_c_factor(src_factor, invert_src, function);
+                function->invert_c = invert_src;
+                function->c = to_c_factor(src_factor);
         } else if (src_factor == dest_factor && invert_src == invert_dest) {
                 function->a = MALI_BLEND_OPERAND_A_ZERO;
-                to_c_factor(src_factor, invert_src, function);
+                function->invert_c = invert_src;
+                function->c = to_c_factor(src_factor);
 
                 switch (blend_func) {
                 case BLEND_FUNC_ADD:
@@ -256,7 +255,8 @@ to_panfrost_function(enum blend_func blend_func,
                 assert(src_factor == dest_factor && invert_src != invert_dest);
 
                 function->a = MALI_BLEND_OPERAND_A_DEST;
-                to_c_factor(src_factor, invert_src, function);
+                function->invert_c = invert_src;
+                function->c = to_c_factor(src_factor);
 
                 switch (blend_func) {
                 case BLEND_FUNC_ADD:
@@ -449,15 +449,11 @@ get_equation_str(const struct pan_blend_rt_state *rt_state,
          }
 }
 
-static nir_ssa_def *
-nir_iclamp(nir_builder *b, nir_ssa_def *v, int32_t lo, int32_t hi)
-{
-        return nir_imin(b, nir_imax(b, v, nir_imm_int(b, lo)), nir_imm_int(b, hi));
-}
-
 nir_shader *
 pan_blend_create_shader(const struct panfrost_device *dev,
                         const struct pan_blend_state *state,
+                        nir_alu_type src0_type,
+                        nir_alu_type src1_type,
                         unsigned rt)
 {
         const struct pan_blend_rt_state *rt_state = &state->rts[rt];
@@ -486,7 +482,7 @@ pan_blend_create_shader(const struct panfrost_device *dev,
                 .colormask = rt_state->equation.color_mask,
                 .half = nir_type == nir_type_float16,
                 .format = rt_state->format,
-                .is_bifrost = pan_is_bifrost(dev),
+                .scalar = pan_is_bifrost(dev),
         };
 
         if (!rt_state->equation.blend_enable) {
@@ -513,14 +509,22 @@ pan_blend_create_shader(const struct panfrost_device *dev,
                 options.alpha.invert_dst_factor = rt_state->equation.alpha_invert_dst_factor;
         }
 
+        nir_alu_type src_types[] = { src0_type ?: nir_type_float32, src1_type ?: nir_type_float32 };
+
+        /* HACK: workaround buggy TGSI shaders (u_blitter) */
+        for (unsigned i = 0; i < ARRAY_SIZE(src_types); ++i) {
+                src_types[i] = nir_alu_type_get_base_type(nir_type) |
+                        nir_alu_type_get_type_size(src_types[i]);
+        }
+
 	nir_variable *c_src =
                 nir_variable_create(b.shader, nir_var_shader_in,
-                                    glsl_vector_type(GLSL_TYPE_FLOAT, 4),
+                                    glsl_vector_type(nir_get_glsl_base_type_for_nir_type(src_types[0]), 4),
                                     "gl_Color");
         c_src->data.location = VARYING_SLOT_COL0;
         nir_variable *c_src1 =
                 nir_variable_create(b.shader, nir_var_shader_in,
-                                    glsl_vector_type(GLSL_TYPE_FLOAT, 4),
+                                    glsl_vector_type(nir_get_glsl_base_type_for_nir_type(src_types[1]), 4),
                                     "gl_Color1");
         c_src1->data.location = VARYING_SLOT_VAR0;
         c_src1->data.driver_location = 1;
@@ -528,30 +532,17 @@ pan_blend_create_shader(const struct panfrost_device *dev,
                 nir_variable_create(b.shader, nir_var_shader_out,
                                     glsl_vector_type(glsl_type, 4),
                                     "gl_FragColor");
-        c_out->data.location = FRAG_RESULT_COLOR;
+        c_out->data.location = FRAG_RESULT_DATA0;
 
         nir_ssa_def *s_src[] = {nir_load_var(&b, c_src), nir_load_var(&b, c_src1)};
 
+        /* Saturate integer conversions */
         for (int i = 0; i < ARRAY_SIZE(s_src); ++i) {
-                switch (nir_type) {
-                case nir_type_float16:
-                        s_src[i] = nir_f2f16(&b, s_src[i]);
-                        break;
-                case nir_type_int16:
-                        s_src[i] = nir_i2i16(&b, nir_iclamp(&b, s_src[i], -32768, 32767));
-                        break;
-                case nir_type_uint16:
-                        s_src[i] = nir_u2u16(&b, nir_umin(&b, s_src[i], nir_imm_int(&b, 65535)));
-                        break;
-                case nir_type_int8:
-                        s_src[i] = nir_i2i8(&b, nir_iclamp(&b, s_src[i], -128, 127));
-                        break;
-                case nir_type_uint8:
-                        s_src[i] = nir_u2u8(&b, nir_umin(&b, s_src[i], nir_imm_int(&b, 255)));
-                        break;
-                default:
-                        break;
-                }
+                bool is_float = nir_alu_type_get_base_type(nir_type);
+                s_src[i] = nir_convert_with_rounding(&b, s_src[i],
+                                src_types[i], nir_type,
+                                nir_rounding_mode_undef,
+                                !is_float);
         }
 
         /* Build a trivial blend shader */
@@ -623,10 +614,14 @@ pan_blend_get_bifrost_desc(const struct panfrost_device *dev,
 struct pan_blend_shader_variant *
 pan_blend_get_shader_locked(const struct panfrost_device *dev,
                             const struct pan_blend_state *state,
+                            nir_alu_type src0_type,
+                            nir_alu_type src1_type,
                             unsigned rt)
 {
         struct pan_blend_shader_key key = {
                 .format = state->rts[rt].format,
+                .src0_type = src0_type,
+                .src1_type = src1_type,
                 .rt = rt,
                 .has_constants = pan_blend_constant_mask(state, rt) != 0,
                 .logicop_enable = state->logicop_enable,
@@ -668,7 +663,7 @@ pan_blend_get_shader_locked(const struct panfrost_device *dev,
                 util_dynarray_clear(&variant->binary);
         }
 
-        nir_shader *nir = pan_blend_create_shader(dev, state, rt);
+        nir_shader *nir = pan_blend_create_shader(dev, state, src0_type, src1_type, rt);
 
         /* Compile the NIR shader */
         struct panfrost_compile_inputs inputs = {

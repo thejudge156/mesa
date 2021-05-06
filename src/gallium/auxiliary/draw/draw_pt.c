@@ -56,7 +56,7 @@ DEBUG_GET_ONCE_BOOL_OPTION(draw_no_fse, "DRAW_NO_FSE", FALSE)
 static boolean
 draw_pt_arrays(struct draw_context *draw,
                unsigned prim,
-               const struct pipe_draw_start_count *draw_info,
+               const struct pipe_draw_start_count_bias *draw_info,
                unsigned num_draws)
 {
    struct draw_pt_front_end *frontend = NULL;
@@ -153,6 +153,7 @@ draw_pt_arrays(struct draw_context *draw,
       } else
          draw_pt_split_prim(prim, &first, &incr);
       count = draw_pt_trim_count(draw_info[i].count, first, incr);
+      draw->pt.user.eltBias = draw->pt.user.eltSize ? draw_info[i].index_bias : 0;
       if (count >= first)
          frontend->run( frontend, draw_info[i].start, count );
 
@@ -245,7 +246,7 @@ void draw_pt_destroy( struct draw_context *draw )
  * Debug- print the first 'count' vertices.
  */
 static void
-draw_print_arrays(struct draw_context *draw, uint prim, int start, uint count)
+draw_print_arrays(struct draw_context *draw, uint prim, int start, uint count, int index_bias)
 {
    uint i;
 
@@ -282,9 +283,9 @@ draw_print_arrays(struct draw_context *draw, uint prim, int start, uint count)
             assert(0);
             return;
          }
-         ii += draw->pt.user.eltBias;
+         ii += index_bias;
          debug_printf("Element[%u + %u] + %i -> Vertex %u:\n", start, i,
-                      draw->pt.user.eltBias, ii);
+                      index_bias, ii);
       }
       else {
          /* non-indexed arrays */
@@ -358,22 +359,20 @@ draw_print_arrays(struct draw_context *draw, uint prim, int start, uint count)
 static inline void
 prim_restart_loop(struct draw_context *draw,
                   const struct pipe_draw_info *info,
-                  unsigned start,
-                  unsigned count,
+                  const struct pipe_draw_start_count_bias *draw_info,
                   const void *elements)
 {
    const unsigned elt_max = draw->pt.user.eltMax;
-   struct pipe_draw_start_count cur;
-   cur.start = start;
+   struct pipe_draw_start_count_bias cur = *draw_info;
    cur.count = 0;
 
    /* The largest index within a loop using the i variable as the index.
     * Used for overflow detection */
    const unsigned MAX_LOOP_IDX = 0xffffffff;
 
-   for (unsigned j = 0; j < count; j++) {
+   for (unsigned j = 0; j < draw_info->count; j++) {
       unsigned restart_idx = 0;
-      unsigned i = draw_overflow_uadd(start, j, MAX_LOOP_IDX);
+      unsigned i = draw_overflow_uadd(draw_info->start, j, MAX_LOOP_IDX);
       switch (draw->pt.user.eltSize) {
       case 1:
          restart_idx = ((const uint8_t*)elements)[i];
@@ -414,7 +413,7 @@ prim_restart_loop(struct draw_context *draw,
 static void
 draw_pt_arrays_restart(struct draw_context *draw,
                        const struct pipe_draw_info *info,
-                       const struct pipe_draw_start_count *draw_info,
+                       const struct pipe_draw_start_count_bias *draw_info,
                        unsigned num_draws)
 {
    const unsigned prim = info->mode;
@@ -424,7 +423,7 @@ draw_pt_arrays_restart(struct draw_context *draw,
    if (draw->pt.user.eltSize) {
       /* indexed prims (draw_elements) */
       for (unsigned i = 0; i < num_draws; i++)
-         prim_restart_loop(draw, info, draw_info[i].start, draw_info[i].count, draw->pt.user.elts);
+         prim_restart_loop(draw, info, &draw_info[i], draw->pt.user.elts);
    }
    else {
       /* Non-indexed prims (draw_arrays).
@@ -444,13 +443,13 @@ draw_pt_arrays_restart(struct draw_context *draw,
 static void
 resolve_draw_info(const struct pipe_draw_info *raw_info,
                   const struct pipe_draw_indirect_info *indirect,
-                  const struct pipe_draw_start_count *raw_draw,
+                  const struct pipe_draw_start_count_bias *raw_draw,
                   struct pipe_draw_info *info,
-                  struct pipe_draw_start_count *draw,
+                  struct pipe_draw_start_count_bias *draw,
                   struct pipe_vertex_buffer *vertex_buffer)
 {
    memcpy(info, raw_info, sizeof(struct pipe_draw_info));
-   memcpy(draw, raw_draw, sizeof(struct pipe_draw_start_count));
+   memcpy(draw, raw_draw, sizeof(struct pipe_draw_start_count_bias));
 
    struct draw_so_target *target =
       (struct draw_so_target *)indirect->count_from_stream_output;
@@ -469,7 +468,7 @@ resolve_draw_info(const struct pipe_draw_info *raw_info,
 static void
 draw_instances(struct draw_context *draw,
                const struct pipe_draw_info *info,
-               const struct pipe_draw_start_count *draws,
+               const struct pipe_draw_start_count_bias *draws,
                unsigned num_draws)
 {
    unsigned instance;
@@ -506,16 +505,17 @@ draw_instances(struct draw_context *draw,
 void
 draw_vbo(struct draw_context *draw,
          const struct pipe_draw_info *info,
+         unsigned drawid_offset,
          const struct pipe_draw_indirect_info *indirect,
-         const struct pipe_draw_start_count *draws,
+         const struct pipe_draw_start_count_bias *draws,
          unsigned num_draws)
 {
    unsigned index_limit;
    unsigned fpstate = util_fpstate_get();
    struct pipe_draw_info resolved_info;
-   struct pipe_draw_start_count resolved_draw;
+   struct pipe_draw_start_count_bias resolved_draw;
    struct pipe_draw_info *use_info = (struct pipe_draw_info *)info;
-   struct pipe_draw_start_count *use_draws = (struct pipe_draw_start_count *)draws;
+   struct pipe_draw_start_count_bias *use_draws = (struct pipe_draw_start_count_bias *)draws;
 
    if (info->instance_count == 0)
       return;
@@ -536,11 +536,10 @@ draw_vbo(struct draw_context *draw,
    if (info->index_size)
       assert(draw->pt.user.elts);
 
-   draw->pt.user.eltBias = use_info->index_size ? use_info->index_bias : 0;
    draw->pt.user.min_index = use_info->index_bounds_valid ? use_info->min_index : 0;
    draw->pt.user.max_index = use_info->index_bounds_valid ? use_info->max_index : ~0;
    draw->pt.user.eltSize = use_info->index_size ? draw->pt.user.eltSizeIB : 0;
-   draw->pt.user.drawid = use_info->drawid;
+   draw->pt.user.drawid = drawid_offset;
    draw->pt.user.increment_draw_id = use_info->increment_draw_id;
    draw->pt.user.viewid = 0;
    draw->pt.vertices_per_patch = use_info->vertices_per_patch;
@@ -578,7 +577,7 @@ draw_vbo(struct draw_context *draw,
 
    if (0) {
       for (unsigned i = 0; i < num_draws; i++)
-         draw_print_arrays(draw, use_info->mode, use_draws[i].start, MIN2(use_draws[i].count, 20));
+         draw_print_arrays(draw, use_info->mode, use_draws[i].start, MIN2(use_draws[i].count, 20), use_draws[i].index_bias);
    }
 
    index_limit = util_draw_max_index(draw->pt.vertex_buffer,

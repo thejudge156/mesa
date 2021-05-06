@@ -83,6 +83,9 @@ typedef struct {
         bool abs : 1;
         bool neg : 1;
 
+        /* For a source, the swizzle. For a destination, acts a bit like a
+         * write mask. Identity for the full 32-bit, H00 for only caring about
+         * the lower half, other values unused. */
         enum bi_swizzle swizzle : 4;
         uint32_t offset : 2;
         bool reg : 1;
@@ -204,6 +207,13 @@ bi_neg(bi_index idx)
         return idx;
 }
 
+/* Additive identity in IEEE 754 arithmetic */
+static inline bi_index
+bi_negzero()
+{
+        return bi_neg(bi_zero());
+}
+
 /* Replaces an index, preserving any modifiers */
 
 static inline bi_index
@@ -228,6 +238,15 @@ static inline bi_index
 bi_imm_u16(uint16_t imm)
 {
         return bi_half(bi_imm_u32(imm), false);
+}
+
+static inline bi_index
+bi_imm_uintN(uint32_t imm, unsigned sz)
+{
+        assert(sz == 8 || sz == 16 || sz == 32);
+        return (sz == 8) ? bi_imm_u8(imm) :
+                (sz == 16) ? bi_imm_u16(imm) :
+                bi_imm_u32(imm);
 }
 
 static inline bi_index
@@ -753,6 +772,7 @@ void bi_print_shader(bi_context *ctx, FILE *fp);
 void bi_opt_copy_prop(bi_context *ctx);
 void bi_opt_dead_code_eliminate(bi_context *ctx, bool soft);
 void bi_opt_push_ubo(bi_context *ctx);
+void bi_opt_constant_fold(bi_context *ctx);
 void bi_lower_swizzle(bi_context *ctx);
 void bi_schedule(bi_context *ctx);
 void bi_assign_scoreboard(bi_context *ctx);

@@ -54,8 +54,6 @@ struct fd_texture_stateobj {
    struct pipe_sampler_state *samplers[PIPE_MAX_SAMPLERS];
    unsigned num_samplers;
    unsigned valid_samplers;
-   /* number of samples per sampler, 2 bits per sampler: */
-   uint32_t samples;
 };
 
 struct fd_program_stateobj {
@@ -463,8 +461,9 @@ struct fd_context {
 
    /* draw: */
    bool (*draw_vbo)(struct fd_context *ctx, const struct pipe_draw_info *info,
+			unsigned drawid_offset, 
                     const struct pipe_draw_indirect_info *indirect,
-                    const struct pipe_draw_start_count *draw,
+			const struct pipe_draw_start_count_bias *draw,
                     unsigned index_offset) dt;
    bool (*clear)(struct fd_context *ctx, unsigned buffers,
                  const union pipe_color_union *color, double depth,

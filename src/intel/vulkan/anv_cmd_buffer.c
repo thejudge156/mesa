@@ -199,6 +199,9 @@ anv_dynamic_state_copy(struct anv_dynamic_state *dest,
 
    ANV_CMP_COPY(color_writes, ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE);
 
+   ANV_CMP_COPY(fragment_shading_rate.width, ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE);
+   ANV_CMP_COPY(fragment_shading_rate.height, ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE);
+
 #undef ANV_CMP_COPY
 
    return changed;
@@ -1055,9 +1058,10 @@ anv_cmd_buffer_cs_push_constants(struct anv_cmd_buffer *cmd_buffer)
    const struct brw_cs_prog_data *cs_prog_data = get_cs_prog_data(pipeline);
    const struct anv_push_range *range = &pipeline->cs->bind_map.push_ranges[0];
 
-   const struct anv_cs_parameters cs_params = anv_cs_parameters(pipeline);
+   const struct brw_cs_dispatch_info dispatch =
+      brw_cs_get_dispatch_info(devinfo, cs_prog_data, NULL);
    const unsigned total_push_constants_size =
-      brw_cs_push_const_total_size(cs_prog_data, cs_params.threads);
+      brw_cs_push_const_total_size(cs_prog_data, dispatch.threads);
    if (total_push_constants_size == 0)
       return (struct anv_state) { .offset = 0 };
 
@@ -1086,7 +1090,7 @@ anv_cmd_buffer_cs_push_constants(struct anv_cmd_buffer *cmd_buffer)
    }
 
    if (cs_prog_data->push.per_thread.size > 0) {
-      for (unsigned t = 0; t < cs_params.threads; t++) {
+      for (unsigned t = 0; t < dispatch.threads; t++) {
          memcpy(dst, src, cs_prog_data->push.per_thread.size);
 
          uint32_t *subgroup_id = dst +
@@ -1432,4 +1436,15 @@ void anv_CmdSetColorWriteEnableEXT(
       cmd_buffer->state.gfx.dynamic.color_writes = color_writes;
       cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE;
    }
+}
+
+void anv_CmdSetFragmentShadingRateKHR(
+    VkCommandBuffer                             commandBuffer,
+    const VkExtent2D*                           pFragmentSize,
+    const VkFragmentShadingRateCombinerOpKHR    combinerOps[2])
+{
+   ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
+
+   cmd_buffer->state.gfx.dynamic.fragment_shading_rate = *pFragmentSize;
+   cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE;
 }

@@ -168,7 +168,7 @@ fill_sampler_descriptors(struct d3d12_context *ctx,
 static unsigned
 fill_state_vars(struct d3d12_context *ctx,
                 const struct pipe_draw_info *dinfo,
-                const struct pipe_draw_start_count *draw,
+                const struct pipe_draw_start_count_bias *draw,
                 struct d3d12_shader *shader,
                 uint32_t *values)
 {
@@ -190,7 +190,7 @@ fill_state_vars(struct d3d12_context *ctx,
          size += 4;
          break;
       case D3D12_STATE_VAR_FIRST_VERTEX:
-         ptr[0] = dinfo->index_size ? dinfo->index_bias : draw->start;
+         ptr[0] = dinfo->index_size ? draw->index_bias : draw->start;
          size += 4;
          break;
       case D3D12_STATE_VAR_DEPTH_TRANSFORM:
@@ -244,7 +244,7 @@ check_descriptors_left(struct d3d12_context *ctx)
 static void
 set_graphics_root_parameters(struct d3d12_context *ctx,
                              const struct pipe_draw_info *dinfo,
-                             const struct pipe_draw_start_count *draw)
+                             const struct pipe_draw_start_count_bias *draw)
 {
    unsigned num_params = 0;
 
@@ -358,11 +358,11 @@ static void
 twoface_emulation(struct d3d12_context *ctx,
                   struct d3d12_rasterizer_state *rast,
                   const struct pipe_draw_info *dinfo,
-                  const struct pipe_draw_start_count *draw)
+                  const struct pipe_draw_start_count_bias *draw)
 {
    /* draw backfaces */
    ctx->base.bind_rasterizer_state(&ctx->base, rast->twoface_back);
-   d3d12_draw_vbo(&ctx->base, dinfo, NULL, draw, 1);
+   d3d12_draw_vbo(&ctx->base, dinfo, 0, NULL, draw, 1);
 
    /* restore real state */
    ctx->base.bind_rasterizer_state(&ctx->base, rast);
@@ -423,12 +423,13 @@ d3d12_last_vertex_stage(struct d3d12_context *ctx)
 void
 d3d12_draw_vbo(struct pipe_context *pctx,
                const struct pipe_draw_info *dinfo,
+               unsigned drawid_offset,
                const struct pipe_draw_indirect_info *indirect,
-               const struct pipe_draw_start_count *draws,
+               const struct pipe_draw_start_count_bias *draws,
                unsigned num_draws)
 {
    if (num_draws > 1) {
-      util_draw_multi(pctx, dinfo, indirect, draws, num_draws);
+      util_draw_multi(pctx, dinfo, drawid_offset, indirect, draws, num_draws);
       return;
    }
 
@@ -453,7 +454,7 @@ d3d12_draw_vbo(struct pipe_context *pctx,
 
       ctx->initial_api_prim = dinfo->mode;
       util_primconvert_save_rasterizer_state(ctx->primconvert, &ctx->gfx_pipeline_state.rast->base);
-      util_primconvert_draw_vbo(ctx->primconvert, dinfo, indirect, draws, num_draws);
+      util_primconvert_draw_vbo(ctx->primconvert, dinfo, drawid_offset, indirect, draws, num_draws);
       return;
    }
 
@@ -716,7 +717,7 @@ d3d12_draw_vbo(struct pipe_context *pctx,
 
    if (dinfo->index_size > 0)
       ctx->cmdlist->DrawIndexedInstanced(draws[0].count, dinfo->instance_count,
-                                         draws[0].start, dinfo->index_bias,
+                                         draws[0].start, draws[0].index_bias,
                                          dinfo->start_instance);
    else
       ctx->cmdlist->DrawInstanced(draws[0].count, dinfo->instance_count,

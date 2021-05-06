@@ -211,7 +211,7 @@ bi_lower_atom_c1(bi_context *ctx, struct bi_clause_state *clause, struct
         pinstr->src[2] = pinstr->src[1];
         pinstr->src[1] = pinstr->src[0];
         pinstr->src[3] = bi_dontcare();
-        pinstr->src[0] = pinstr->dest[0];
+        pinstr->src[0] = bi_null();
 
         return atom_c;
 }
@@ -383,6 +383,12 @@ bi_singleton(void *memctx, bi_instr *ins,
 ASSERTED static bool
 bi_can_fma(bi_instr *ins)
 {
+        /* Errata: *V2F32_TO_V2F16 with distinct sources raises
+         * INSTR_INVALID_ENC under certain conditions */
+        if (ins->op == BI_OPCODE_V2F32_TO_V2F16 &&
+                        !bi_is_word_equiv(ins->src[0], ins->src[1]))
+                return false;
+
         /* TODO: some additional fp16 constraints */
         return bi_opcode_props[ins->op].fma;
 }
@@ -390,6 +396,10 @@ bi_can_fma(bi_instr *ins)
 ASSERTED static bool
 bi_can_add(bi_instr *ins)
 {
+        /* +FADD.v2f16 lacks clamp modifier, use *FADD.v2f16 instead */
+        if (ins->op == BI_OPCODE_FADD_V2F16 && ins->clamp)
+                return false;
+
         /* TODO: some additional fp16 constraints */
         return bi_opcode_props[ins->op].add;
 }

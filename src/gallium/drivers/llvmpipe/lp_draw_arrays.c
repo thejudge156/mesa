@@ -52,8 +52,9 @@
  */
 static void
 llvmpipe_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
+                  unsigned drawid_offset,
                   const struct pipe_draw_indirect_info *indirect,
-                  const struct pipe_draw_start_count *draws,
+                  const struct pipe_draw_start_count_bias *draws,
                   unsigned num_draws)
 {
    if (!indirect && (!draws[0].count || !info->instance_count))
@@ -145,7 +146,7 @@ llvmpipe_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
                                      !lp->queries_disabled);
 
    /* draw! */
-   draw_vbo(draw, info, indirect, draws, num_draws);
+   draw_vbo(draw, info, drawid_offset, indirect, draws, num_draws);
 
    /*
     * unmap vertex/index buffers

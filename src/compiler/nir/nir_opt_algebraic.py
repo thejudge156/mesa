@@ -553,7 +553,11 @@ optimizations.extend([
    (('imin', a, a), a),
    (('imax', a, a), a),
    (('umin', a, a), a),
+   (('umin', a, 0), 0),
+   (('umin', a, -1), a),
    (('umax', a, a), a),
+   (('umax', a, 0), a),
+   (('umax', a, -1), -1),
    (('fmax', ('fmax', a, b), b), ('fmax', a, b)),
    (('umax', ('umax', a, b), b), ('umax', a, b)),
    (('imax', ('imax', a, b), b), ('imax', a, b)),
@@ -1648,6 +1652,14 @@ optimizations.extend([
    (('umad24', a, b, c),
     ('iadd', ('imul', ('iand', a, 0xffffff), ('iand', b, 0xffffff)), c),
     '!options->has_umad24'),
+
+   # Relaxed 24bit ops
+   (('imul24_relaxed', a, b), ('imul24', a, b), 'options->has_imul24'),
+   (('imul24_relaxed', a, b), ('imul', a, b), '!options->has_imul24'),
+   (('umad24_relaxed', a, b, c), ('umad24', a, b, c), 'options->has_umad24'),
+   (('umad24_relaxed', a, b, c), ('iadd', ('umul24_relaxed', a, b), c), '!options->has_umad24'),
+   (('umul24_relaxed', a, b), ('umul24', a, b), 'options->has_umul24'),
+   (('umul24_relaxed', a, b), ('imul', a, b), '!options->has_umul24'),
 
    (('imad24_ir3', a, b, 0), ('imul24', a, b)),
    (('imad24_ir3', a, 0, c), (c)),

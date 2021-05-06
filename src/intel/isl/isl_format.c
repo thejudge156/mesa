@@ -83,6 +83,8 @@ struct surface_format_info {
  * VB    - Input Vertex Buffer
  * SO    - Steamed Output Vertex Buffers (transform feedback)
  * color - Color Processing
+ * TW    - Typed Write
+ * TR    - Typed Read
  * ccs_e - Lossless Compression Support (gfx9+ only)
  * sf    - Surface Format
  *
@@ -1318,7 +1320,7 @@ unpack_channel(union isl_color_value *value,
 void
 isl_color_value_unpack(union isl_color_value *value,
                        enum isl_format format,
-                       const uint32_t data_in[4])
+                       const uint32_t *data_in)
 {
    const struct isl_format_layout *fmtl = isl_format_get_layout(format);
    assert(fmtl->colorspace == ISL_COLORSPACE_LINEAR ||

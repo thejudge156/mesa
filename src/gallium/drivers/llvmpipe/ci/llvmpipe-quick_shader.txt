@@ -158,10 +158,7 @@ spec/ext_shader_framebuffer_fetch_non_coherent/execution/gles3/simple-ms8: skip
 spec/ext_shader_image_load_formatted/execution/image_checkerboard: skip
 spec/glsl-1.10/preprocessor/extension-defined-test: skip
 spec/glsl-1.10/preprocessor/extension-if-1: skip
-spec/glsl-1.20/execution/fs-nan-builtin-max: fail
-spec/glsl-1.20/execution/fs-nan-builtin-min: fail
-spec/glsl-1.20/execution/vs-nan-builtin-max: fail
-spec/glsl-1.20/execution/vs-nan-builtin-min: fail
+spec/glsl-1.30/execution/range_analysis_fsat_of_nan: fail
 spec/glsl-1.50/execution/compatibility/clipping/gs-clip-vertex-const-accept: skip
 spec/glsl-1.50/execution/compatibility/clipping/gs-clip-vertex-const-reject: skip
 spec/glsl-1.50/execution/compatibility/clipping/gs-clip-vertex-different-from-position: skip
@@ -227,7 +224,6 @@ spec/glsl-4.00/execution/conversion/vert-conversion-explicit-dvec2-vec2: fail
 spec/glsl-4.00/execution/conversion/vert-conversion-explicit-dvec3-vec3: fail
 spec/glsl-4.00/execution/conversion/vert-conversion-explicit-dvec4-vec4: fail
 spec/glsl-4.50/execution/ssbo-atomiccompswap-int: fail
-spec/glsl-es-3.10/execution/fs-simple-atomic-counter-inc-dec-read: fail
 spec/intel_shader_atomic_float_minmax/execution/shared-atomiccompswap-float: skip
 spec/intel_shader_atomic_float_minmax/execution/shared-atomicexchange-float: skip
 spec/intel_shader_atomic_float_minmax/execution/shared-atomicmax-float: skip

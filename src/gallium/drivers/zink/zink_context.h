@@ -334,8 +334,9 @@ zink_rebind_framebuffer(struct zink_context *ctx, struct zink_resource *res);
 void
 zink_draw_vbo(struct pipe_context *pctx,
               const struct pipe_draw_info *dinfo,
+              unsigned drawid_offset,
               const struct pipe_draw_indirect_info *indirect,
-              const struct pipe_draw_start_count *draws,
+              const struct pipe_draw_start_count_bias *draws,
               unsigned num_draws);
 
 void

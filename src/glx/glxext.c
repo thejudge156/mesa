@@ -150,7 +150,7 @@ __glXWireToEvent(Display *dpy, XEvent *event, xEvent *wire)
    if (glx_dpy == NULL)
       return False;
 
-   switch ((wire->u.u.type & 0x7f) - glx_dpy->codes->first_event) {
+   switch ((wire->u.u.type & 0x7f) - glx_dpy->codes.first_event) {
    case GLX_PbufferClobber:
    {
       GLXPbufferClobberEvent *aevent = (GLXPbufferClobberEvent *)event;
@@ -280,8 +280,6 @@ glx_display_free(struct glx_display *priv)
    }
 
    FreeScreenConfigs(priv);
-   free((char *) priv->serverGLXvendor);
-   free((char *) priv->serverGLXversion);
 
    __glxHashDestroy(priv->glXDrawHash);
 
@@ -702,7 +700,7 @@ getVisualConfigs(struct glx_screen *psc,
 
    psc->visuals = NULL;
    GetReq(GLXGetVisualConfigs, req);
-   req->reqType = priv->majorOpcode;
+   req->reqType = priv->codes.major_opcode;
    req->glxCode = X_GLXGetVisualConfigs;
    req->screen = screen;
 
@@ -720,7 +718,7 @@ getVisualConfigs(struct glx_screen *psc,
 }
 
 static GLboolean
- getFBConfigs(struct glx_screen *psc, struct glx_display *priv, int screen)
+getFBConfigs(struct glx_screen *psc, struct glx_display *priv, int screen)
 {
    xGLXGetFBConfigsReq *fb_req;
    xGLXGetFBConfigsSGIXReq *sgi_req;
@@ -728,8 +726,7 @@ static GLboolean
    xGLXGetFBConfigsReply reply;
    Display *dpy = priv->dpy;
 
-   psc->serverGLXexts =
-      __glXQueryServerString(dpy, priv->majorOpcode, screen, GLX_EXTENSIONS);
+   psc->serverGLXexts = __glXQueryServerString(dpy, screen, GLX_EXTENSIONS);
 
    if (psc->serverGLXexts == NULL) {
       return GL_FALSE;
@@ -738,10 +735,9 @@ static GLboolean
    LockDisplay(dpy);
 
    psc->configs = NULL;
-   if (priv->majorVersion > 1 ||
-       (priv->majorVersion == 1 && priv->minorVersion >= 3)) {
+   if (priv->minorVersion >= 3) {
       GetReq(GLXGetFBConfigs, fb_req);
-      fb_req->reqType = priv->majorOpcode;
+      fb_req->reqType = priv->codes.major_opcode;
       fb_req->glxCode = X_GLXGetFBConfigs;
       fb_req->screen = screen;
    }
@@ -750,7 +746,7 @@ static GLboolean
                   sz_xGLXGetFBConfigsSGIXReq -
                   sz_xGLXVendorPrivateWithReplyReq, vpreq);
       sgi_req = (xGLXGetFBConfigsSGIXReq *) vpreq;
-      sgi_req->reqType = priv->majorOpcode;
+      sgi_req->reqType = priv->codes.major_opcode;
       sgi_req->glxCode = X_GLXVendorPrivateWithReply;
       sgi_req->vendorCode = X_GLXvop_GetFBConfigsSGIX;
       sgi_req->screen = screen;
@@ -803,6 +799,8 @@ glx_screen_cleanup(struct glx_screen *psc)
       psc->visuals = NULL;   /* NOTE: just for paranoia */
    }
    free((char *) psc->serverGLXexts);
+   free((char *) psc->serverGLXvendor);
+   free((char *) psc->serverGLXversion);
 }
 
 /*
@@ -822,13 +820,6 @@ AllocAndFetchScreenConfigs(Display * dpy, struct glx_display * priv)
    priv->screens = calloc(screens, sizeof *priv->screens);
    if (!priv->screens)
       return GL_FALSE;
-
-   priv->serverGLXversion =
-      __glXQueryServerString(dpy, priv->majorOpcode, 0, GLX_VERSION);
-   if (priv->serverGLXversion == NULL) {
-      FreeScreenConfigs(priv);
-      return GL_FALSE;
-   }
 
    for (i = 0; i < screens; i++, psc++) {
       psc = NULL;
@@ -874,7 +865,7 @@ __glXInitialize(Display * dpy)
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
    Bool glx_direct, glx_accel;
 #endif
-   int i;
+   int i, majorVersion = 0;
 
    _XLockMutex(_Xglobal_lock);
 
@@ -892,34 +883,28 @@ __glXInitialize(Display * dpy)
    if (!dpyPriv)
       return NULL;
 
-   dpyPriv->codes = XInitExtension(dpy, __glXExtensionName);
-   if (!dpyPriv->codes) {
-      free(dpyPriv);
-      return NULL;
-   }
+   dpyPriv->codes = *XInitExtension(dpy, __glXExtensionName);
 
    dpyPriv->dpy = dpy;
-   dpyPriv->majorOpcode = dpyPriv->codes->major_opcode;
-   dpyPriv->serverGLXvendor = 0x0;
-   dpyPriv->serverGLXversion = 0x0;
 
-   /* See if the versions are compatible.  This GLX implementation does not
-    * work with servers that only support GLX 1.0.
+   /* This GLX implementation requires X_GLXQueryExtensionsString
+    * and X_GLXQueryServerString, which are new in GLX 1.1.
     */
-   if (!QueryVersion(dpy, dpyPriv->majorOpcode,
-		     &dpyPriv->majorVersion, &dpyPriv->minorVersion)
-       || (dpyPriv->majorVersion == 1 && dpyPriv->minorVersion < 1)) {
+   if (!QueryVersion(dpy, dpyPriv->codes.major_opcode,
+		     &majorVersion, &dpyPriv->minorVersion)
+       || (majorVersion != 1)
+       || (majorVersion == 1 && dpyPriv->minorVersion < 1)) {
       free(dpyPriv);
       return NULL;
    }
 
    for (i = 0; i < __GLX_NUMBER_EVENTS; i++) {
-      XESetWireToEvent(dpy, dpyPriv->codes->first_event + i, __glXWireToEvent);
-      XESetEventToWire(dpy, dpyPriv->codes->first_event + i, __glXEventToWire);
+      XESetWireToEvent(dpy, dpyPriv->codes.first_event + i, __glXWireToEvent);
+      XESetEventToWire(dpy, dpyPriv->codes.first_event + i, __glXEventToWire);
    }
 
-   XESetCloseDisplay(dpy, dpyPriv->codes->extension, __glXCloseDisplay);
-   XESetErrorString (dpy, dpyPriv->codes->extension, __glXErrorString);
+   XESetCloseDisplay(dpy, dpyPriv->codes.extension, __glXCloseDisplay);
+   XESetErrorString (dpy, dpyPriv->codes.extension, __glXErrorString);
 
    dpyPriv->glXDrawHash = __glxHashCreate();
 
@@ -1025,7 +1010,7 @@ __glXSetupForCommand(Display * dpy)
    if (!priv) {
       return 0;
    }
-   return priv->majorOpcode;
+   return priv->codes.major_opcode;
 }
 
 /**

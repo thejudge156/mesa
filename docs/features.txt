@@ -309,7 +309,7 @@ Khronos, ARB, and OES extensions that are not part of any OpenGL or OpenGL ES ve
   GL_ARB_sample_locations                               DONE (nvc0)
   GL_ARB_seamless_cubemap_per_texture                   DONE (etnaviv/SEAMLESS_CUBE_MAP, freedreno, i965, nvc0, r600, radeonsi, softpipe, swr, virgl)
   GL_ARB_shader_ballot                                  DONE (i965/gen8+, nvc0, radeonsi)
-  GL_ARB_shader_clock                                   DONE (i965/gen7+, nv50, nvc0, r600, radeonsi, virgl)
+  GL_ARB_shader_clock                                   DONE (i965/gen7+, nv50, nvc0, r600, radeonsi, virgl, zink)
   GL_ARB_shader_stencil_export                          DONE (i965/gen9+, r600, radeonsi, softpipe, llvmpipe, swr, virgl, panfrost, zink)
   GL_ARB_shader_viewport_layer_array                    DONE (i965/gen6+, nvc0, radeonsi, zink)
   GL_ARB_shading_language_include                       DONE
@@ -469,7 +469,7 @@ Vulkan 1.2 -- all DONE: anv, vn
   VK_EXT_host_query_reset                               DONE (anv, lvp, radv, tu, vn)
   VK_EXT_sampler_filter_minmax                          DONE (anv/gen9+, lvp, radv, tu, vn)
   VK_EXT_scalar_block_layout                            DONE (anv, lvp, radv/gfx7+, tu, vn)
-  VK_EXT_separate_stencil_usage                         DONE (anv, vn)
+  VK_EXT_separate_stencil_usage                         DONE (anv, tu, vn)
   VK_EXT_shader_viewport_index_layer                    DONE (anv, lvp, radv, tu, vn)
 
 Khronos extensions that are not part of any Vulkan version:

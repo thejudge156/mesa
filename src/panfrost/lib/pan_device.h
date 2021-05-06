@@ -42,6 +42,10 @@
 
 #include <midgard_pack.h>
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 /* Driver limits */
 #define PAN_MAX_CONST_BUFFERS 16
 
@@ -250,7 +254,7 @@ panfrost_query_sample_position(
 static inline struct panfrost_bo *
 pan_lookup_bo(struct panfrost_device *dev, uint32_t gem_handle)
 {
-        return util_sparse_array_get(&dev->bo_map, gem_handle);
+        return (struct panfrost_bo *)util_sparse_array_get(&dev->bo_map, gem_handle);
 }
 
 static inline bool
@@ -258,5 +262,9 @@ pan_is_bifrost(const struct panfrost_device *dev)
 {
         return dev->arch >= 6 && dev->arch <= 7;
 }
+
+#if defined(__cplusplus)
+} // extern "C"
+#endif
 
 #endif

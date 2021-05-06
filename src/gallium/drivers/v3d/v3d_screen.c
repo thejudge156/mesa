@@ -423,7 +423,8 @@ v3d_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
         case PIPE_SHADER_CAP_SUPPORTED_IRS:
                 return 1 << PIPE_SHADER_IR_NIR;
         case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-                return 32;
+                /* Disable GLSL loop unrolling, we'll use NIR's */
+                return 0;
         case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
         case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
                 return 0;
@@ -628,6 +629,54 @@ v3d_screen_is_format_supported(struct pipe_screen *pscreen,
         return true;
 }
 
+static const nir_shader_compiler_options v3d_nir_options = {
+        .lower_add_sat = true,
+        .lower_all_io_to_temps = true,
+        .lower_extract_byte = true,
+        .lower_extract_word = true,
+        .lower_bitfield_insert_to_shifts = true,
+        .lower_bitfield_extract_to_shifts = true,
+        .lower_bitfield_reverse = true,
+        .lower_bit_count = true,
+        .lower_cs_local_id_from_index = true,
+        .lower_ffract = true,
+        .lower_fmod = true,
+        .lower_pack_unorm_2x16 = true,
+        .lower_pack_snorm_2x16 = true,
+        .lower_pack_unorm_4x8 = true,
+        .lower_pack_snorm_4x8 = true,
+        .lower_unpack_unorm_4x8 = true,
+        .lower_unpack_snorm_4x8 = true,
+        .lower_pack_half_2x16 = true,
+        .lower_unpack_half_2x16 = true,
+        .lower_fdiv = true,
+        .lower_find_lsb = true,
+        .lower_ffma16 = true,
+        .lower_ffma32 = true,
+        .lower_ffma64 = true,
+        .lower_flrp32 = true,
+        .lower_fpow = true,
+        .lower_fsat = true,
+        .lower_fsqrt = true,
+        .lower_ifind_msb = true,
+        .lower_isign = true,
+        .lower_ldexp = true,
+        .lower_mul_high = true,
+        .lower_wpos_pntc = true,
+        .lower_rotate = true,
+        .lower_to_scalar = true,
+        .has_fsub = true,
+        .has_isub = true,
+        .divergence_analysis_options =
+                nir_divergence_multiple_workgroup_per_compute_subgroup,
+        /* This will enable loop unrolling in the state tracker so we won't
+         * be able to selectively disable it in backend if it leads to
+         * lower thread counts or TMU spills. Choose a conservative maximum to
+         * limit register pressure impact.
+         */
+        .max_unroll_iterations = 16,
+};
+
 static const void *
 v3d_screen_get_compiler_options(struct pipe_screen *pscreen,
                                 enum pipe_shader_ir ir, unsigned shader)
@@ -651,6 +700,10 @@ v3d_screen_query_dmabuf_modifiers(struct pipe_screen *pscreen,
         int i;
         int num_modifiers = ARRAY_SIZE(v3d_available_modifiers);
 
+        /* Expose DRM_FORMAT_MOD_BROADCOM_SAND128 only for PIPE_FORMAT_NV12 */
+        if (format != PIPE_FORMAT_NV12)
+                num_modifiers--;
+
         if (!modifiers) {
                 *count = num_modifiers;
                 return;
@@ -660,10 +713,8 @@ v3d_screen_query_dmabuf_modifiers(struct pipe_screen *pscreen,
         for (i = 0; i < *count; i++) {
                 modifiers[i] = v3d_available_modifiers[i];
                 if (external_only)
-                        external_only[i] =
-                                v3d_available_modifiers[i] ==
-                                DRM_FORMAT_MOD_BROADCOM_SAND128;
-       }
+                        external_only[i] = util_format_is_yuv(format);
+        }
 }
 
 static bool
@@ -691,7 +742,7 @@ v3d_screen_is_dmabuf_modifier_supported(struct pipe_screen *pscreen,
         for (i = 0; i < ARRAY_SIZE(v3d_available_modifiers) - 1; i++) {
                 if (v3d_available_modifiers[i] == modifier) {
                         if (external_only)
-                                *external_only = false;
+                                *external_only = util_format_is_yuv(format);
 
                         return true;
                 }

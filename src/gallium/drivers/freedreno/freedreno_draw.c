@@ -226,7 +226,7 @@ batch_draw_tracking(struct fd_batch *batch, const struct pipe_draw_info *info,
 
 static void
 update_draw_stats(struct fd_context *ctx, const struct pipe_draw_info *info,
-                  const struct pipe_draw_start_count *draws,
+                  const struct pipe_draw_start_count_bias *draws,
                   unsigned num_draws) assert_dt
 {
    ctx->stats.draw_calls++;
@@ -265,8 +265,9 @@ update_draw_stats(struct fd_context *ctx, const struct pipe_draw_info *info,
 
 static void
 fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
+		unsigned drawid_offset,
             const struct pipe_draw_indirect_info *indirect,
-            const struct pipe_draw_start_count *draws, unsigned num_draws) in_dt
+            const struct pipe_draw_start_count_bias *draws, unsigned num_draws) in_dt
 {
    struct fd_context *ctx = fd_context(pctx);
 
@@ -290,7 +291,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       if (ctx->streamout.num_targets > 0)
          mesa_loge("stream-out with emulated prims");
       util_primconvert_save_rasterizer_state(ctx->primconvert, ctx->rasterizer);
-      util_primconvert_draw_vbo(ctx->primconvert, info, indirect, draws,
+      util_primconvert_draw_vbo(ctx->primconvert, info, drawid_offset, indirect, draws,
                                 num_draws);
       return;
    }
@@ -302,7 +303,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    if (info->index_size) {
       if (info->has_user_indices) {
          if (num_draws > 1) {
-            util_draw_multi(pctx, info, indirect, draws, num_draws);
+				util_draw_multi(pctx, info, drawid_offset, indirect, draws, num_draws);
             return;
          }
          if (!util_upload_index_buffer(pctx, info, &draws[0], &indexbuf,
@@ -318,7 +319,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    }
 
    if ((ctx->streamout.num_targets > 0) && (num_draws > 1)) {
-      util_draw_multi(pctx, info, indirect, draws, num_draws);
+		util_draw_multi(pctx, info, drawid_offset, indirect, draws, num_draws);
       return;
    }
 
@@ -346,11 +347,11 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    batch->back_blit = ctx->in_shadow;
    batch->num_draws++;
 
-   /* Clearing last_fence must come after the batch dependency tracking
-    * (resource_read()/resource_written()), as that can trigger a flush,
-    * re-populating last_fence
+   /* Marking the batch as needing flush must come after the batch
+    * dependency tracking (resource_read()/resource_write()), as that
+    * can trigger a flush
     */
-   fd_fence_ref(&ctx->last_fence, NULL);
+   fd_batch_needs_flush(batch);
 
    struct pipe_framebuffer_state *pfb = &batch->framebuffer;
    DBG("%p: %ux%u num_draws=%u (%s/%s)", batch, pfb->width, pfb->height,
@@ -361,8 +362,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    batch->cost += ctx->draw_cost;
 
    for (unsigned i = 0; i < num_draws; i++) {
-      if (ctx->draw_vbo(ctx, info, indirect, &draws[i], index_offset))
-         batch->needs_flush = true;
+      ctx->draw_vbo(ctx, info, drawid_offset, indirect, &draws[i], index_offset);
 
       batch->num_vertices += draws[i].count * info->instance_count;
    }
@@ -413,7 +413,6 @@ batch_clear_tracking(struct fd_batch *batch, unsigned buffers) assert_dt
    batch->invalidated |= cleared_buffers;
 
    batch->resolve |= buffers;
-   batch->needs_flush = true;
 
    fd_screen_lock(ctx->screen);
 
@@ -467,11 +466,11 @@ fd_clear(struct pipe_context *pctx, unsigned buffers,
       assert(ctx->batch == batch);
    }
 
-   /* Clearing last_fence must come after the batch dependency tracking
-    * (resource_read()/resource_written()), as that can trigger a flush,
-    * re-populating last_fence
+   /* Marking the batch as needing flush must come after the batch
+    * dependency tracking (resource_read()/resource_write()), as that
+    * can trigger a flush
     */
-   fd_fence_ref(&ctx->last_fence, NULL);
+   fd_batch_needs_flush(batch);
 
    struct pipe_framebuffer_state *pfb = &batch->framebuffer;
    DBG("%p: %x %ux%u depth=%f, stencil=%u (%s/%s)", batch, buffers, pfb->width,
@@ -579,7 +578,7 @@ fd_launch_grid(struct pipe_context *pctx,
        info->block[0], info->block[1], info->block[2],
        info->grid[0], info->grid[1], info->grid[2]);
 
-   batch->needs_flush = true;
+   fd_batch_needs_flush(batch);
    ctx->launch_grid(ctx, info);
 
    fd_batch_flush(batch);

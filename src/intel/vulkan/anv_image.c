@@ -2872,17 +2872,30 @@ anv_CreateImageView(VkDevice _device,
 
       /* NOTE: This one needs to go last since it may stomp isl_view.format */
       if (view_usage & VK_IMAGE_USAGE_STORAGE_BIT) {
-         iview->planes[vplane].storage_surface_state.state = alloc_surface_state(device);
+         if (isl_is_storage_image_format(format.isl_format)) {
+            iview->planes[vplane].storage_surface_state.state =
+               alloc_surface_state(device);
+
+            anv_image_fill_surface_state(device, image, 1ULL << iaspect_bit,
+                                         &iview->planes[vplane].isl,
+                                         ISL_SURF_USAGE_STORAGE_BIT,
+                                         ISL_AUX_USAGE_NONE, NULL,
+                                         0,
+                                         &iview->planes[vplane].storage_surface_state,
+                                         &iview->planes[vplane].storage_image_param);
+         } else {
+            /* In this case, we support the format but, because there's no
+             * SPIR-V format specifier corresponding to it, we only support
+             * NonReadable (writeonly in GLSL) access.  Instead of hanging in
+             * these invalid cases, we give them a NULL descriptor.
+             */
+            assert(isl_format_supports_typed_writes(&device->info,
+                                                    format.isl_format));
+            iview->planes[vplane].storage_surface_state.state =
+               device->null_surface_state;
+         }
+
          iview->planes[vplane].writeonly_storage_surface_state.state = alloc_surface_state(device);
-
-         anv_image_fill_surface_state(device, image, 1ULL << iaspect_bit,
-                                      &iview->planes[vplane].isl,
-                                      ISL_SURF_USAGE_STORAGE_BIT,
-                                      ISL_AUX_USAGE_NONE, NULL,
-                                      0,
-                                      &iview->planes[vplane].storage_surface_state,
-                                      &iview->planes[vplane].storage_image_param);
-
          anv_image_fill_surface_state(device, image, 1ULL << iaspect_bit,
                                       &iview->planes[vplane].isl,
                                       ISL_SURF_USAGE_STORAGE_BIT,
@@ -2911,22 +2924,26 @@ anv_DestroyImageView(VkDevice _device, VkImageView _iview,
       return;
 
    for (uint32_t plane = 0; plane < iview->n_planes; plane++) {
-      if (iview->planes[plane].optimal_sampler_surface_state.state.alloc_size > 0) {
+      /* Check offset instead of alloc_size because this they might be
+       * device->null_surface_state which always has offset == 0.  We don't
+       * own that one so we don't want to accidentally free it.
+       */
+      if (iview->planes[plane].optimal_sampler_surface_state.state.offset) {
          anv_state_pool_free(&device->surface_state_pool,
                              iview->planes[plane].optimal_sampler_surface_state.state);
       }
 
-      if (iview->planes[plane].general_sampler_surface_state.state.alloc_size > 0) {
+      if (iview->planes[plane].general_sampler_surface_state.state.offset) {
          anv_state_pool_free(&device->surface_state_pool,
                              iview->planes[plane].general_sampler_surface_state.state);
       }
 
-      if (iview->planes[plane].storage_surface_state.state.alloc_size > 0) {
+      if (iview->planes[plane].storage_surface_state.state.offset) {
          anv_state_pool_free(&device->surface_state_pool,
                              iview->planes[plane].storage_surface_state.state);
       }
 
-      if (iview->planes[plane].writeonly_storage_surface_state.state.alloc_size > 0) {
+      if (iview->planes[plane].writeonly_storage_surface_state.state.offset) {
          anv_state_pool_free(&device->surface_state_pool,
                              iview->planes[plane].writeonly_storage_surface_state.state);
       }

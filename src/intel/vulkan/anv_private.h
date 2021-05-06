@@ -2240,6 +2240,7 @@ enum anv_cmd_dirty_bits {
    ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP                  = 1 << 23, /* VK_DYNAMIC_STATE_STENCIL_OP_EXT */
    ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS            = 1 << 24, /* VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT */
    ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE           = 1 << 25, /* VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT */
+   ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE                = 1 << 26, /* VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR */
 };
 typedef uint32_t anv_cmd_dirty_mask_t;
 
@@ -2265,7 +2266,8 @@ typedef uint32_t anv_cmd_dirty_mask_t;
     ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE |         \
     ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP |                  \
     ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS |            \
-    ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE)
+    ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE |           \
+    ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE)
 
 static inline enum anv_cmd_dirty_bits
 anv_cmd_dirty_bit_for_vk_dynamic_state(VkDynamicState vk_state)
@@ -2317,6 +2319,8 @@ anv_cmd_dirty_bit_for_vk_dynamic_state(VkDynamicState vk_state)
       return ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS;
    case VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT:
       return ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE;
+   case VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR:
+      return ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE;
    default:
       assert(!"Unsupported dynamic state");
       return 0;
@@ -2645,6 +2649,8 @@ struct anv_dynamic_state {
       uint32_t                                  samples;
       VkSampleLocationEXT                       locations[MAX_SAMPLE_LOCATIONS];
    } sample_locations;
+
+   VkExtent2D                                   fragment_shading_rate;
 
    VkCullModeFlags                              cull_mode;
    VkFrontFace                                  front_face;
@@ -3358,6 +3364,9 @@ struct anv_graphics_pipeline {
 
    struct anv_dynamic_state                     dynamic_state;
 
+   /* States declared dynamic at pipeline creation. */
+   anv_cmd_dirty_mask_t                         dynamic_states;
+
    uint32_t                                     topology;
 
    struct anv_subpass *                         subpass;
@@ -3384,6 +3393,8 @@ struct anv_graphics_pipeline {
    bool                                         use_primitive_replication;
 
    struct anv_state                             blend_state;
+
+   struct anv_state                             cps_state;
 
    uint32_t                                     vb_used;
    struct anv_pipeline_vertex_binding {
@@ -3419,7 +3430,6 @@ struct anv_compute_pipeline {
    struct anv_pipeline                          base;
 
    struct anv_shader_bin *                      cs;
-   uint32_t                                     cs_right_mask;
    uint32_t                                     batch_data[9];
    uint32_t                                     interface_descriptor_data[8];
 };
@@ -3503,15 +3513,6 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
                         const struct vk_shader_module *module,
                         const char *entrypoint,
                         const VkSpecializationInfo *spec_info);
-
-struct anv_cs_parameters {
-   uint32_t group_size;
-   uint32_t simd_size;
-   uint32_t threads;
-};
-
-struct anv_cs_parameters
-anv_cs_parameters(const struct anv_compute_pipeline *pipeline);
 
 struct anv_format_plane {
    enum isl_format isl_format:16;

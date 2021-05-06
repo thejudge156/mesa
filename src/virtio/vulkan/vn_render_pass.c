@@ -15,7 +15,60 @@
 
 #include "vn_device.h"
 
+static bool
+vn_render_pass_has_present_src(const VkRenderPassCreateInfo *create_info)
+{
+   /* XXX drop the #ifdef after fixing common wsi */
+#ifdef ANDROID
+   for (uint32_t i = 0; i < create_info->attachmentCount; i++) {
+      const VkAttachmentDescription *att = &create_info->pAttachments[i];
+      if (att->initialLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ||
+          att->finalLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+         return true;
+   }
+#endif
+
+   return false;
+}
+
+static bool
+vn_render_pass_has_present_src2(const VkRenderPassCreateInfo2 *create_info)
+{
+   /* XXX drop the #ifdef after fixing common wsi */
+#ifdef ANDROID
+   for (uint32_t i = 0; i < create_info->attachmentCount; i++) {
+      const VkAttachmentDescription2 *att = &create_info->pAttachments[i];
+      if (att->initialLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ||
+          att->finalLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+         return true;
+   }
+#endif
+
+   return false;
+}
+
 /* render pass commands */
+
+static const VkAttachmentDescription *
+vn_get_intercepted_attachments(const VkAttachmentDescription *attachments,
+                               uint32_t count,
+                               const VkAllocationCallbacks *alloc)
+{
+   size_t size = sizeof(VkAttachmentDescription) * count;
+   VkAttachmentDescription *out_attachments = vk_alloc(
+      alloc, size, VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (!out_attachments)
+      return NULL;
+
+   memcpy(out_attachments, attachments, size);
+   for (uint32_t i = 0; i < count; i++) {
+      if (out_attachments[i].initialLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+         out_attachments[i].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+      if (out_attachments[i].finalLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+         out_attachments[i].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+   }
+   return out_attachments;
+}
 
 VkResult
 vn_CreateRenderPass(VkDevice device,
@@ -35,15 +88,49 @@ vn_CreateRenderPass(VkDevice device,
 
    vn_object_base_init(&pass->base, VK_OBJECT_TYPE_RENDER_PASS, &dev->base);
 
-   /* XXX VK_IMAGE_LAYOUT_PRESENT_SRC_KHR */
+   VkRenderPassCreateInfo local_pass_info;
+   if (vn_render_pass_has_present_src(pCreateInfo)) {
+      local_pass_info = *pCreateInfo;
+      local_pass_info.pAttachments = vn_get_intercepted_attachments(
+         pCreateInfo->pAttachments, pCreateInfo->attachmentCount, alloc);
+      if (!local_pass_info.pAttachments) {
+         vk_free(alloc, pass);
+         return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+      pCreateInfo = &local_pass_info;
+   }
 
    VkRenderPass pass_handle = vn_render_pass_to_handle(pass);
    vn_async_vkCreateRenderPass(dev->instance, device, pCreateInfo, NULL,
                                &pass_handle);
 
+   if (pCreateInfo == &local_pass_info)
+      vk_free(alloc, (void *)local_pass_info.pAttachments);
+
    *pRenderPass = pass_handle;
 
    return VK_SUCCESS;
+}
+
+static const VkAttachmentDescription2 *
+vn_get_intercepted_attachments2(const VkAttachmentDescription2 *attachments,
+                                uint32_t count,
+                                const VkAllocationCallbacks *alloc)
+{
+   size_t size = sizeof(VkAttachmentDescription2) * count;
+   VkAttachmentDescription2 *out_attachments = vk_alloc(
+      alloc, size, VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+   if (!out_attachments)
+      return NULL;
+
+   memcpy(out_attachments, attachments, size);
+   for (uint32_t i = 0; i < count; i++) {
+      if (out_attachments[i].initialLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+         out_attachments[i].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+      if (out_attachments[i].finalLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+         out_attachments[i].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+   }
+   return out_attachments;
 }
 
 VkResult
@@ -64,11 +151,24 @@ vn_CreateRenderPass2(VkDevice device,
 
    vn_object_base_init(&pass->base, VK_OBJECT_TYPE_RENDER_PASS, &dev->base);
 
-   /* XXX VK_IMAGE_LAYOUT_PRESENT_SRC_KHR */
+   VkRenderPassCreateInfo2 local_pass_info;
+   if (vn_render_pass_has_present_src2(pCreateInfo)) {
+      local_pass_info = *pCreateInfo;
+      local_pass_info.pAttachments = vn_get_intercepted_attachments2(
+         pCreateInfo->pAttachments, pCreateInfo->attachmentCount, alloc);
+      if (!local_pass_info.pAttachments) {
+         vk_free(alloc, pass);
+         return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      }
+      pCreateInfo = &local_pass_info;
+   }
 
    VkRenderPass pass_handle = vn_render_pass_to_handle(pass);
    vn_async_vkCreateRenderPass2(dev->instance, device, pCreateInfo, NULL,
                                 &pass_handle);
+
+   if (pCreateInfo == &local_pass_info)
+      vk_free(alloc, (void *)local_pass_info.pAttachments);
 
    *pRenderPass = pass_handle;
 

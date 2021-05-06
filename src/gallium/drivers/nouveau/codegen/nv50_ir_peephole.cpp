@@ -1461,6 +1461,12 @@ ConstantFolding::opnd(Instruction *i, ImmediateValue &imm0, int s)
    {
       if (s != 1 || i->src(0).mod != Modifier(0))
          break;
+
+      if (imm0.reg.data.u32 == 0) {
+         i->op = OP_MOV;
+         i->setSrc(1, NULL);
+         break;
+      }
       // try to concatenate shifts
       Instruction *si = i->getSrc(0)->getInsn();
       if (!si)
@@ -3165,6 +3171,10 @@ MemoryOpt::runOpt(BasicBlock *bb)
       next = ldst->next;
 
       if (ldst->op == OP_LOAD || ldst->op == OP_VFETCH) {
+         if (ldst->subOp == NV50_IR_SUBOP_LOAD_LOCKED) {
+            purgeRecords(ldst, ldst->src(0).getFile());
+            continue;
+         }
          if (ldst->isDead()) {
             // might have been produced by earlier optimization
             delete_Instruction(prog, ldst);
@@ -3172,6 +3182,10 @@ MemoryOpt::runOpt(BasicBlock *bb)
          }
       } else
       if (ldst->op == OP_STORE || ldst->op == OP_EXPORT) {
+         if (ldst->subOp == NV50_IR_SUBOP_STORE_UNLOCKED) {
+            purgeRecords(ldst, ldst->src(0).getFile());
+            continue;
+         }
          if (typeSizeof(ldst->dType) == 4 &&
              ldst->src(1).getFile() == FILE_GPR &&
              ldst->getSrc(1)->getInsn()->op == OP_NOP) {

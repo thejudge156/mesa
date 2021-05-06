@@ -1305,34 +1305,116 @@ emit_intrinsic_image_size_tex(struct ir3_context *ctx, nir_intrinsic_instr *intr
 }
 
 static void
+emit_control_barrier(struct ir3_context *ctx)
+{
+	/* Hull shaders dispatch 32 wide so an entire patch will always
+	 * fit in a single warp and execute in lock-step. Consequently,
+	 * we don't need to do anything for TCS barriers. Emitting
+	 * barrier instruction will deadlock.
+	 */
+	if (ctx->so->type == MESA_SHADER_TESS_CTRL)
+		return;
+
+	struct ir3_block *b = ctx->block;
+	struct ir3_instruction *barrier = ir3_BAR(b);
+	barrier->cat7.g = true;
+	if (ctx->compiler->gpu_id < 600)
+		barrier->cat7.l = true;
+	barrier->flags = IR3_INSTR_SS | IR3_INSTR_SY;
+	barrier->barrier_class = IR3_BARRIER_EVERYTHING;
+	array_insert(b, b->keeps, barrier);
+}
+
+static void
 emit_intrinsic_barrier(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 {
 	struct ir3_block *b = ctx->block;
 	struct ir3_instruction *barrier;
 
+	/* TODO: find out why there is a major difference of .l usage
+	 * between a5xx and a6xx,
+	 */
+
 	switch (intr->intrinsic) {
 	case nir_intrinsic_control_barrier:
-		barrier = ir3_BAR(b);
-		barrier->cat7.g = true;
-		barrier->cat7.l = true;
-		barrier->flags = IR3_INSTR_SS | IR3_INSTR_SY;
-		barrier->barrier_class = IR3_BARRIER_EVERYTHING;
-		break;
-	case nir_intrinsic_memory_barrier:
-		barrier = ir3_FENCE(b);
-		barrier->cat7.g = true;
-		barrier->cat7.r = true;
-		barrier->cat7.w = true;
-		barrier->cat7.l = true;
-		barrier->barrier_class = IR3_BARRIER_IMAGE_W |
-				IR3_BARRIER_BUFFER_W;
-		barrier->barrier_conflict =
-				IR3_BARRIER_IMAGE_R | IR3_BARRIER_IMAGE_W |
-				IR3_BARRIER_BUFFER_R | IR3_BARRIER_BUFFER_W;
-		break;
+		emit_control_barrier(ctx);
+		return;
+	case nir_intrinsic_scoped_barrier: {
+		nir_scope exec_scope = nir_intrinsic_execution_scope(intr);
+		nir_variable_mode modes = nir_intrinsic_memory_modes(intr);
+
+		if (ctx->so->type == MESA_SHADER_TESS_CTRL) {
+			/* Remove mode corresponding to nir_intrinsic_memory_barrier_tcs_patch,
+			 * because hull shaders dispatch 32 wide so an entire patch will
+			 * always fit in a single warp and execute in lock-step.
+			 *
+			 * TODO: memory barrier also tells us not to reorder stores, this
+			 * information is lost here (backend doesn't reorder stores so we
+			 * are safe for now).
+			 */
+			modes &= ~nir_var_shader_out;
+		}
+
+		assert(!(modes & nir_var_shader_out));
+
+		if ((modes & (nir_var_mem_shared | nir_var_mem_ssbo |
+				nir_var_mem_global))) {
+			barrier = ir3_FENCE(b);
+			barrier->cat7.r = true;
+			barrier->cat7.w = true;
+
+			if (modes & (nir_var_mem_ssbo | nir_var_mem_global)) {
+				barrier->cat7.g = true;
+			}
+
+			if (ctx->compiler->gpu_id > 600) {
+				if (modes & nir_var_mem_ssbo) {
+					barrier->cat7.l = true;
+				}
+			} else {
+				if (modes & (nir_var_mem_shared | nir_var_mem_ssbo)) {
+					barrier->cat7.l = true;
+				}
+			}
+
+			barrier->barrier_class = 0;
+			barrier->barrier_conflict = 0;
+
+			if (modes & nir_var_mem_shared) {
+				barrier->barrier_class |= IR3_BARRIER_SHARED_W;
+				barrier->barrier_conflict |= IR3_BARRIER_SHARED_R |
+						IR3_BARRIER_SHARED_W;
+			}
+
+			if (modes & (nir_var_mem_ssbo | nir_var_mem_global)) {
+				barrier->barrier_class |= IR3_BARRIER_BUFFER_W;
+				barrier->barrier_conflict |=
+						IR3_BARRIER_BUFFER_R | IR3_BARRIER_BUFFER_W;
+			}
+
+			/* TODO: check for image mode when it has a separate one */
+			if (modes & nir_var_mem_ssbo) {
+				barrier->barrier_class |= IR3_BARRIER_IMAGE_W;
+				barrier->barrier_conflict |=
+						IR3_BARRIER_IMAGE_W | IR3_BARRIER_IMAGE_R;
+			}
+			array_insert(b, b->keeps, barrier);
+		}
+
+		if (exec_scope >= NIR_SCOPE_WORKGROUP) {
+			emit_control_barrier(ctx);
+		}
+
+		return;
+	}
+	case nir_intrinsic_memory_barrier_tcs_patch:
+		/* Not applicable, see explanation for scoped_barrier + shader_out */
+		return;
 	case nir_intrinsic_memory_barrier_buffer:
 		barrier = ir3_FENCE(b);
 		barrier->cat7.g = true;
+		if (ctx->compiler->gpu_id > 600)
+			barrier->cat7.l = true;
 		barrier->cat7.r = true;
 		barrier->cat7.w = true;
 		barrier->barrier_class = IR3_BARRIER_BUFFER_W;
@@ -1340,9 +1422,9 @@ emit_intrinsic_barrier(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 				IR3_BARRIER_BUFFER_W;
 		break;
 	case nir_intrinsic_memory_barrier_image:
-		// TODO double check if this should have .g set
 		barrier = ir3_FENCE(b);
 		barrier->cat7.g = true;
+		barrier->cat7.l = true;
 		barrier->cat7.r = true;
 		barrier->cat7.w = true;
 		barrier->barrier_class = IR3_BARRIER_IMAGE_W;
@@ -1351,14 +1433,15 @@ emit_intrinsic_barrier(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		break;
 	case nir_intrinsic_memory_barrier_shared:
 		barrier = ir3_FENCE(b);
-		barrier->cat7.g = true;
-		barrier->cat7.l = true;
+		if (ctx->compiler->gpu_id < 600)
+			barrier->cat7.l = true;
 		barrier->cat7.r = true;
 		barrier->cat7.w = true;
 		barrier->barrier_class = IR3_BARRIER_SHARED_W;
 		barrier->barrier_conflict = IR3_BARRIER_SHARED_R |
 				IR3_BARRIER_SHARED_W;
 		break;
+	case nir_intrinsic_memory_barrier:
 	case nir_intrinsic_group_memory_barrier:
 		barrier = ir3_FENCE(b);
 		barrier->cat7.g = true;
@@ -1834,12 +1917,14 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 			ctx->so->no_earlyz = true;
 		dst[0] = ctx->funcs->emit_intrinsic_atomic_image(ctx, intr);
 		break;
+	case nir_intrinsic_scoped_barrier:
 	case nir_intrinsic_control_barrier:
 	case nir_intrinsic_memory_barrier:
 	case nir_intrinsic_group_memory_barrier:
 	case nir_intrinsic_memory_barrier_buffer:
 	case nir_intrinsic_memory_barrier_image:
 	case nir_intrinsic_memory_barrier_shared:
+	case nir_intrinsic_memory_barrier_tcs_patch:
 		emit_intrinsic_barrier(ctx, intr);
 		/* note that blk ptr no longer valid, make that obvious: */
 		b = NULL;
@@ -2742,27 +2827,15 @@ get_block(struct ir3_context *ctx, const nir_block *nblock)
 	block->nblock = nblock;
 	_mesa_hash_table_insert(ctx->block_ht, nblock, block);
 
-	set_foreach(nblock->predecessors, sentry) {
-		_mesa_set_add(block->predecessors, get_block(ctx, sentry->key));
-	}
-
 	return block;
 }
 
 static void
 emit_block(struct ir3_context *ctx, nir_block *nblock)
 {
-	struct ir3_block *block = get_block(ctx, nblock);
+	ctx->block = get_block(ctx, nblock);
 
-	for (int i = 0; i < ARRAY_SIZE(block->successors); i++) {
-		if (nblock->successors[i]) {
-			block->successors[i] =
-				get_block(ctx, nblock->successors[i]);
-		}
-	}
-
-	ctx->block = block;
-	list_addtail(&block->node, &ctx->ir->block_list);
+	list_addtail(&ctx->block->node, &ctx->ir->block_list);
 
 	/* re-emit addr register in each block if needed: */
 	for (int i = 0; i < ARRAY_SIZE(ctx->addr0_ht); i++) {
@@ -2770,7 +2843,7 @@ emit_block(struct ir3_context *ctx, nir_block *nblock)
 		ctx->addr0_ht[i] = NULL;
 	}
 
-	_mesa_hash_table_u64_destroy(ctx->addr1_ht, NULL);
+	_mesa_hash_table_u64_destroy(ctx->addr1_ht);
 	ctx->addr1_ht = NULL;
 
 	nir_foreach_instr (instr, nblock) {
@@ -2779,6 +2852,13 @@ emit_block(struct ir3_context *ctx, nir_block *nblock)
 		ctx->cur_instr = NULL;
 		if (ctx->error)
 			return;
+	}
+
+	for (int i = 0; i < ARRAY_SIZE(ctx->block->successors); i++) {
+		if (nblock->successors[i]) {
+			ctx->block->successors[i] =
+				get_block(ctx, nblock->successors[i]);
+		}
 	}
 
 	_mesa_hash_table_clear(ctx->sel_cond_conversions, NULL);
@@ -2899,10 +2979,6 @@ emit_stream_out(struct ir3_context *ctx)
 	orig_end_block->successors[1] = new_end_block;
 
 	stream_out_block->successors[0] = new_end_block;
-	_mesa_set_add(stream_out_block->predecessors, orig_end_block);
-
-	_mesa_set_add(new_end_block->predecessors, orig_end_block);
-	_mesa_set_add(new_end_block->predecessors, stream_out_block);
 
 	/* setup 'if (vtxcnt < maxvtxcnt)' condition: */
 	cond = ir3_CMPS_S(ctx->block, vtxcnt, 0, maxvtxcnt, 0);
@@ -2963,6 +3039,17 @@ emit_stream_out(struct ir3_context *ctx)
 }
 
 static void
+setup_predecessors(struct ir3 *ir)
+{
+	foreach_block(block, &ir->block_list) {
+		for (int i = 0; i < ARRAY_SIZE(block->successors); i++) {
+			if (block->successors[i])
+				ir3_block_add_predecessor(block->successors[i], block);
+		}
+	}
+}
+
+static void
 emit_function(struct ir3_context *ctx, nir_function_impl *impl)
 {
 	nir_metadata_require(impl, nir_metadata_block_index);
@@ -2997,26 +3084,7 @@ emit_function(struct ir3_context *ctx, nir_function_impl *impl)
 		emit_stream_out(ctx);
 	}
 
-	/* Vertex shaders in a tessellation or geometry pipeline treat END as a
-	 * NOP and has an epilogue that writes the VS outputs to local storage, to
-	 * be read by the HS.  Then it resets execution mask (chmask) and chains
-	 * to the next shader (chsh).
-	 */
-	if ((ctx->so->type == MESA_SHADER_VERTEX &&
-				(ctx->so->key.has_gs || ctx->so->key.tessellation)) ||
-			(ctx->so->type == MESA_SHADER_TESS_EVAL && ctx->so->key.has_gs)) {
-		struct ir3_instruction *chmask =
-			ir3_CHMASK(ctx->block);
-		chmask->barrier_class = IR3_BARRIER_EVERYTHING;
-		chmask->barrier_conflict = IR3_BARRIER_EVERYTHING;
-
-		struct ir3_instruction *chsh =
-			ir3_CHSH(ctx->block);
-		chsh->barrier_class = IR3_BARRIER_EVERYTHING;
-		chsh->barrier_conflict = IR3_BARRIER_EVERYTHING;
-	} else {
-		ir3_END(ctx->block);
-	}
+	setup_predecessors(ctx->ir);
 }
 
 static void
@@ -3546,26 +3614,36 @@ output_slot_used_for_binning(gl_varying_slot slot)
 		   slot == VARYING_SLOT_CLIP_DIST0 || slot == VARYING_SLOT_CLIP_DIST1;
 }
 
+
+static struct ir3_instruction *find_end(struct ir3 *ir)
+{
+	foreach_block_rev (block, &ir->block_list) {
+		foreach_instr_rev(instr, &block->instr_list) {
+			if (instr->opc == OPC_END || instr->opc == OPC_CHMASK)
+				return instr;
+		}
+	}
+	unreachable("couldn't find end instruction");
+}
+
 static void
-fixup_binning_pass(struct ir3_context *ctx)
+fixup_binning_pass(struct ir3_context *ctx, struct ir3_instruction *end)
 {
 	struct ir3_shader_variant *so = ctx->so;
-	struct ir3 *ir = ctx->ir;
 	unsigned i, j;
 
 	/* first pass, remove unused outputs from the IR level outputs: */
-	for (i = 0, j = 0; i < ir->outputs_count; i++) {
-		struct ir3_instruction *out = ir->outputs[i];
-		assert(out->opc == OPC_META_COLLECT);
-		unsigned outidx = out->collect.outidx;
+	for (i = 0, j = 0; i < end->regs_count - 1; i++) {
+		unsigned outidx = end->end.outidxs[i];
 		unsigned slot = so->outputs[outidx].slot;
 
 		if (output_slot_used_for_binning(slot)) {
-			ir->outputs[j] = ir->outputs[i];
+			end->regs[j + 1] = end->regs[i + 1];
+			end->end.outidxs[j] = end->end.outidxs[i];
 			j++;
 		}
 	}
-	ir->outputs_count = j;
+	end->regs_count = j + 1;
 
 	/* second pass, cleanup the unused slots in ir3_shader_variant::outputs
 	 * table:
@@ -3577,9 +3655,9 @@ fixup_binning_pass(struct ir3_context *ctx)
 			so->outputs[j] = so->outputs[i];
 
 			/* fixup outidx to point to new output table entry: */
-			foreach_output (out, ir) {
-				if (out->collect.outidx == i) {
-					out->collect.outidx = j;
+			for (unsigned k = 0; k < end->regs_count - 1; k++) {
+				if (end->end.outidxs[k] == i) {
+					end->end.outidxs[k] = j;
 					break;
 				}
 			}
@@ -3667,61 +3745,27 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 
 	ir = so->ir = ctx->ir;
 
-	assert((ctx->noutputs % 4) == 0);
-
-	/* Setup IR level outputs, which are "collects" that gather
-	 * the scalar components of outputs.
+	/* Vertex shaders in a tessellation or geometry pipeline treat END as a
+	 * NOP and has an epilogue that writes the VS outputs to local storage, to
+	 * be read by the HS.  Then it resets execution mask (chmask) and chains
+	 * to the next shader (chsh).
 	 */
-	for (unsigned i = 0; i < ctx->noutputs; i += 4) {
-		unsigned ncomp = 0;
-		/* figure out the # of components written:
-		 *
-		 * TODO do we need to handle holes, ie. if .x and .z
-		 * components written, but .y component not written?
-		 */
-		for (unsigned j = 0; j < 4; j++) {
-			if (!ctx->outputs[i + j])
-				break;
-			ncomp++;
-		}
+	if ((so->type == MESA_SHADER_VERTEX &&
+				(so->key.has_gs || so->key.tessellation)) ||
+			(so->type == MESA_SHADER_TESS_EVAL && so->key.has_gs)) {
+		struct ir3_instruction *outputs[3];
+		unsigned outidxs[3];
+		unsigned outputs_count = 0;
 
-		/* Note that in some stages, like TCS, store_output is
-		 * lowered to memory writes, so no components of the
-		 * are "written" from the PoV of traditional store-
-		 * output instructions:
-		 */
-		if (!ncomp)
-			continue;
-
-		struct ir3_instruction *out =
-			ir3_create_collect(ctx, &ctx->outputs[i], ncomp);
-
-		int outidx = i / 4;
-		assert(outidx < so->outputs_count);
-
-		/* stash index into so->outputs[] so we can map the
-		 * output back to slot/etc later:
-		 */
-		out->collect.outidx = outidx;
-
-		array_insert(ir, ir->outputs, out);
-	}
-
-	/* Set up the gs header as an output for the vertex shader so it won't
-	 * clobber it for the tess ctrl shader.
-	 *
-	 * TODO this could probably be done more cleanly in a nir pass.
-	 */
-	if (ctx->so->type == MESA_SHADER_VERTEX ||
-			(ctx->so->key.has_gs && ctx->so->type == MESA_SHADER_TESS_EVAL)) {
 		if (ctx->primitive_id) {
 			unsigned n = so->outputs_count++;
 			so->outputs[n].slot = VARYING_SLOT_PRIMITIVE_ID;
 
 			struct ir3_instruction *out =
 				ir3_create_collect(ctx, &ctx->primitive_id, 1);
-			out->collect.outidx = n;
-			array_insert(ir, ir->outputs, out);
+			outputs[outputs_count] = out;
+			outidxs[outputs_count] = n;
+			outputs_count++;
 		}
 
 		if (ctx->gs_header) {
@@ -3729,8 +3773,9 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 			so->outputs[n].slot = VARYING_SLOT_GS_HEADER_IR3;
 			struct ir3_instruction *out =
 				ir3_create_collect(ctx, &ctx->gs_header, 1);
-			out->collect.outidx = n;
-			array_insert(ir, ir->outputs, out);
+			outputs[outputs_count] = out;
+			outidxs[outputs_count] = n;
+			outputs_count++;
 		}
 
 		if (ctx->tcs_header) {
@@ -3738,40 +3783,115 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 			so->outputs[n].slot = VARYING_SLOT_TCS_HEADER_IR3;
 			struct ir3_instruction *out =
 				ir3_create_collect(ctx, &ctx->tcs_header, 1);
-			out->collect.outidx = n;
-			array_insert(ir, ir->outputs, out);
+			outputs[outputs_count] = out;
+			outidxs[outputs_count] = n;
+			outputs_count++;
 		}
-	}
 
-	/* for a6xx+, binning and draw pass VS use same VBO state, so we
-	 * need to make sure not to remove any inputs that are used by
-	 * the nonbinning VS.
-	 */
-	if (ctx->compiler->gpu_id >= 600 && so->binning_pass &&
-			so->type == MESA_SHADER_VERTEX) {
-		for (int i = 0; i < ctx->ninputs; i++) {
-			struct ir3_instruction *in = ctx->inputs[i];
+		struct ir3_instruction *chmask =
+			ir3_instr_create(ctx->block, OPC_CHMASK, outputs_count + 1);
+		chmask->barrier_class = IR3_BARRIER_EVERYTHING;
+		chmask->barrier_conflict = IR3_BARRIER_EVERYTHING;
 
-			if (!in)
+		__ssa_dst(chmask);
+		for (unsigned i = 0; i < outputs_count; i++)
+			__ssa_src(chmask, outputs[i], 0);
+
+		chmask->end.outidxs = ralloc_array(chmask, unsigned, outputs_count);
+		memcpy(chmask->end.outidxs, outidxs, sizeof(unsigned) * outputs_count);
+
+		array_insert(ctx->block, ctx->block->keeps, chmask);
+
+		struct ir3_instruction *chsh =
+			ir3_CHSH(ctx->block);
+		chsh->barrier_class = IR3_BARRIER_EVERYTHING;
+		chsh->barrier_conflict = IR3_BARRIER_EVERYTHING;
+	} else {
+		assert((ctx->noutputs % 4) == 0);
+		unsigned outidxs[ctx->noutputs / 4];
+		struct ir3_instruction *outputs[ctx->noutputs / 4];
+		unsigned outputs_count = 0;
+
+		/* Setup IR level outputs, which are "collects" that gather
+		 * the scalar components of outputs.
+		 */
+		for (unsigned i = 0; i < ctx->noutputs; i += 4) {
+			unsigned ncomp = 0;
+			/* figure out the # of components written:
+			 *
+			 * TODO do we need to handle holes, ie. if .x and .z
+			 * components written, but .y component not written?
+			 */
+			for (unsigned j = 0; j < 4; j++) {
+				if (!ctx->outputs[i + j])
+					break;
+				ncomp++;
+			}
+
+			/* Note that in some stages, like TCS, store_output is
+			 * lowered to memory writes, so no components of the
+			 * are "written" from the PoV of traditional store-
+			 * output instructions:
+			 */
+			if (!ncomp)
 				continue;
 
-			unsigned n = i / 4;
-			unsigned c = i % 4;
+			struct ir3_instruction *out =
+				ir3_create_collect(ctx, &ctx->outputs[i], ncomp);
 
-			debug_assert(n < so->nonbinning->inputs_count);
+			int outidx = i / 4;
+			assert(outidx < so->outputs_count);
 
-			if (so->nonbinning->inputs[n].sysval)
-				continue;
-
-			/* be sure to keep inputs, even if only used in VS */
-			if (so->nonbinning->inputs[n].compmask & (1 << c))
-				array_insert(in->block, in->block->keeps, in);
+			outidxs[outputs_count] = outidx;
+			outputs[outputs_count] = out;
+			outputs_count++;
 		}
+
+		/* for a6xx+, binning and draw pass VS use same VBO state, so we
+		 * need to make sure not to remove any inputs that are used by
+		 * the nonbinning VS.
+		 */
+		if (ctx->compiler->gpu_id >= 600 && so->binning_pass &&
+				so->type == MESA_SHADER_VERTEX) {
+			for (int i = 0; i < ctx->ninputs; i++) {
+				struct ir3_instruction *in = ctx->inputs[i];
+
+				if (!in)
+					continue;
+
+				unsigned n = i / 4;
+				unsigned c = i % 4;
+
+				debug_assert(n < so->nonbinning->inputs_count);
+
+				if (so->nonbinning->inputs[n].sysval)
+					continue;
+
+				/* be sure to keep inputs, even if only used in VS */
+				if (so->nonbinning->inputs[n].compmask & (1 << c))
+					array_insert(in->block, in->block->keeps, in);
+			}
+		}
+
+		struct ir3_instruction *end = ir3_instr_create(ctx->block, OPC_END,
+				outputs_count + 1);
+
+		__ssa_dst(end);
+		for (unsigned i = 0; i < outputs_count; i++) {
+			__ssa_src(end, outputs[i], 0);
+		}
+
+		end->end.outidxs = ralloc_array(end, unsigned, outputs_count);
+		memcpy(end->end.outidxs, outidxs, sizeof(unsigned) * outputs_count);
+
+		array_insert(ctx->block, ctx->block->keeps, end);
+
+		/* at this point, for binning pass, throw away unneeded outputs: */
+		if (so->binning_pass && (ctx->compiler->gpu_id < 600))
+			fixup_binning_pass(ctx, end);
+
 	}
 
-	/* at this point, for binning pass, throw away unneeded outputs: */
-	if (so->binning_pass && (ctx->compiler->gpu_id < 600))
-		fixup_binning_pass(ctx);
 
 	ir3_debug_print(ir, "AFTER: nir->ir3");
 	ir3_validate(ir);
@@ -3790,7 +3910,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 	 * we can re-use same VS_CONST state group.
 	 */
 	if (so->binning_pass && (ctx->compiler->gpu_id >= 600)) {
-		fixup_binning_pass(ctx);
+		fixup_binning_pass(ctx, find_end(ctx->so->ir));
 		/* cleanup the result of removing unneeded outputs: */
 		while (IR3_PASS(ir, ir3_dce, so)) {}
 	}
@@ -3911,12 +4031,14 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 	for (unsigned i = 0; i < so->outputs_count; i++)
 		so->outputs[i].regid = INVALID_REG;
 
-	foreach_output (out, ir) {
-		assert(out->opc == OPC_META_COLLECT);
-		unsigned outidx = out->collect.outidx;
+	struct ir3_instruction *end = find_end(so->ir);
 
-		so->outputs[outidx].regid = out->regs[0]->num;
-		so->outputs[outidx].half  = !!(out->regs[0]->flags & IR3_REG_HALF);
+	for (unsigned i = 1; i < end->regs_count; i++) {
+		unsigned outidx = end->end.outidxs[i - 1];
+		struct ir3_register *reg = end->regs[i];
+
+		so->outputs[outidx].regid = reg->num;
+		so->outputs[outidx].half = !!(reg->flags & IR3_REG_HALF);
 	}
 
 	foreach_input (in, ir) {

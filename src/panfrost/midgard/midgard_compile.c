@@ -59,6 +59,7 @@ static const struct debug_named_value midgard_debug_options[] = {
         {"shaders",   MIDGARD_DBG_SHADERS,	"Dump shaders in NIR and MIR"},
         {"shaderdb",  MIDGARD_DBG_SHADERDB,     "Prints shader-db statistics"},
         {"inorder",   MIDGARD_DBG_INORDER,      "Disables out-of-order scheduling"},
+        {"verbose",   MIDGARD_DBG_VERBOSE,      "Dump shaders verbosely"},
         DEBUG_NAMED_VALUE_END
 };
 
@@ -1650,9 +1651,6 @@ output_load_rt_addr(compiler_context *ctx, nir_intrinsic_instr *instr)
 
         unsigned loc = var->data.location;
 
-        if (loc == FRAG_RESULT_COLOR)
-                loc = FRAG_RESULT_DATA0;
-
         if (loc >= FRAG_RESULT_DATA0)
                 return loc - FRAG_RESULT_DATA0;
 
@@ -1900,9 +1898,7 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                         }
 
                         enum midgard_rt_id rt;
-                        if (var->data.location == FRAG_RESULT_COLOR)
-                                rt = MIDGARD_COLOR_RT0;
-                        else if (var->data.location >= FRAG_RESULT_DATA0)
+                        if (var->data.location >= FRAG_RESULT_DATA0)
                                 rt = MIDGARD_COLOR_RT0 + var->data.location -
                                      FRAG_RESULT_DATA0;
                         else if (combined)
@@ -3213,7 +3209,8 @@ midgard_compile_shader_nir(nir_shader *nir,
 
         if ((midgard_debug & MIDGARD_DBG_SHADERS) && !nir->info.internal) {
                 disassemble_midgard(stdout, binary->data,
-                                    binary->size, inputs->gpu_id);
+                                    binary->size, inputs->gpu_id,
+                                    midgard_debug & MIDGARD_DBG_VERBOSE);
                 fflush(stdout);
         }
 

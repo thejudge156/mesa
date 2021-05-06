@@ -935,7 +935,17 @@ sched_node_add_dep(struct ir3_instruction *instr, struct ir3_instruction *src, i
 
 	dag_add_edge(&sn->dag, &n->dag, NULL);
 
-	unsigned d = ir3_delayslots(src, instr, i, true);
+
+	/* There's a mismatch between the indices foreach_ssa_src_n uses and the
+	 * indices that ir3_delayslots expects, and additionally we don't want to
+	 * call it and get bogus answers on false dependencies.
+	 */
+	unsigned d = 0;
+	if (i < instr->regs_count)
+		d = ir3_delayslots(src, instr, i + 1, true);
+	else if (src == instr->address)
+		d = ir3_delayslots(src, instr, 0, true);
+
 	n->delay = MAX2(n->delay, d);
 }
 
@@ -961,16 +971,15 @@ mark_kill_path(struct ir3_instruction *instr)
 static bool
 is_output_collect(struct ir3_instruction *instr)
 {
-	struct ir3 *ir = instr->block->shader;
+	if (instr->opc != OPC_META_COLLECT)
+		return false;
 
-	for (unsigned i = 0; i < ir->outputs_count; i++) {
-		struct ir3_instruction *collect = ir->outputs[i];
-		assert(collect->opc == OPC_META_COLLECT);
-		if (instr == collect)
-			return true;
+	foreach_ssa_use (use, instr) {
+		if (use->opc != OPC_END && use->opc != OPC_CHMASK)
+			return false;
 	}
 
-	return false;
+	return true;
 }
 
 /* Is it's only use as output? */

@@ -2355,7 +2355,7 @@ CSMT_ITEM_NO_WAIT(nine_context_clear_fb,
 
 static inline void
 init_draw_info(struct pipe_draw_info *info,
-               struct pipe_draw_start_count *draw,
+               struct pipe_draw_start_count_bias *draw,
                struct NineDevice9 *dev, D3DPRIMITIVETYPE type, UINT count)
 {
     info->mode = d3dprimitivetype_to_pipe_prim(type);
@@ -2376,19 +2376,19 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_primitive,
 {
     struct nine_context *context = &device->context;
     struct pipe_draw_info info;
-    struct pipe_draw_start_count draw;
+    struct pipe_draw_start_count_bias draw;
 
     nine_update_state(device);
 
     init_draw_info(&info, &draw, device, PrimitiveType, PrimitiveCount);
     info.index_size = 0;
     draw.start = StartVertex;
-    info.index_bias = 0;
+    draw.index_bias = 0;
     info.min_index = draw.start;
     info.max_index = draw.start + draw.count - 1;
     info.index.resource = NULL;
 
-    context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
+    context->pipe->draw_vbo(context->pipe, &info, 0, NULL, &draw, 1);
 }
 
 CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive,
@@ -2401,21 +2401,21 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive,
 {
     struct nine_context *context = &device->context;
     struct pipe_draw_info info;
-    struct pipe_draw_start_count draw;
+    struct pipe_draw_start_count_bias draw;
 
     nine_update_state(device);
 
     init_draw_info(&info, &draw, device, PrimitiveType, PrimitiveCount);
     info.index_size = context->index_size;
     draw.start = context->index_offset / context->index_size + StartIndex;
-    info.index_bias = BaseVertexIndex;
+    draw.index_bias = BaseVertexIndex;
     info.index_bounds_valid = true;
     /* These don't include index bias: */
     info.min_index = MinVertexIndex;
     info.max_index = MinVertexIndex + NumVertices - 1;
     info.index.resource = context->idxbuf;
 
-    context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
+    context->pipe->draw_vbo(context->pipe, &info, 0, NULL, &draw, 1);
 }
 
 CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive_from_vtxbuf_idxbuf,
@@ -2431,14 +2431,14 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive_from_vtxbuf_idxbuf,
 {
     struct nine_context *context = &device->context;
     struct pipe_draw_info info;
-    struct pipe_draw_start_count draw;
+    struct pipe_draw_start_count_bias draw;
 
     nine_update_state(device);
 
     init_draw_info(&info, &draw, device, PrimitiveType, PrimitiveCount);
     info.index_size = index_size;
     draw.start = index_offset / info.index_size;
-    info.index_bias = 0;
+    draw.index_bias = 0;
     info.index_bounds_valid = true;
     info.min_index = MinVertexIndex;
     info.max_index = MinVertexIndex + NumVertices - 1;
@@ -2451,7 +2451,7 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive_from_vtxbuf_idxbuf,
     context->pipe->set_vertex_buffers(context->pipe, 0, 1, 0, false, vbuf);
     context->changed.vtxbuf |= 1;
 
-    context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
+    context->pipe->draw_vbo(context->pipe, &info, 0, NULL, &draw, 1);
 }
 
 CSMT_ITEM_NO_WAIT(nine_context_resource_copy_region,

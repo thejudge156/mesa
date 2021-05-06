@@ -166,9 +166,22 @@ radv_physical_device_init_mem_types(struct radv_physical_device *device)
 {
    uint64_t visible_vram_size = radv_get_visible_vram_size(device);
    uint64_t vram_size = radv_get_vram_size(device);
+   uint64_t gtt_size = device->rad_info.gart_size;
    int vram_index = -1, visible_vram_index = -1, gart_index = -1;
+
    device->memory_properties.memoryHeapCount = 0;
    device->heaps = 0;
+
+   if (!device->rad_info.has_dedicated_vram) {
+      /* On APUs, the carveout is usually too small for games that request a minimum VRAM size
+       * greater than it. To workaround this, we compute the total available memory size (GTT +
+       * visible VRAM size) and report 2/3 as VRAM and 1/3 as GTT.
+       */
+      const uint64_t total_size = gtt_size + visible_vram_size;
+      visible_vram_size = align64((total_size * 2) / 3, device->rad_info.gart_page_size);
+      gtt_size = total_size - visible_vram_size;
+      vram_size = 0;
+   }
 
    /* Only get a VRAM heap if it is significant, not if it is a 16 MiB
     * remainder above visible VRAM. */
@@ -181,11 +194,11 @@ radv_physical_device_init_mem_types(struct radv_physical_device *device)
       };
    }
 
-   if (device->rad_info.gart_size > 0) {
+   if (gtt_size > 0) {
       gart_index = device->memory_properties.memoryHeapCount++;
       device->heaps |= RADV_HEAP_GTT;
       device->memory_properties.memoryHeaps[gart_index] = (VkMemoryHeap){
-         .size = device->rad_info.gart_size,
+         .size = gtt_size,
          .flags = 0,
       };
    }
@@ -2402,37 +2415,78 @@ radv_get_memory_budget_properties(VkPhysicalDevice physicalDevice,
     * Note that the application heap usages are not really accurate (eg.
     * in presence of shared buffers).
     */
-   unsigned mask = device->heaps;
-   unsigned heap = 0;
-   while (mask) {
-      uint64_t internal_usage = 0, total_usage = 0;
-      unsigned type = 1u << u_bit_scan(&mask);
+   if (!device->rad_info.has_dedicated_vram) {
+      /* On APUs, the driver exposes fake heaps to the application because usually the carveout is
+       * too small for games but the budgets need to be redistributed accordingly.
+       */
 
-      switch (type) {
-      case RADV_HEAP_VRAM:
-         internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM);
-         total_usage = device->ws->query_value(device->ws, RADEON_VRAM_USAGE);
-         break;
-      case RADV_HEAP_VRAM_VIS:
-         internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM_VIS);
-         if (!(device->heaps & RADV_HEAP_VRAM))
-            internal_usage += device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM);
-         total_usage = device->ws->query_value(device->ws, RADEON_VRAM_VIS_USAGE);
-         break;
-      case RADV_HEAP_GTT:
-         internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_GTT);
-         total_usage = device->ws->query_value(device->ws, RADEON_GTT_USAGE);
-         break;
+      /* Get the visible VRAM/GTT heap sizes and internal usages. */
+      uint64_t vram_vis_heap_size = device->memory_properties.memoryHeaps[RADV_HEAP_VRAM_VIS].size;
+      uint64_t gtt_heap_size = device->memory_properties.memoryHeaps[RADV_HEAP_GTT].size;
+      uint64_t vram_vis_internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM_VIS) +
+                                         device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM);
+      uint64_t gtt_internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_GTT);
+
+      /* Compute the total heap size, internal and system usage. */
+      uint64_t total_heap_size = vram_vis_heap_size + gtt_heap_size;
+      uint64_t total_internal_usage = vram_vis_internal_usage + gtt_internal_usage;
+      uint64_t total_system_usage = device->ws->query_value(device->ws, RADEON_VRAM_VIS_USAGE) +
+                                    device->ws->query_value(device->ws, RADEON_GTT_USAGE);
+
+      uint64_t total_usage = MAX2(total_internal_usage, total_system_usage);
+
+      /* Compute the total free space that can be allocated for this process accross all heaps. */
+      uint64_t total_free_space = total_heap_size - MIN2(total_heap_size, total_usage);
+
+      /* Compute the remaining visible VRAM size for this process. */
+      uint64_t vram_vis_free_space = vram_vis_heap_size - MIN2(vram_vis_heap_size, vram_vis_internal_usage);
+
+      /* Distribute the total free space (2/3rd as VRAM and 1/3rd as GTT) to match the heap sizes,
+       * and align down to the page size to be conservative.
+       */
+      vram_vis_free_space = ROUND_DOWN_TO(MIN2((total_free_space * 2) / 3, vram_vis_free_space),
+                                          device->rad_info.gart_page_size);
+      uint64_t gtt_free_space = total_free_space - vram_vis_free_space;
+
+      memoryBudget->heapBudget[RADV_HEAP_VRAM_VIS] = vram_vis_free_space + vram_vis_internal_usage;
+      memoryBudget->heapUsage[RADV_HEAP_VRAM_VIS] = vram_vis_internal_usage;
+      memoryBudget->heapBudget[RADV_HEAP_GTT] = gtt_free_space + gtt_internal_usage;
+      memoryBudget->heapUsage[RADV_HEAP_GTT] = gtt_internal_usage;
+   } else {
+      unsigned mask = device->heaps;
+      unsigned heap = 0;
+      while (mask) {
+         uint64_t internal_usage = 0, system_usage = 0;
+         unsigned type = 1u << u_bit_scan(&mask);
+
+         switch (type) {
+         case RADV_HEAP_VRAM:
+            internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM);
+            system_usage = device->ws->query_value(device->ws, RADEON_VRAM_USAGE);
+            break;
+         case RADV_HEAP_VRAM_VIS:
+            internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM_VIS);
+            if (!(device->heaps & RADV_HEAP_VRAM))
+               internal_usage += device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM);
+            system_usage = device->ws->query_value(device->ws, RADEON_VRAM_VIS_USAGE);
+            break;
+         case RADV_HEAP_GTT:
+            internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_GTT);
+            system_usage = device->ws->query_value(device->ws, RADEON_GTT_USAGE);
+            break;
+         }
+
+         uint64_t total_usage = MAX2(internal_usage, system_usage);
+
+         uint64_t free_space = device->memory_properties.memoryHeaps[heap].size -
+                               MIN2(device->memory_properties.memoryHeaps[heap].size, total_usage);
+         memoryBudget->heapBudget[heap] = free_space + internal_usage;
+         memoryBudget->heapUsage[heap] = internal_usage;
+         ++heap;
       }
 
-      uint64_t free_space = device->memory_properties.memoryHeaps[heap].size -
-                            MIN2(device->memory_properties.memoryHeaps[heap].size, total_usage);
-      memoryBudget->heapBudget[heap] = free_space + internal_usage;
-      memoryBudget->heapUsage[heap] = internal_usage;
-      ++heap;
+      assert(heap == memory_properties->memoryHeapCount);
    }
-
-   assert(heap == memory_properties->memoryHeapCount);
 
    /* The heapBudget and heapUsage values must be zero for array elements
     * greater than or equal to
@@ -3001,8 +3055,6 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
 
       if (device->physical_device->rad_info.chip_class < GFX10_3)
          fprintf(stderr, "radv: VRS is only supported on RDNA2+\n");
-      else if (device->physical_device->use_llvm)
-         fprintf(stderr, "radv: Forcing VRS rates is only supported with ACO\n");
       else if (!strcmp(vrs_rates, "2x2"))
          device->force_vrs = RADV_FORCE_VRS_2x2;
       else if (!strcmp(vrs_rates, "2x1"))
@@ -6563,6 +6615,14 @@ radv_calc_decompress_on_z_planes(struct radv_device *device, struct radv_image_v
       if (iview->vk_format == VK_FORMAT_D16_UNORM && iview->image->info.samples > 1)
          max_zplanes = 2;
 
+      /* Workaround for a DB hang when ITERATE_256 is set to 1. Only affects 4X MSAA D/S images. */
+      if (device->physical_device->rad_info.has_two_planes_iterate256_bug &&
+          radv_image_get_iterate256(device, iview->image) &&
+          !radv_image_tile_stencil_disabled(device, iview->image) &&
+          iview->image->info.samples == 4) {
+         max_zplanes = 1;
+      }
+
       max_zplanes = max_zplanes + 1;
    } else {
       if (iview->vk_format == VK_FORMAT_D16_UNORM) {
@@ -6666,8 +6726,12 @@ radv_initialise_ds_surface(struct radv_device *device, struct radv_ds_buffer_inf
             ds->db_z_info |= S_028038_DECOMPRESS_ON_N_ZPLANES(max_zplanes);
 
             if (device->physical_device->rad_info.chip_class >= GFX10) {
+               bool iterate256 = radv_image_get_iterate256(device, iview->image);
+
                ds->db_z_info |= S_028040_ITERATE_FLUSH(1);
                ds->db_stencil_info |= S_028044_ITERATE_FLUSH(1);
+               ds->db_z_info |= S_028040_ITERATE_256(iterate256);
+               ds->db_stencil_info |= S_028044_ITERATE_256(iterate256);
             } else {
                ds->db_z_info |= S_028038_ITERATE_FLUSH(1);
                ds->db_stencil_info |= S_02803C_ITERATE_FLUSH(1);

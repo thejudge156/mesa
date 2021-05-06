@@ -173,7 +173,7 @@ static void
 panfrost_statistics_record(
                 struct panfrost_context *ctx,
                 const struct pipe_draw_info *info,
-                const struct pipe_draw_start_count *draw)
+                const struct pipe_draw_start_count_bias *draw)
 {
         if (!ctx->active_queries)
                 return;
@@ -288,7 +288,7 @@ panfrost_is_implicit_prim_restart(const struct pipe_draw_info *info)
 static void
 panfrost_draw_emit_tiler(struct panfrost_batch *batch,
                          const struct pipe_draw_info *info,
-                         const struct pipe_draw_start_count *draw,
+                         const struct pipe_draw_start_count_bias *draw,
                          void *invocation_template,
                          mali_ptr shared_mem, mali_ptr indices,
                          mali_ptr fs_vary, mali_ptr varyings,
@@ -335,7 +335,7 @@ panfrost_draw_emit_tiler(struct panfrost_batch *batch,
                 if (info->index_size) {
                         cfg.index_type = panfrost_translate_index_size(info->index_size);
                         cfg.indices = indices;
-                        cfg.base_vertex_offset = info->index_bias - ctx->offset_start;
+                        cfg.base_vertex_offset = draw->index_bias - ctx->offset_start;
                 }
         }
 
@@ -408,7 +408,8 @@ panfrost_draw_emit_tiler(struct panfrost_batch *batch,
 static void
 panfrost_direct_draw(struct panfrost_context *ctx,
                      const struct pipe_draw_info *info,
-                     const struct pipe_draw_start_count *draw)
+                     unsigned drawid_offset,
+                     const struct pipe_draw_start_count_bias *draw)
 {
         if (!draw->count || !info->instance_count)
                 return;
@@ -431,7 +432,7 @@ panfrost_direct_draw(struct panfrost_context *ctx,
                 }
 
                 util_primconvert_save_rasterizer_state(ctx->primconvert, &ctx->rasterizer->base);
-                util_primconvert_draw_vbo(ctx->primconvert, info, NULL, draw, 1);
+                util_primconvert_draw_vbo(ctx->primconvert, info, drawid_offset, NULL, draw, 1);
                 return;
         }
 
@@ -447,7 +448,7 @@ panfrost_direct_draw(struct panfrost_context *ctx,
 
         /* Take into account a negative bias */
         ctx->indirect_draw = false;
-        ctx->vertex_count = draw->count + (info->index_size ? abs(info->index_bias) : 0);
+        ctx->vertex_count = draw->count + (info->index_size ? abs(draw->index_bias) : 0);
         ctx->instance_count = info->instance_count;
         ctx->active_prim = info->mode;
 
@@ -472,7 +473,7 @@ panfrost_direct_draw(struct panfrost_context *ctx,
 
                 /* Use the corresponding values */
                 vertex_count = max_index - min_index + 1;
-                ctx->offset_start = min_index + info->index_bias;
+                ctx->offset_start = min_index + draw->index_bias;
         } else {
                 ctx->offset_start = draw->start;
         }
@@ -535,17 +536,19 @@ panfrost_direct_draw(struct panfrost_context *ctx,
 static void
 panfrost_indirect_draw(struct panfrost_context *ctx,
                        const struct pipe_draw_info *info,
+                       unsigned drawid_offset,
                        const struct pipe_draw_indirect_info *indirect,
-                       const struct pipe_draw_start_count *draw)
+                       const struct pipe_draw_start_count_bias *draw)
 {
         if (indirect->count_from_stream_output) {
-                struct pipe_draw_start_count tmp_draw = *draw;
+                struct pipe_draw_start_count_bias tmp_draw = *draw;
                 struct panfrost_streamout_target *so =
                         pan_so_target(indirect->count_from_stream_output);
 
                 tmp_draw.start = 0;
                 tmp_draw.count = so->offset;
-                panfrost_direct_draw(ctx, info, &tmp_draw);
+                tmp_draw.index_bias = 0;
+                panfrost_direct_draw(ctx, info, drawid_offset, &tmp_draw);
                 return;
         }
 
@@ -623,7 +626,7 @@ panfrost_indirect_draw(struct panfrost_context *ctx,
         panfrost_draw_emit_vertex(batch, info, &invocation, shared_mem,
                                   vs_vary, varyings, attribs, attrib_bufs,
                                   vertex.cpu);
-        panfrost_draw_emit_tiler(batch, info, NULL, &invocation, shared_mem,
+        panfrost_draw_emit_tiler(batch, info, draw, &invocation, shared_mem,
                                  index_buf ? index_buf->ptr.gpu : 0,
                                  fs_vary, varyings, pos, psiz, tiler.cpu);
 
@@ -688,8 +691,9 @@ panfrost_indirect_draw(struct panfrost_context *ctx,
 static void
 panfrost_draw_vbo(struct pipe_context *pipe,
                   const struct pipe_draw_info *info,
+                  unsigned drawid_offset,
                   const struct pipe_draw_indirect_info *indirect,
-                  const struct pipe_draw_start_count *draws,
+                  const struct pipe_draw_start_count_bias *draws,
                   unsigned num_draws)
 {
         struct panfrost_context *ctx = pan_context(pipe);
@@ -703,16 +707,17 @@ panfrost_draw_vbo(struct pipe_context *pipe,
 
         if (indirect) {
                 assert(num_draws == 1);
-                panfrost_indirect_draw(ctx, info, indirect, &draws[0]);
+                panfrost_indirect_draw(ctx, info, drawid_offset, indirect, &draws[0]);
                 return;
         }
 
         struct pipe_draw_info tmp_info = *info;
+        unsigned drawid = drawid_offset;
 
         for (unsigned i = 0; i < num_draws; i++) {
-                panfrost_direct_draw(ctx, &tmp_info, &draws[i]);
+                panfrost_direct_draw(ctx, &tmp_info, drawid, &draws[i]);
                 if (tmp_info.increment_draw_id)
-                       tmp_info.drawid++;
+                       drawid++;
         }
 
 }
@@ -954,6 +959,10 @@ panfrost_variant_matches(
                 }
         }
 
+        if (variant->info.stage == MESA_SHADER_FRAGMENT &&
+            variant->nr_cbufs != ctx->pipe_framebuffer.nr_cbufs)
+                return false;
+
         /* Otherwise, we're good to go */
         return true;
 }
@@ -1049,6 +1058,8 @@ panfrost_bind_shader_state(
 
                 if (type == PIPE_SHADER_FRAGMENT) {
                         struct pipe_framebuffer_state *fb = &ctx->pipe_framebuffer;
+                        v->nr_cbufs = fb->nr_cbufs;
+
                         for (unsigned i = 0; i < fb->nr_cbufs; ++i) {
                                 enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
 

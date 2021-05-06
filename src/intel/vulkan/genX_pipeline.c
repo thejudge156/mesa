@@ -374,8 +374,12 @@ emit_3dstate_sbe(struct anv_graphics_pipeline *pipeline)
 
       assert(0 <= input_index);
 
-      /* gl_Viewport and gl_Layer are stored in the VUE header */
-      if (attr == VARYING_SLOT_VIEWPORT || attr == VARYING_SLOT_LAYER) {
+      /* gl_Viewport, gl_Layer and FragmentShadingRateKHR are stored in the
+       * VUE header
+       */
+      if (attr == VARYING_SLOT_VIEWPORT ||
+          attr == VARYING_SLOT_LAYER ||
+          attr == VARYING_SLOT_PRIMITIVE_SHADING_RATE) {
          continue;
       }
 
@@ -828,6 +832,25 @@ emit_ms_state(struct anv_graphics_pipeline *pipeline,
    anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_SAMPLE_MASK), sm) {
       sm.SampleMask = sample_mask;
    }
+
+   pipeline->cps_state = ANV_STATE_NULL;
+#if GFX_VER >= 11
+   if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE) &&
+       pipeline->base.device->vk.enabled_extensions.KHR_fragment_shading_rate) {
+#if GFX_VER >= 12
+      struct anv_device *device = pipeline->base.device;
+      const uint32_t num_dwords =
+         GENX(CPS_STATE_length) * 4 * pipeline->dynamic_state.viewport.count;
+      pipeline->cps_state =
+         anv_state_pool_alloc(&device->dynamic_state_pool, num_dwords, 32);
+#endif
+
+      genX(emit_shading_rate)(&pipeline->base.batch,
+                              pipeline,
+                              pipeline->cps_state,
+                              &pipeline->dynamic_state);
+   }
+#endif
 }
 
 static const uint32_t vk_to_intel_logic_op[] = {
@@ -880,14 +903,14 @@ static const uint32_t vk_to_intel_blend_op[] = {
 };
 
 const uint32_t genX(vk_to_intel_compare_op)[] = {
-   [VK_COMPARE_OP_NEVER]                        = PREFILTEROPNEVER,
-   [VK_COMPARE_OP_LESS]                         = PREFILTEROPLESS,
-   [VK_COMPARE_OP_EQUAL]                        = PREFILTEROPEQUAL,
-   [VK_COMPARE_OP_LESS_OR_EQUAL]                = PREFILTEROPLEQUAL,
-   [VK_COMPARE_OP_GREATER]                      = PREFILTEROPGREATER,
-   [VK_COMPARE_OP_NOT_EQUAL]                    = PREFILTEROPNOTEQUAL,
-   [VK_COMPARE_OP_GREATER_OR_EQUAL]             = PREFILTEROPGEQUAL,
-   [VK_COMPARE_OP_ALWAYS]                       = PREFILTEROPALWAYS,
+   [VK_COMPARE_OP_NEVER]                        = PREFILTEROP_NEVER,
+   [VK_COMPARE_OP_LESS]                         = PREFILTEROP_LESS,
+   [VK_COMPARE_OP_EQUAL]                        = PREFILTEROP_EQUAL,
+   [VK_COMPARE_OP_LESS_OR_EQUAL]                = PREFILTEROP_LEQUAL,
+   [VK_COMPARE_OP_GREATER]                      = PREFILTEROP_GREATER,
+   [VK_COMPARE_OP_NOT_EQUAL]                    = PREFILTEROP_NOTEQUAL,
+   [VK_COMPARE_OP_GREATER_OR_EQUAL]             = PREFILTEROP_GEQUAL,
+   [VK_COMPARE_OP_ALWAYS]                       = PREFILTEROP_ALWAYS,
 };
 
 const uint32_t genX(vk_to_intel_stencil_op)[] = {
@@ -1571,12 +1594,16 @@ emit_3dstate_streamout(struct anv_graphics_pipeline *pipeline,
 
          int varying = output->location;
          uint8_t component_mask = output->component_mask;
-         /* VARYING_SLOT_PSIZ contains three scalar fields packed together:
-          * - VARYING_SLOT_LAYER    in VARYING_SLOT_PSIZ.y
-          * - VARYING_SLOT_VIEWPORT in VARYING_SLOT_PSIZ.z
-          * - VARYING_SLOT_PSIZ     in VARYING_SLOT_PSIZ.w
+         /* VARYING_SLOT_PSIZ contains four scalar fields packed together:
+          * - VARYING_SLOT_PRIMITIVE_SHADING_RATE in VARYING_SLOT_PSIZ.x
+          * - VARYING_SLOT_LAYER                  in VARYING_SLOT_PSIZ.y
+          * - VARYING_SLOT_VIEWPORT               in VARYING_SLOT_PSIZ.z
+          * - VARYING_SLOT_PSIZ                   in VARYING_SLOT_PSIZ.w
           */
-         if (varying == VARYING_SLOT_LAYER) {
+         if (varying == VARYING_SLOT_PRIMITIVE_SHADING_RATE) {
+            varying = VARYING_SLOT_PSIZ;
+            component_mask = 1 << 0; // SO_DECL_COMPMASK_X
+         } else if (varying == VARYING_SLOT_LAYER) {
             varying = VARYING_SLOT_PSIZ;
             component_mask = 1 << 1; // SO_DECL_COMPMASK_Y
          } else if (varying == VARYING_SLOT_VIEWPORT) {
@@ -2250,12 +2277,20 @@ emit_3dstate_ps_extra(struct anv_graphics_pipeline *pipeline,
       assert(!wm_prog_data->inner_coverage); /* Not available in SPIR-V */
       if (!wm_prog_data->uses_sample_mask)
          ps.InputCoverageMaskState = ICMS_NONE;
+      else if (wm_prog_data->per_coarse_pixel_dispatch)
+         ps.InputCoverageMaskState  = ICMS_NORMAL;
       else if (wm_prog_data->post_depth_coverage)
          ps.InputCoverageMaskState = ICMS_DEPTH_COVERAGE;
       else
          ps.InputCoverageMaskState = ICMS_NORMAL;
 #else
       ps.PixelShaderUsesInputCoverageMask = wm_prog_data->uses_sample_mask;
+#endif
+
+#if GFX_VER >= 11
+      ps.PixelShaderRequiresSourceDepthandorWPlaneCoefficients =
+         wm_prog_data->uses_depth_w_coefficients;
+      ps.PixelShaderIsPerCoarsePixel = wm_prog_data->per_coarse_pixel_dispatch;
 #endif
    }
 }
@@ -2478,9 +2513,6 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
    const struct brw_cs_prog_data *cs_prog_data = get_cs_prog_data(pipeline);
    anv_pipeline_setup_l3_config(&pipeline->base, cs_prog_data->base.total_shared > 0);
 
-   const struct anv_cs_parameters cs_params = anv_cs_parameters(pipeline);
-   pipeline->cs_right_mask = brw_cs_right_mask(cs_params.group_size, cs_params.simd_size);
-
    const uint32_t subslices = MAX2(device->physical->subslice_total, 1);
 
    const UNUSED struct anv_shader_bin *cs_bin = pipeline->cs;
@@ -2500,22 +2532,20 @@ static void
 emit_compute_state(struct anv_compute_pipeline *pipeline,
                    const struct anv_device *device)
 {
+   const struct intel_device_info *devinfo = &device->info;
    const struct brw_cs_prog_data *cs_prog_data = get_cs_prog_data(pipeline);
 
    anv_pipeline_setup_l3_config(&pipeline->base, cs_prog_data->base.total_shared > 0);
 
-   const struct anv_cs_parameters cs_params = anv_cs_parameters(pipeline);
-
-   pipeline->cs_right_mask = brw_cs_right_mask(cs_params.group_size, cs_params.simd_size);
-
+   const struct brw_cs_dispatch_info dispatch =
+      brw_cs_get_dispatch_info(devinfo, cs_prog_data, NULL);
    const uint32_t vfe_curbe_allocation =
-      ALIGN(cs_prog_data->push.per_thread.regs * cs_params.threads +
+      ALIGN(cs_prog_data->push.per_thread.regs * dispatch.threads +
             cs_prog_data->push.cross_thread.regs, 2);
 
    const uint32_t subslices = MAX2(device->physical->subslice_total, 1);
 
    const struct anv_shader_bin *cs_bin = pipeline->cs;
-   const struct intel_device_info *devinfo = &device->info;
 
    anv_batch_emit(&pipeline->base.batch, GENX(MEDIA_VFE_STATE), vfe) {
 #if GFX_VER > 7
@@ -2563,7 +2593,7 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
    struct GENX(INTERFACE_DESCRIPTOR_DATA) desc = {
       .KernelStartPointer     =
          cs_bin->kernel.offset +
-         brw_cs_prog_data_prog_offset(cs_prog_data, cs_params.simd_size),
+         brw_cs_prog_data_prog_offset(cs_prog_data, dispatch.simd_size),
 
       /* Wa_1606682166 */
       .SamplerCount           = GFX_VER == 11 ? 0 : get_sampler_count(cs_bin),
@@ -2596,7 +2626,7 @@ emit_compute_state(struct anv_compute_pipeline *pipeline,
       .ThreadPreemptionDisable = true,
 #endif
 
-      .NumberofThreadsinGPGPUThreadGroup = cs_params.threads,
+      .NumberofThreadsinGPGPUThreadGroup = dispatch.threads,
    };
    GENX(INTERFACE_DESCRIPTOR_DATA_pack)(NULL,
                                         pipeline->interface_descriptor_data,

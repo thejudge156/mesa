@@ -228,6 +228,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_ANISOTROPIC_FILTER:
       return screen->info.feats.features.samplerAnisotropy;
 
+   case PIPE_CAP_QUERY_MEMORY_INFO:
    case PIPE_CAP_NPOT_TEXTURES:
    case PIPE_CAP_TGSI_TEXCOORD:
    case PIPE_CAP_DRAW_INDIRECT:
@@ -307,6 +308,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FRAGMENT_SHADER_INTERLOCK:
       return screen->info.have_EXT_fragment_shader_interlock;
 
+   case PIPE_CAP_TGSI_CLOCK:
+      return screen->info.have_KHR_shader_clock;
+
    case PIPE_CAP_POINT_SPRITE:
       return 1;
 
@@ -320,9 +324,13 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 0;
 
    case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
-      return screen->info.driver_props.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA_KHR ||
-             screen->info.driver_props.driverID == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS_KHR ?
-             0 : PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_NV50;
+      /* This is also broken on the other AMD drivers for old HW, but
+       * there's no obvious way to test for that.
+       */
+      if (screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_RADV ||
+          screen->info.driver_props.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
+         return PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_NV50;
+      return 0;
 
    case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
       return screen->info.props.limits.maxImageDimension2D;
@@ -476,6 +484,10 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_CULL_DISTANCE:
       return screen->info.feats.features.shaderCullDistance;
+
+   case PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE:
+      /* this is the spec minimum */
+      return screen->info.feats.features.sparseBinding ? 64 * 1024 : 0;
 
    case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
       return screen->info.props.limits.viewportSubPixelBits;
@@ -694,12 +706,18 @@ zink_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
    case PIPE_SHADER_CAP_SUBROUTINES:
    case PIPE_SHADER_CAP_INT64_ATOMICS:
-   case PIPE_SHADER_CAP_FP16:
-   case PIPE_SHADER_CAP_FP16_DERIVATIVES:
    case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
-   case PIPE_SHADER_CAP_INT16:
    case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
       return 0; /* not implemented */
+
+   case PIPE_SHADER_CAP_FP16:
+   case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+      return screen->info.feats12.shaderFloat16 ||
+             (screen->info.have_KHR_shader_float16_int8 &&
+              screen->info.shader_float16_int8_feats.shaderFloat16);
+
+   case PIPE_SHADER_CAP_INT16:
+      return screen->info.feats.features.shaderInt16;
 
    case PIPE_SHADER_CAP_PREFERRED_IR:
       return PIPE_SHADER_IR_NIR;
@@ -1200,6 +1218,9 @@ load_device_extensions(struct zink_screen *screen)
       GET_PROC_ADDR(CmdBindVertexBuffers2EXT);
    }
 
+   if (screen->info.have_EXT_image_drm_format_modifier)
+      GET_PROC_ADDR(GetImageDrmFormatModifierPropertiesEXT);
+
    if (screen->info.have_KHR_timeline_semaphore)
       GET_PROC_ADDR_KHR(WaitSemaphores);
 
@@ -1213,6 +1234,11 @@ load_device_extensions(struct zink_screen *screen)
    if (screen->info.have_KHR_swapchain) {
       GET_PROC_ADDR(CreateSwapchainKHR);
       GET_PROC_ADDR(DestroySwapchainKHR);
+   }
+
+   if (screen->info.have_EXT_sample_locations) {
+      GET_PROC_ADDR(CmdSetSampleLocationsEXT);
+      GET_PROC_ADDR_INSTANCE(GetPhysicalDeviceMultisamplePropertiesEXT);
    }
 
    return true;
@@ -1395,6 +1421,49 @@ zink_get_loader_version(void)
    return loader_version;
 }
 
+static void
+zink_query_memory_info(struct pipe_screen *pscreen, struct pipe_memory_info *info)
+{
+   struct zink_screen *screen = zink_screen(pscreen);
+   memset(info, 0, sizeof(struct pipe_memory_info));
+   if (screen->info.have_EXT_memory_budget && screen->vk_GetPhysicalDeviceMemoryProperties2) {
+      VkPhysicalDeviceMemoryProperties2 mem = {};
+      mem.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+
+      VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {};
+      budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+      mem.pNext = &budget;
+      screen->vk_GetPhysicalDeviceMemoryProperties2(screen->pdev, &mem);
+
+      for (unsigned i = 0; i < mem.memoryProperties.memoryHeapCount; i++) {
+         if (mem.memoryProperties.memoryHeaps[i].flags == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+            /* VRAM */
+            info->total_device_memory = mem.memoryProperties.memoryHeaps[i].size / 1024;
+            info->avail_device_memory = (budget.heapBudget[i] - budget.heapUsage[i]) / 1024;
+         } else if (mem.memoryProperties.memoryHeaps[i].flags == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            /* GART */
+            info->total_staging_memory = mem.memoryProperties.memoryHeaps[i].size / 1024;
+            info->avail_staging_memory = (budget.heapBudget[i] - budget.heapUsage[i]) / 1024;
+         }
+      }
+      /* evictions not yet supported in vulkan */
+   } else {
+      for (unsigned i = 0; i < screen->info.mem_props.memoryHeapCount; i++) {
+         if (screen->info.mem_props.memoryHeaps[i].flags == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+            /* VRAM */
+            info->total_device_memory = screen->info.mem_props.memoryHeaps[i].size / 1024;
+            /* free real estate! */
+            info->avail_device_memory = info->total_device_memory;
+         } else if (screen->info.mem_props.memoryHeaps[i].flags == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            /* GART */
+            info->total_staging_memory = screen->info.mem_props.memoryHeaps[i].size / 1024;
+            /* free real estate! */
+            info->avail_staging_memory = info->total_staging_memory;
+         }
+      }
+   }
+}
+
 static VkDevice
 zink_create_logical_device(struct zink_screen *screen)
 {
@@ -1523,6 +1592,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    screen->base.get_vendor = zink_get_vendor;
    screen->base.get_device_vendor = zink_get_device_vendor;
    screen->base.get_compute_param = zink_get_compute_param;
+   screen->base.query_memory_info = zink_query_memory_info;
    screen->base.get_param = zink_get_param;
    screen->base.get_paramf = zink_get_paramf;
    screen->base.get_shader_param = zink_get_shader_param;
