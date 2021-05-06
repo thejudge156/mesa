@@ -98,6 +98,7 @@ struct zink_resource {
          VkImageLayout layout;
          VkImageAspectFlags aspect;
          bool optimal_tiling;
+         // uint32_t images_count;
       };
    };
 

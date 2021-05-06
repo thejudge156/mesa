@@ -37,6 +37,10 @@
 #include "asahi/agx_public.h"
 #endif
 
+#ifdef GALLIUM_ZINK
+struct pipe_screen *zink_create_screen(struct sw_winsys *winsys);
+#endif
+
 static inline struct pipe_screen *
 sw_screen_create_named(struct sw_winsys *winsys, const char *driver)
 {
@@ -66,8 +70,10 @@ sw_screen_create_named(struct sw_winsys *winsys, const char *driver)
 #endif
 
 #if defined(GALLIUM_ZINK)
-   if (screen == NULL && strcmp(driver, "zink") == 0)
+   if (screen == NULL && strcmp(driver, "zink") == 0) {
       screen = zink_create_screen(winsys);
+      debug_printf("ZINK_inline_sw_helper: generated screen: %p\n",screen);
+   }
 #endif
 
 #if defined(GALLIUM_D3D12)
