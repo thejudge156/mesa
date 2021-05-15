@@ -1,6 +1,7 @@
 `Mesa <https://mesa3d.org>`_ - The 3D Graphics Library
 ======================================================
 
+This fork is about OSMesa, Zink driver for Android and iOS.
 
 Source
 ------
