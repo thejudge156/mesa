@@ -629,7 +629,7 @@ bool can_use_VOP3(opt_ctx& ctx, const aco_ptr<Instruction>& instr)
 
 bool can_apply_sgprs(opt_ctx& ctx, aco_ptr<Instruction>& instr)
 {
-   if (instr->isSDWA() && ctx.program->chip_class < GFX9)
+   if ((instr->isSDWA() && ctx.program->chip_class < GFX9) || instr->isDPP())
       return false;
    return instr->opcode != aco_opcode::v_readfirstlane_b32 &&
           instr->opcode != aco_opcode::v_readlane_b32 &&

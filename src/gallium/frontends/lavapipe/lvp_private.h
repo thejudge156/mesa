@@ -1038,7 +1038,6 @@ struct lvp_cmd_buffer_entry {
 
 VkResult lvp_execute_cmds(struct lvp_device *device,
                           struct lvp_queue *queue,
-                          struct lvp_fence *fence,
                           struct lvp_cmd_buffer *cmd_buffer);
 
 enum pipe_format vk_format_to_pipe(VkFormat format);

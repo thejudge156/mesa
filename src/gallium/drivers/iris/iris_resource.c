@@ -405,7 +405,7 @@ iris_resource_destroy(struct pipe_screen *screen,
    iris_resource_disable_aux(res);
 
    iris_bo_unreference(res->bo);
-   iris_pscreen_unref(res->base.screen);
+   iris_pscreen_unref(res->orig_screen);
 
    free(res);
 }
@@ -420,6 +420,7 @@ iris_alloc_resource(struct pipe_screen *pscreen,
 
    res->base = *templ;
    res->base.screen = iris_pscreen_ref(pscreen);
+   res->orig_screen = iris_pscreen_ref(pscreen);
    pipe_reference_init(&res->base.reference, 1);
 
    res->aux.possible_usages = 1 << ISL_AUX_USAGE_NONE;

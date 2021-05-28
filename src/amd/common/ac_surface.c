@@ -2878,7 +2878,7 @@ bool ac_surface_override_offset_stride(const struct radeon_info *info, struct ra
       }
    }
 
-   if (offset & (surf->alignment - 1) ||
+   if ((surf->alignment && offset & (surf->alignment - 1)) ||
        offset >= UINT64_MAX - surf->total_size)
       return false;
 
