@@ -22,6 +22,7 @@ jobs:
       - name: Build
         run: |
           ln -s vulkan_android.pc vulkan.pc
+          sudo apt update
           sudo apt install -y meson libxrandr-dev libxxf86vm-dev libxshmfence-dev libxcb-*-dev libx11-xcb-dev libxfixes-dev libdrm-dev libx11-dev
           cp -R /usr/include/X11 include/
           cp -R /usr/include/xcb include/
@@ -34,7 +35,7 @@ jobs:
             --cross-file "android-${{matrix.arch}}" \
             --buildtype debug \
             -Dplatforms=android \
-            -Dplatform-sdk-version=26 \
+            -Dplatform-sdk-version=25 \
             -Dandroid-stub=true \
             -Dllvm=disabled \
             -Dxlib-lease=disabled \
