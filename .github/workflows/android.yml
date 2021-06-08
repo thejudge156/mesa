@@ -34,7 +34,6 @@ jobs:
             --prefix=/tmp/zink \
             --cross-file "android-${{matrix.arch}}" \
             --buildtype debug \
-            --renderer opengl46
             -Dplatforms=android \
             -Dplatform-sdk-version=25 \
             -Dandroid-stub=true \
