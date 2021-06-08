@@ -34,9 +34,7 @@ jobs:
             --prefix=/tmp/zink \
             --cross-file "android-${{matrix.arch}}" \
             --buildtype debug \
-            -Dplatforms=android \
-            -Dplatform-sdk-version=25 \
-            -Dandroid-stub=true \
+            -Db_lundef=false \
             -Dllvm=disabled \
             -Dxlib-lease=disabled \
             -Degl=disabled \
@@ -46,8 +44,7 @@ jobs:
             -Dopengl=true \
             -Dosmesa=true \
             -Dvulkan-drivers= \
-            -Dgallium-drivers=swr,zink \
-            -Dshared-glapi=false
+            -Dgallium-drivers=swrast,zink
           ninja -C "build-android-${{matrix.arch}}" install
           cp "build-android-${{matrix.arch}}/src/gallium/drivers/zink/libzink.a" /tmp/zink/lib/
       - name: Upload libraries
