@@ -44,6 +44,9 @@ jobs:
             -Dopengl=true \
             -Dosmesa=true \
             -Dvulkan-drivers= \
+            -Dplatforms=android \
+            -Dplatform-sdk-version=25 \
+            -Dandroid-stub=true \
             -Dgallium-drivers=swrast,zink
           ninja -C "build-android-${{matrix.arch}}" install
           cp "build-android-${{matrix.arch}}/src/gallium/drivers/zink/libzink.a" /tmp/zink/lib/
