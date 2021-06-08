@@ -44,7 +44,7 @@ jobs:
             -Dglx=dri \
             -Dglx-direct=true \
             -Dopengl=true \
-            -Dosmesa=gallium \
+            -Dosmesa=true \
             -Dvulkan-drivers= \
             -Dgallium-drivers=swrast,zink \
             -Dshared-glapi=false
