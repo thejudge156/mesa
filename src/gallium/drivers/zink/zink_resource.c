@@ -443,6 +443,21 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
          debug_printf("vkCreateImage failed\n");
          goto fail1;
       }
+		 
+      if (screen->m_swapchain) {
+         // swapchain todo: supports multiple images
+         uint32_t swapchainImagesCount = 0;
+         VkImage* swapchainImages = malloc(sizeof(VkImage) * 1);
+         vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, &swapchainImagesCount, NULL);
+         vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, &swapchainImagesCount, swapchainImages);
+         res->image = swapchainImages[0];
+      } else {
+         VkResult result = vkCreateImage(screen->dev, &ici, NULL, &res->image);
+         if (result != VK_SUCCESS) {
+            FREE(res);
+            return NULL;
+         }
+      }
 
       vkGetImageMemoryRequirements(screen->dev, obj->image, &reqs);
       if (templ->usage == PIPE_USAGE_STAGING && ici.tiling == VK_IMAGE_TILING_LINEAR)

@@ -42,11 +42,14 @@ import sys
 #               will be added by the codegen accordingly.
 EXTENSIONS = [
     Extension("VK_EXT_debug_utils"),
-    Extension("VK_KHR_get_physical_device_properties2",
-        functions=["GetPhysicalDeviceFeatures2", "GetPhysicalDeviceProperties2",
-                   "GetPhysicalDeviceFormatProperties2", "GetPhysicalDeviceImageFormatProperties2"]),
-    Extension("VK_MVK_moltenvk",
-        nonstandard=True),
+    Extension("VK_KHR_maintenance2"),
+    Extension("VK_KHR_get_physical_device_properties2"),
+    Extension("VK_KHR_external_memory_capabilities"),
+    Extension("VK_MVK_moltenvk"),
+    Extension("VK_KHR_surface"),
+    Extension("VK_KHR_android_surface"),
+    Extension("VK_KHR_metal_surface"),
+    Extension("VK_KHR_swapchain"),
 ]
 
 # constructor: Layer(name, conditions=[])
