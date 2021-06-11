@@ -382,13 +382,7 @@ tss_set(tss_t key, void *val)
 
 /*-------------------- 7.25.7 Time functions --------------------*/
 // 7.25.6.1
-#if !defined(HAVE_TIMESPEC_GET) || defined(__APPLE__)
-
-#ifdef __APPLE__
-#include <time.h>
-#define timespec_get(ts, b) mesa_timespec_get(ts, b)
-#endif
-
+#ifndef HAVE_TIMESPEC_GET
 static inline int
 timespec_get(struct timespec *ts, int base)
 {

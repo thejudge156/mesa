@@ -310,8 +310,7 @@ with_clc = dep_clang.found()
 with_spirv_to_dxil = get_option('spirv-to-dxil')
 
 if host_machine.system() == 'darwin'
-  # with_dri_platform = 'apple'
-  with_dri_platform = 'none'
+  with_dri_platform = 'apple'
   pre_args += '-DBUILDING_MESA'
 elif ['windows', 'cygwin'].contains(host_machine.system())
   with_dri_platform = 'windows'
@@ -455,9 +454,9 @@ if (not ['freebsd', 'openbsd', 'haiku'].contains(host_machine.system()) and
   use_elf_tls = true
 endif
 
-if with_glx != 'disabled' and host_machine.system() != 'darwin'
+if with_glx != 'disabled'
   if not (with_platform_x11 and with_any_opengl)
-    warning('Cannot build GLX support without X11 platform support and at least one OpenGL API')
+    error('Cannot build GLX support without X11 platform support and at least one OpenGL API')
   elif with_glx == 'gallium-xlib'
     if not with_gallium
       error('Gallium-xlib based GLX requires at least one gallium driver')
@@ -1506,7 +1505,7 @@ with_gallium_drisw_kms = false
 dep_libdrm = dependency(
   'libdrm', version : '>=' + _drm_ver,
   # GNU/Hurd includes egl_dri2, without drm.
-  required : not with_platform_android and ((with_dri2 and host_machine.system() != 'gnu') or with_dri3)
+  required : (with_dri2 and host_machine.system() != 'gnu') or with_dri3
 )
 if dep_libdrm.found()
   pre_args += '-DHAVE_LIBDRM'
@@ -1857,6 +1856,16 @@ dep_xshmfence = null_dep
 dep_xcb_xrandr = null_dep
 dep_xcb_shm = null_dep
 dep_xlib_xrandr = null_dep
+dep_openmp = null_dep
+
+# Even if we find OpenMP, Gitlab CI fails to link with gcc/i386 and clang/anyarch.
+if host_machine.cpu_family() == 'x86_64' and cc.get_id() == 'gcc'
+  dep_openmp = dependency('openmp', required : false)
+  if dep_openmp.found()
+    pre_args += ['-DHAVE_OPENMP']
+  endif
+endif
+
 if with_platform_x11
   if with_glx == 'xlib' or with_glx == 'gallium-xlib'
     dep_x11 = dependency('x11')

@@ -15,8 +15,6 @@
 		OSMesaPostprocess;
 		gl*;
 		mgl*;
-		st*;
-		zink*;
 	local:
 		*;
 };

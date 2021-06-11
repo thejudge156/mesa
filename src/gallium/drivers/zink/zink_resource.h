@@ -95,12 +95,9 @@ struct zink_resource {
       struct util_range valid_buffer_range;
       struct {
          VkFormat format;
-         VkImage image;
-         // VkImage* images;
          VkImageLayout layout;
          VkImageAspectFlags aspect;
          bool optimal_tiling;
-         // uint32_t images_count;
       };
    };
 
