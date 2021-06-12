@@ -62,6 +62,71 @@ DEBUG_GET_ONCE_FLAGS_OPTION(zink_debug, "ZINK_DEBUG", zink_debug_options, 0)
 uint32_t
 zink_debug;
 
+// Mobile patch: supports swapchain output
+void *zink_swapchain_window;
+
+static void zink_set_swapchain_window(void* window)
+{
+   zink_swapchain_window = window;
+}
+
+static bool zink_create_swapchain(struct zink_screen *screen) {
+   VkSurfaceCapabilitiesKHR surfaceCapabilities;
+   vkGetPhysicalDeviceSurfaceCapabilitiesKHR(screen->pdev, screen->m_surface, &surfaceCapabilities);
+
+   uint32_t formatCount = 0;
+   vkGetPhysicalDeviceSurfaceFormatsKHR(screen->pdev, screen->m_surface, &formatCount, NULL);
+   VkSurfaceFormatKHR* formats = (VkSurfaceFormatKHR*)calloc(formatCount, sizeof(VkSurfaceFormatKHR));
+   vkGetPhysicalDeviceSurfaceFormatsKHR(screen->pdev, screen->m_surface, &formatCount, formats);
+   debug_printf("ZINK: Got %d formats\n", formatCount);
+
+   uint32_t chosenFormat;
+   for (chosenFormat = 0; chosenFormat < formatCount; chosenFormat++) {
+      if (formats[chosenFormat].format == VK_FORMAT_R8G8B8A8_UNORM) break;
+   }
+   if (chosenFormat >= formatCount) {
+      debug_printf("ZINK: failed to init swapchain: chosenFormat >= formatCount\n");
+      return false;
+   }
+
+   screen->m_displaySize = surfaceCapabilities.currentExtent;
+   screen->m_displayFormat = formats[chosenFormat].format;
+
+   VkSurfaceCapabilitiesKHR surfaceCap;
+   vkGetPhysicalDeviceSurfaceCapabilitiesKHR(screen->pdev, screen->m_surface, &surfaceCap);
+   if (!(surfaceCap.supportedCompositeAlpha | VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR)) {
+      debug_printf("ZINK: failed to init swapchain: surfaceCap.supportedCompositeAlpha did not contains VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR\n");
+      return false;
+   }
+
+   // FIXME: maybe oldSwapchain points to swapchain for multithread?
+   // FIXME: VK_PRESENT_MODE_FIFO_KHR needs re-impl image parts
+   VkSwapchainCreateInfoKHR swapchainCreateInfo = {
+      .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+      .pNext = NULL,
+      .surface = screen->m_surface,
+      .minImageCount = surfaceCapabilities.minImageCount,
+      .imageFormat = formats[chosenFormat].format,
+      .imageColorSpace = formats[chosenFormat].colorSpace,
+      .imageExtent = surfaceCapabilities.currentExtent,
+      .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+      .imageArrayLayers = 1,
+      .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      .queueFamilyIndexCount = 1,
+      .pQueueFamilyIndices = &screen->gfx_queue,
+      .compositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+      .presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR,
+      .oldSwapchain = VK_NULL_HANDLE,
+      .clipped = VK_FALSE,
+   };
+   vkCreateSwapchainKHR(screen->dev, &swapchainCreateInfo, NULL, &screen->m_swapchain);
+
+   vkGetSwapchainImagesKHR(screen->dev, screen->m_swapchain, &screen->m_swapchainLength, NULL);
+   free(formats);
+   return true;
+}
+
 static const char *
 zink_get_vendor(struct pipe_screen *pscreen)
 {
@@ -1042,6 +1107,29 @@ zink_flush_frontbuffer(struct pipe_screen *pscreen,
    struct sw_winsys *winsys = screen->winsys;
    struct zink_resource *res = zink_resource(pres);
 
+   if (screen->m_swapchain) {
+      struct zink_context *context = zink_context(pcontext);
+
+      // vkAcquireNextImageKHR(device.device_, swapchain.swapchain_, UINT64_MAX, render.semaphore_, VK_NULL_HANDLE, &nextIndex);
+      // vkResetFences(screen->dev, 1, &render.fence_);
+
+      int nextIndex = 0; // FIXME
+
+      VkResult result;
+      VkPresentInfoKHR presentInfo = {
+         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+         .pNext = NULL,
+         .swapchainCount = 1,
+         .pSwapchains = &screen->m_swapchain,
+         .pImageIndices = &nextIndex,
+         .waitSemaphoreCount = 0,
+         .pWaitSemaphores = NULL,
+         .pResults = &result,
+      };
+      vkQueuePresentKHR(context->queue, &presentInfo);
+      return;
+   }
+
    if (!winsys)
      return;
    void *map = winsys->displaytarget_map(winsys, res->dt, 0);
@@ -1266,8 +1354,10 @@ zink_internal_setup_moltenvk(struct zink_screen *screen)
 
    GET_PROC_ADDR_INSTANCE(GetPhysicalDeviceMetalFeaturesMVK);
    GET_PROC_ADDR_INSTANCE(GetVersionStringsMVK);
+#if 0 // skip objc methods
    GET_PROC_ADDR_INSTANCE(UseIOSurfaceMVK);
    GET_PROC_ADDR_INSTANCE(GetIOSurfaceMVK);
+#endif
 
    if (screen->vk_GetVersionStringsMVK) {
       char molten_version[64] = {0};
@@ -1447,6 +1537,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
 
    if (!screen->instance)
       goto fail;
+   }
 
    if (screen->instance_info.have_EXT_debug_utils && !create_debug(screen))
       debug_printf("ZINK: failed to setup debug utils\n");
@@ -1478,11 +1569,15 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    zink_internal_setup_moltenvk(screen);
 
    screen->dev = zink_create_logical_device(screen);
-   if (!screen->dev)
+   if (!screen->dev) {
+      debug_printf("ZINK: failed to init: no logical device\n");
       goto fail;
+   }
 
-   if (!load_device_extensions(screen))
+   if (!load_device_extensions(screen)) {
+      debug_printf("ZINK: failed to init: unable to load extensions\n");
       goto fail;
+   }
 
    check_base_requirements(screen);
 
