@@ -46,8 +46,8 @@ jobs:
             -Dopengl=true \
             -Dosmesa=true \
             -Dvulkan-drivers= \
-            -Dgallium-drivers=swrast,zink \
-            -Dshared-glapi=false
+            -Dgallium-drivers=zink \
+            -Dshared-glapi=true
           ninja -C "build-android-${{matrix.arch}}" install
           cp "build-android-${{matrix.arch}}/src/gallium/drivers/zink/libzink.a" /tmp/zink/lib/
       - name: Upload libraries
