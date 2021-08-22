@@ -121,4 +121,9 @@ SUBDIRS := \
 
 INC_DIRS := $(call all-named-subdir-makefiles,$(SUBDIRS))
 INC_DIRS += $(call all-named-subdir-makefiles,src/gallium)
+
+LOCAL_CFLAGS += -g -funwind-tables -O3 -fvisibility=hidden -include include/android_debug.h
+LOCAL_CFLAGS += -DNOX11
+LOCAL_CFLAGS += -DNO_GBM
+
 include $(INC_DIRS)
