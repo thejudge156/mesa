@@ -116,6 +116,7 @@ nine_convert_rasterizer_state(struct NineDevice9 *device,
  /* rast.line_stipple_pattern = 0; */
     rast.sprite_coord_enable = rs[D3DRS_POINTSPRITEENABLE] ? 0xff : 0x00;
     rast.line_width = 1.0f;
+    rast.line_rectangular = 0;
     if (rs[NINED3DRS_VSPOINTSIZE]) {
         rast.point_size = 1.0f;
     } else {
@@ -166,7 +167,7 @@ nine_convert_blend_state(struct pipe_blend_state *blend_state, const DWORD *rs)
     blend.dither = !!rs[D3DRS_DITHERENABLE];
 
  /* blend.alpha_to_one = 0; */
-    blend.alpha_to_coverage = rs[NINED3DRS_ALPHACOVERAGE] & 1;
+    blend.alpha_to_coverage = !!(rs[NINED3DRS_ALPHACOVERAGE] & 5);
 
     blend.rt[0].blend_enable = !!rs[D3DRS_ALPHABLENDENABLE];
     if (blend.rt[0].blend_enable) {
@@ -215,13 +216,13 @@ nine_convert_sampler_state(struct cso_context *ctx, int idx, const DWORD *ss)
            (idx < NINE_MAX_SAMPLERS_PS || idx >= NINE_SAMPLER_VS(0)) &&
            (idx < NINE_MAX_SAMPLERS));
 
-    memset(&samp, 0, sizeof(samp)); /* memcmp safety */
-
     if (ss[D3DSAMP_MIPFILTER] != D3DTEXF_NONE) {
         samp.lod_bias = asfloat(ss[D3DSAMP_MIPMAPLODBIAS]);
         samp.min_lod = ss[NINED3DSAMP_MINLOD];
         samp.min_mip_filter = (ss[D3DSAMP_MIPFILTER] == D3DTEXF_POINT) ? PIPE_TEX_FILTER_NEAREST : PIPE_TEX_FILTER_LINEAR;
     } else {
+        samp.min_lod = 0.0;
+        samp.lod_bias = 0.0;
         samp.min_mip_filter = PIPE_TEX_MIPFILTER_NONE;
     }
     samp.max_lod = 15.0f;
@@ -240,11 +241,16 @@ nine_convert_sampler_state(struct cso_context *ctx, int idx, const DWORD *ss)
     samp.mag_img_filter = (ss[D3DSAMP_MAGFILTER] == D3DTEXF_POINT && !ss[NINED3DSAMP_SHADOW]) ? PIPE_TEX_FILTER_NEAREST : PIPE_TEX_FILTER_LINEAR;
     if (ss[D3DSAMP_MINFILTER] == D3DTEXF_ANISOTROPIC ||
         ss[D3DSAMP_MAGFILTER] == D3DTEXF_ANISOTROPIC)
-        samp.max_anisotropy = ss[D3DSAMP_MAXANISOTROPY];
+        samp.max_anisotropy = MIN2(16, ss[D3DSAMP_MAXANISOTROPY]);
+    else
+        samp.max_anisotropy = 0;
     samp.compare_mode = ss[NINED3DSAMP_SHADOW] ? PIPE_TEX_COMPARE_R_TO_TEXTURE : PIPE_TEX_COMPARE_NONE;
     samp.compare_func = PIPE_FUNC_LEQUAL;
     samp.normalized_coords = 1;
     samp.seamless_cube_map = 0;
+    samp.border_color_is_integer = 0;
+    samp.reduction_mode = 0;
+    samp.pad = 0;
     d3dcolor_to_pipe_color_union(&samp.border_color, ss[D3DSAMP_BORDERCOLOR]);
 
     /* see nine_state.h */

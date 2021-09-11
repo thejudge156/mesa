@@ -27,45 +27,113 @@
 struct pipe_screen;
 struct sw_displaytarget;
 struct zink_batch;
+struct zink_context;
+struct zink_bo;
+#define ZINK_RESOURCE_USAGE_STREAMOUT (1 << 10) //much greater than ZINK_DESCRIPTOR_TYPES
 
+#include "util/simple_mtx.h"
 #include "util/u_transfer.h"
+#include "util/u_range.h"
+#include "util/u_dynarray.h"
+#include "util/u_threaded_context.h"
+
+#include "zink_batch.h"
+#include "zink_descriptors.h"
 
 #include <vulkan/vulkan.h>
 
-#define ZINK_RESOURCE_ACCESS_READ 1
-#define ZINK_RESOURCE_ACCESS_WRITE 16
+#define ZINK_MAP_TEMPORARY (PIPE_MAP_DRV_PRV << 0)
 
-struct zink_resource {
-   struct pipe_resource base;
+struct mem_key {
+   unsigned seen_count;
+   struct {
+      unsigned heap_index;
+      VkMemoryRequirements reqs;
+   } key;
+};
 
-   enum pipe_format internal_format:16;
+struct zink_resource_object {
+   struct pipe_reference reference;
+
+   unsigned persistent_maps; //if nonzero, requires vkFlushMappedMemoryRanges during batch use
+   struct zink_descriptor_refs desc_set_refs;
+
+   struct zink_batch_usage *reads;
+   struct zink_batch_usage *writes;
+
+   struct util_dynarray tmp;
 
    union {
       VkBuffer buffer;
+      VkImage image;
+   };
+
+   VkSampleLocationsInfoEXT zs_evaluate;
+   bool needs_zs_evaluate;
+
+   bool storage_init; //layout was set for image
+   bool transfer_dst;
+   bool is_buffer;
+   VkImageAspectFlags modifier_aspect;
+
+   struct zink_bo *bo;
+   VkDeviceSize offset, size, alignment;
+   VkImageCreateFlags vkflags;
+   VkImageUsageFlags vkusage;
+
+   bool host_visible;
+   bool coherent;
+};
+
+struct zink_resource {
+   struct threaded_resource base;
+
+   enum pipe_format internal_format:16;
+
+   VkPipelineStageFlagBits access_stage;
+   VkAccessFlags access;
+   bool unordered_barrier;
+
+   struct zink_resource_object *obj;
+   struct zink_resource_object *scanout_obj; //TODO: remove for wsi
+   bool scanout_obj_init;
+   union {
+      struct {
+         struct util_range valid_buffer_range;
+         uint32_t vbo_bind_mask : PIPE_MAX_ATTRIBS;
+         uint8_t ubo_bind_count[2];
+         uint8_t so_bind_count;
+         uint32_t ubo_bind_mask[PIPE_SHADER_TYPES];
+         uint32_t ssbo_bind_mask[PIPE_SHADER_TYPES];
+      };
       struct {
          VkFormat format;
-         VkImage image;
-         // VkImage* images;
          VkImageLayout layout;
          VkImageAspectFlags aspect;
          bool optimal_tiling;
-         // uint32_t images_count;
+         uint8_t fb_binds;
       };
    };
-   VkDeviceMemory mem;
-   VkDeviceSize offset, size;
+   uint32_t sampler_binds[PIPE_SHADER_TYPES];
+   uint16_t image_bind_count[2]; //gfx, compute
+   uint16_t write_bind_count[2]; //gfx, compute
+   uint16_t bind_count[2]; //gfx, compute
 
    struct sw_displaytarget *dt;
    unsigned dt_stride;
 
-   /* this has to be atomic for fence access, so we can't use a bitmask and make everything neat */
-   uint8_t batch_uses[4];
-   bool needs_xfb_barrier;
+   uint32_t bind_history; // enum zink_descriptor_type bitmask
+   uint32_t bind_stages;
+
+   uint8_t modifiers_count;
+   uint64_t *modifiers;
 };
 
 struct zink_transfer {
-   struct pipe_transfer base;
+   struct threaded_transfer base;
    struct pipe_resource *staging_res;
+   unsigned offset;
+   unsigned depthPitch;
 };
 
 static inline struct zink_resource *
@@ -74,7 +142,7 @@ zink_resource(struct pipe_resource *r)
    return (struct zink_resource *)r;
 }
 
-void
+bool
 zink_screen_resource_init(struct pipe_screen *pscreen);
 
 void
@@ -84,7 +152,93 @@ void
 zink_get_depth_stencil_resources(struct pipe_resource *res,
                                  struct zink_resource **out_z,
                                  struct zink_resource **out_s);
+VkMappedMemoryRange
+zink_resource_init_mem_range(struct zink_screen *screen, struct zink_resource_object *obj, VkDeviceSize offset, VkDeviceSize size);
+void
+zink_resource_setup_transfer_layouts(struct zink_context *ctx, struct zink_resource *src, struct zink_resource *dst);
 
 void
-zink_resource_setup_transfer_layouts(struct zink_batch *batch, struct zink_resource *src, struct zink_resource *dst);
+zink_destroy_resource_object(struct zink_screen *screen, struct zink_resource_object *resource_object);
+
+void
+debug_describe_zink_resource_object(char *buf, const struct zink_resource_object *ptr);
+
+static inline void
+zink_resource_object_reference(struct zink_screen *screen,
+                             struct zink_resource_object **dst,
+                             struct zink_resource_object *src)
+{
+   struct zink_resource_object *old_dst = dst ? *dst : NULL;
+
+   if (pipe_reference_described(old_dst ? &old_dst->reference : NULL, &src->reference,
+                                (debug_reference_descriptor)debug_describe_zink_resource_object))
+      zink_destroy_resource_object(screen, old_dst);
+   if (dst) *dst = src;
+}
+
+VkBuffer
+zink_resource_tmp_buffer(struct zink_screen *screen, struct zink_resource *res, unsigned offset_add, unsigned add_binds, unsigned *offset);
+
+bool
+zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource *res);
+
+#ifndef __cplusplus
+#include "zink_bo.h"
+
+static inline bool
+zink_resource_usage_is_unflushed(const struct zink_resource *res)
+{
+   return zink_bo_has_unflushed_usage(res->obj->bo);
+}
+
+static inline bool
+zink_resource_usage_is_unflushed_write(const struct zink_resource *res)
+{
+   return zink_batch_usage_is_unflushed(res->obj->bo->writes);
+}
+
+
+static inline bool
+zink_resource_usage_matches(const struct zink_resource *res, const struct zink_batch_state *bs)
+{
+   return zink_bo_usage_matches(res->obj->bo, bs);
+}
+
+static inline bool
+zink_resource_has_usage(const struct zink_resource *res)
+{
+   return zink_bo_has_usage(res->obj->bo);
+}
+
+static inline bool
+zink_resource_has_unflushed_usage(const struct zink_resource *res)
+{
+   return zink_bo_has_unflushed_usage(res->obj->bo);
+}
+
+static inline bool
+zink_resource_usage_check_completion(struct zink_screen *screen, struct zink_resource *res, enum zink_resource_access access)
+{
+   return zink_bo_usage_check_completion(screen, res->obj->bo, access);
+}
+
+static inline void
+zink_resource_usage_wait(struct zink_context *ctx, struct zink_resource *res, enum zink_resource_access access)
+{
+   zink_bo_usage_wait(ctx, res->obj->bo, access);
+}
+
+static inline void
+zink_resource_usage_set(struct zink_resource *res, struct zink_batch_state *bs, bool write)
+{
+   zink_bo_usage_set(res->obj->bo, bs, write);
+}
+
+static inline void
+zink_resource_object_usage_unset(struct zink_resource_object *obj, struct zink_batch_state *bs)
+{
+   zink_bo_usage_unset(obj->bo, bs);
+}
+
+#endif
 #endif

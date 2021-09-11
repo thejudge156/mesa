@@ -32,7 +32,6 @@
 #include "util/u_blitter.h"
 #include "util/u_upload_mgr.h"
 #include "util/u_prim.h"
-#include "indices/u_primconvert.h"
 #include "pipe/p_screen.h"
 
 #include "v3d_screen.h"
@@ -200,16 +199,16 @@ v3d_flag_dirty_sampler_state(struct v3d_context *v3d,
 {
         switch (shader) {
         case PIPE_SHADER_VERTEX:
-                v3d->dirty |= VC5_DIRTY_VERTTEX;
+                v3d->dirty |= V3D_DIRTY_VERTTEX;
                 break;
         case PIPE_SHADER_GEOMETRY:
-                v3d->dirty |= VC5_DIRTY_GEOMTEX;
+                v3d->dirty |= V3D_DIRTY_GEOMTEX;
                 break;
         case PIPE_SHADER_FRAGMENT:
-                v3d->dirty |= VC5_DIRTY_FRAGTEX;
+                v3d->dirty |= V3D_DIRTY_FRAGTEX;
                 break;
         case PIPE_SHADER_COMPUTE:
-                v3d->dirty |= VC5_DIRTY_COMPTEX;
+                v3d->dirty |= V3D_DIRTY_COMPTEX;
                 break;
         default:
                 unreachable("Unsupported shader stage");
@@ -282,9 +281,6 @@ v3d_context_destroy(struct pipe_context *pctx)
         if (v3d->blitter)
                 util_blitter_destroy(v3d->blitter);
 
-        if (v3d->primconvert)
-                util_primconvert_destroy(v3d->primconvert);
-
         if (v3d->uploader)
                 u_upload_destroy(v3d->uploader);
         if (v3d->state_uploader)
@@ -297,6 +293,13 @@ v3d_context_destroy(struct pipe_context *pctx)
 
         pipe_surface_reference(&v3d->framebuffer.cbufs[0], NULL);
         pipe_surface_reference(&v3d->framebuffer.zsbuf, NULL);
+
+        if (v3d->sand8_blit_vs)
+                pctx->delete_vs_state(pctx, v3d->sand8_blit_vs);
+        if (v3d->sand8_blit_fs_luma)
+                pctx->delete_fs_state(pctx, v3d->sand8_blit_fs_luma);
+        if (v3d->sand8_blit_fs_chroma)
+                pctx->delete_fs_state(pctx, v3d->sand8_blit_fs_chroma);
 
         v3d_program_fini(pctx);
 
@@ -386,11 +389,6 @@ v3d_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
         if (!v3d->blitter)
                 goto fail;
         v3d->blitter->use_index_buffer = true;
-
-        v3d->primconvert = util_primconvert_create(pctx,
-                                                   (1 << PIPE_PRIM_QUADS) - 1);
-        if (!v3d->primconvert)
-                goto fail;
 
         V3D_DEBUG |= saved_shaderdb_flag;
 

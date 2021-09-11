@@ -57,16 +57,14 @@ namespace {
    enum module::argument::type
    get_image_type(const std::string &type,
                   const std::string &qual) {
-      if (type == "image2d_t" && qual == "read_only")
-         return module::argument::image2d_rd;
-      else if (type == "image2d_t" && qual == "write_only")
-         return module::argument::image2d_wr;
-      else if (type == "image3d_t" && qual == "read_only")
-         return module::argument::image3d_rd;
-      else if (type == "image3d_t" && qual == "write_only")
-         return module::argument::image3d_wr;
-      else
-         unreachable("Unknown image type");
+      if (type == "image1d_t" || type == "image2d_t" || type == "image3d_t") {
+         if (qual == "read_only")
+            return module::argument::image_rd;
+         else if (qual == "write_only")
+            return module::argument::image_wr;
+      }
+
+      unreachable("Unsupported image type");
    }
 
    module::arg_info create_arg_info(const std::string &arg_name,
@@ -215,8 +213,11 @@ namespace {
                const auto offset =
                            static_cast<unsigned>(clang::LangAS::opencl_local);
                if (address_space == map[offset]) {
+                  const auto pointee_type = cast<
+                     ::llvm::PointerType>(actual_type)->getElementType();
                   args.emplace_back(module::argument::local, arg_api_size,
-                                    target_size, target_align,
+                                    target_size,
+                                    dl.getABITypeAlignment(pointee_type),
                                     module::argument::zero_ext);
                } else {
                   // XXX: Correctly handle constant address space.  There is no

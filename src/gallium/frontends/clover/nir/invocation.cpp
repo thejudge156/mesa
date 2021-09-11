@@ -111,7 +111,9 @@ clover_nir_lower_images(nir_shader *shader)
       }
    }
    shader->info.num_textures = num_rd_images;
-   shader->info.textures_used = (1 << num_rd_images) - 1;
+   BITSET_ZERO(shader->info.textures_used);
+   if (num_rd_images)
+      BITSET_SET_RANGE(shader->info.textures_used, 0, num_rd_images - 1);
    shader->info.num_images = num_wr_images;
 
    nir_builder b;
@@ -134,7 +136,7 @@ clover_nir_lower_images(nir_shader *shader)
             nir_ssa_def *loc =
                nir_imm_intN_t(&b, deref->var->data.driver_location,
                                   deref->dest.ssa.bit_size);
-            nir_ssa_def_rewrite_uses(&deref->dest.ssa, nir_src_for_ssa(loc));
+            nir_ssa_def_rewrite_uses(&deref->dest.ssa, loc);
             progress = true;
             break;
          }
@@ -322,8 +324,8 @@ clover_lower_nir(nir_shader *nir, std::vector<module::argument> &args,
                                          "constant_buffer_addr");
       constant_var->data.location = args.size();
 
-      args.emplace_back(module::argument::global,
-                        pointer_bit_size / 8, pointer_bit_size / 8, pointer_bit_size / 8,
+      args.emplace_back(module::argument::global, sizeof(cl_mem),
+                        pointer_bit_size / 8, pointer_bit_size / 8,
                         module::argument::zero_ext,
                         module::argument::constant_buffer);
    }
@@ -394,6 +396,12 @@ nir_shader *clover::nir::load_libclc_nir(const device &dev, std::string &r_log)
 				 &spirv_options, compiler_options);
 }
 
+static bool
+can_remove_var(nir_variable *var, void *data)
+{
+   return !(var->type->is_sampler() || var->type->is_image());
+}
+
 module clover::nir::spirv_to_nir(const module &mod, const device &dev,
                                  std::string &r_log)
 {
@@ -426,10 +434,10 @@ module clover::nir::spirv_to_nir(const module &mod, const device &dev,
          throw build_error();
       }
 
-      nir->info.cs.local_size_variable = sym.reqd_work_group_size[0] == 0;
-      nir->info.cs.local_size[0] = sym.reqd_work_group_size[0];
-      nir->info.cs.local_size[1] = sym.reqd_work_group_size[1];
-      nir->info.cs.local_size[2] = sym.reqd_work_group_size[2];
+      nir->info.workgroup_size_variable = sym.reqd_work_group_size[0] == 0;
+      nir->info.workgroup_size[0] = sym.reqd_work_group_size[0];
+      nir->info.workgroup_size[1] = sym.reqd_work_group_size[1];
+      nir->info.workgroup_size[2] = sym.reqd_work_group_size[2];
       nir_validate_shader(nir, "clover");
 
       // Inline all functions first.
@@ -502,7 +510,7 @@ module clover::nir::spirv_to_nir(const module &mod, const device &dev,
                  glsl_get_cl_type_size_align);
 
       NIR_PASS_V(nir, nir_opt_deref);
-      NIR_PASS_V(nir, nir_lower_cl_images_to_tex);
+      NIR_PASS_V(nir, nir_lower_readonly_images_to_tex, false);
       NIR_PASS_V(nir, clover_nir_lower_images);
       NIR_PASS_V(nir, nir_lower_memcpy);
 
@@ -523,7 +531,10 @@ module clover::nir::spirv_to_nir(const module &mod, const device &dev,
       NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_global,
                  spirv_options.global_addr_format);
 
-      NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_all, NULL);
+      struct nir_remove_dead_variables_options remove_dead_variables_options = {
+            .can_remove_var = can_remove_var,
+      };
+      NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_all, &remove_dead_variables_options);
 
       if (compiler_options->lower_int64_options)
          NIR_PASS_V(nir, nir_lower_int64);
@@ -579,7 +590,7 @@ module clover::nir::spirv_to_nir(const module &mod, const device &dev,
 
       ralloc_free(mem_ctx);
 
-      m.syms.emplace_back(sym.name, std::string(),
+      m.syms.emplace_back(sym.name, sym.attributes,
                           sym.reqd_work_group_size, section_id, 0, args);
       m.secs.push_back(text);
       section_id++;

@@ -65,25 +65,27 @@ bi_print_slots(bi_registers *regs, FILE *fp)
 }
 
 void
-bi_print_bundle(bi_bundle *bundle, FILE *fp)
+bi_print_tuple(bi_tuple *tuple, FILE *fp)
 {
-        bi_instr *ins[2] = { bundle->fma, bundle->add };
+        bi_instr *ins[2] = { tuple->fma, tuple->add };
 
         for (unsigned i = 0; i < 2; ++i) {
+                fprintf(fp, (i == 0) ? "\t* " : "\t+ ");
+
                 if (ins[i])
                         bi_print_instr(ins[i], fp);
                 else
-                        fprintf(fp, "nop\n");
+                        fprintf(fp, "NOP\n");
         }
 }
 
 void
 bi_print_clause(bi_clause *clause, FILE *fp)
 {
-        fprintf(fp, "\tid(%u)", clause->scoreboard_id);
+        fprintf(fp, "id(%u)", clause->scoreboard_id);
 
         if (clause->dependencies) {
-                fprintf(fp, ", wait(");
+                fprintf(fp, " wait(");
 
                 for (unsigned i = 0; i < 8; ++i) {
                         if (clause->dependencies & (1 << i))
@@ -101,10 +103,16 @@ bi_print_clause(bi_clause *clause, FILE *fp)
         if (clause->staging_barrier)
                 fprintf(fp, " osrb");
 
+        if (clause->td)
+                fprintf(fp, " td");
+
+        if (clause->pcrel_idx != ~0)
+                fprintf(fp, " pcrel(%u)", clause->pcrel_idx);
+
         fprintf(fp, "\n");
 
-        for (unsigned i = 0; i < clause->bundle_count; ++i)
-                bi_print_bundle(&clause->bundles[i], fp);
+        for (unsigned i = 0; i < clause->tuple_count; ++i)
+                bi_print_tuple(&clause->tuples[i], fp);
 
         if (clause->constant_count) {
                 for (unsigned i = 0; i < clause->constant_count; ++i)
@@ -115,12 +123,14 @@ bi_print_clause(bi_clause *clause, FILE *fp)
 
                 fprintf(fp, "\n");
         }
+
+        fprintf(fp, "\n");
 }
 
 void
 bi_print_block(bi_block *block, FILE *fp)
 {
-        fprintf(fp, "block%u {\n", block->base.name);
+        fprintf(fp, "block%u {\n", block->name);
 
         if (block->scheduled) {
                 bi_foreach_clause_in_block(block, clause)
@@ -132,18 +142,18 @@ bi_print_block(bi_block *block, FILE *fp)
 
         fprintf(fp, "}");
 
-        if (block->base.successors[0]) {
+        if (block->successors[0]) {
                 fprintf(fp, " -> ");
 
-                pan_foreach_successor((&block->base), succ)
+                bi_foreach_successor((block), succ)
                         fprintf(fp, "block%u ", succ->name);
         }
 
-        if (block->base.predecessors->entries) {
+        if (block->predecessors->entries) {
                 fprintf(fp, " from");
 
                 bi_foreach_predecessor(block, pred)
-                        fprintf(fp, " block%u", pred->base.name);
+                        fprintf(fp, " block%u", pred->name);
         }
 
         fprintf(fp, "\n\n");
@@ -153,5 +163,5 @@ void
 bi_print_shader(bi_context *ctx, FILE *fp)
 {
         bi_foreach_block(ctx, block)
-                bi_print_block((bi_block *) block, fp);
+                bi_print_block(block, fp);
 }

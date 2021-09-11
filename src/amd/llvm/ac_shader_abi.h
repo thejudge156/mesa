@@ -58,17 +58,12 @@ struct ac_shader_abi {
    LLVMValueRef color0, color1;
    LLVMValueRef user_data;
 
-   /* For VS and PS: pre-loaded shader inputs.
-    *
-    * Currently only used for NIR shaders; indexed by variables'
-    * driver_location.
-    */
-   LLVMValueRef *inputs;
-
    /* Varying -> attribute number mapping. Also NIR-only */
    unsigned fs_input_attr_indices[MAX_VARYING];
 
-   void (*emit_outputs)(struct ac_shader_abi *abi, unsigned max_outputs, LLVMValueRef *addrs);
+   void (*export_vertex)(struct ac_shader_abi *abi);
+
+   void (*emit_outputs)(struct ac_shader_abi *abi);
 
    void (*emit_vertex)(struct ac_shader_abi *abi, unsigned stream, LLVMValueRef *addrs);
 
@@ -93,9 +88,13 @@ struct ac_shader_abi {
                              LLVMValueRef src, unsigned writemask,
                              unsigned component, unsigned location, unsigned driver_location);
 
-   LLVMValueRef (*load_tess_coord)(struct ac_shader_abi *abi);
-
    LLVMValueRef (*load_patch_vertices_in)(struct ac_shader_abi *abi);
+
+   LLVMValueRef (*load_ring_tess_offchip)(struct ac_shader_abi *abi);
+
+   LLVMValueRef (*load_ring_tess_factors)(struct ac_shader_abi *abi);
+
+   LLVMValueRef (*load_ring_esgs)(struct ac_shader_abi *abi);
 
    LLVMValueRef (*load_tess_level)(struct ac_shader_abi *abi, unsigned varying_id,
                                    bool load_default_state);
@@ -110,8 +109,9 @@ struct ac_shader_abi {
     * \param buffer the buffer as presented in NIR: this is the descriptor
     *               in Vulkan, and the buffer index in OpenGL/Gallium
     * \param write whether buffer contents will be written
+    * \param non_uniform whether the buffer descriptor is not assumed to be uniform
     */
-   LLVMValueRef (*load_ssbo)(struct ac_shader_abi *abi, LLVMValueRef buffer, bool write);
+   LLVMValueRef (*load_ssbo)(struct ac_shader_abi *abi, LLVMValueRef buffer, bool write, bool non_uniform);
 
    /**
     * Load a descriptor associated to a sampler.

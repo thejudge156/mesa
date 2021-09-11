@@ -36,6 +36,8 @@ struct lower_phis_to_scalar_state {
    void *mem_ctx;
    void *dead_ctx;
 
+   bool lower_all;
+
    /* Hash table marking which phi nodes are scalarizable.  The key is
     * pointers to phi instructions and the entry is either NULL for not
     * scalarizable or non-null for scalarizable.
@@ -121,7 +123,7 @@ is_phi_src_scalarizable(nir_phi_src *src,
 /**
  * Determines if the given phi node should be lowered.  The only phi nodes
  * we will scalarize at the moment are those where all of the sources are
- * scalarizable.
+ * scalarizable, unless lower_all is set.
  *
  * The reason for this comes down to coalescing.  Since phi sources can't
  * swizzle, swizzles on phis have to be resolved by inserting a mov right
@@ -145,6 +147,9 @@ should_lower_phi(nir_phi_instr *phi, struct lower_phis_to_scalar_state *state)
    /* Already scalar */
    if (phi->dest.ssa.num_components == 1)
       return false;
+
+   if (state->lower_all)
+      return true;
 
    struct hash_entry *entry = _mesa_hash_table_search(state->phi_table, phi);
    if (entry)
@@ -243,11 +248,7 @@ lower_phis_to_scalar_block(nir_block *block,
             else
                nir_instr_insert_after_block(src->pred, &mov->instr);
 
-            nir_phi_src *new_src = ralloc(new_phi, nir_phi_src);
-            new_src->pred = src->pred;
-            new_src->src = nir_src_for_ssa(&mov->dest.dest.ssa);
-
-            exec_list_push_tail(&new_phi->srcs, &new_src->node);
+            nir_phi_instr_add_src(new_phi, src->pred, nir_src_for_ssa(&mov->dest.dest.ssa));
          }
 
          nir_instr_insert_before(&phi->instr, &new_phi->instr);
@@ -256,7 +257,7 @@ lower_phis_to_scalar_block(nir_block *block,
       nir_instr_insert_after(&last_phi->instr, &vec->instr);
 
       nir_ssa_def_rewrite_uses(&phi->dest.ssa,
-                               nir_src_for_ssa(&vec->dest.dest.ssa));
+                               &vec->dest.dest.ssa);
 
       ralloc_steal(state->dead_ctx, phi);
       nir_instr_remove(&phi->instr);
@@ -277,7 +278,7 @@ lower_phis_to_scalar_block(nir_block *block,
 }
 
 static bool
-lower_phis_to_scalar_impl(nir_function_impl *impl)
+lower_phis_to_scalar_impl(nir_function_impl *impl, bool lower_all)
 {
    struct lower_phis_to_scalar_state state;
    bool progress = false;
@@ -285,6 +286,7 @@ lower_phis_to_scalar_impl(nir_function_impl *impl)
    state.mem_ctx = ralloc_parent(impl);
    state.dead_ctx = ralloc_context(NULL);
    state.phi_table = _mesa_pointer_hash_table_create(state.dead_ctx);
+   state.lower_all = lower_all;
 
    nir_foreach_block(block, impl) {
       progress = lower_phis_to_scalar_block(block, &state) || progress;
@@ -305,13 +307,13 @@ lower_phis_to_scalar_impl(nir_function_impl *impl)
  * don't bother lowering because that would generate hard-to-coalesce movs.
  */
 bool
-nir_lower_phis_to_scalar(nir_shader *shader)
+nir_lower_phis_to_scalar(nir_shader *shader, bool lower_all)
 {
    bool progress = false;
 
    nir_foreach_function(function, shader) {
       if (function->impl)
-         progress = lower_phis_to_scalar_impl(function->impl) || progress;
+         progress = lower_phis_to_scalar_impl(function->impl, lower_all) || progress;
    }
 
    return progress;

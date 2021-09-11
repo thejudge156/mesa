@@ -191,6 +191,26 @@ _mesa_hash_table_create(void *mem_ctx,
    return ht;
 }
 
+static uint32_t
+key_u32_hash(const void *key)
+{
+   uint32_t u = (uint32_t)(uintptr_t)key;
+   return _mesa_hash_uint(&u);
+}
+
+static bool
+key_u32_equals(const void *a, const void *b)
+{
+   return (uint32_t)(uintptr_t)a == (uint32_t)(uintptr_t)b;
+}
+
+/* key == 0 and key == deleted_key are not allowed */
+struct hash_table *
+_mesa_hash_table_create_u32_keys(void *mem_ctx)
+{
+   return _mesa_hash_table_create(mem_ctx, key_u32_hash, key_u32_equals);
+}
+
 struct hash_table *
 _mesa_hash_table_clone(struct hash_table *src, void *dst_mem_ctx)
 {
@@ -234,6 +254,13 @@ _mesa_hash_table_destroy(struct hash_table *ht,
    ralloc_free(ht);
 }
 
+static void
+hash_table_clear_fast(struct hash_table *ht)
+{
+   memset(ht->table, 0, sizeof(struct hash_entry) * hash_sizes[ht->size_index].size);
+   ht->entries = ht->deleted_entries = 0;
+}
+
 /**
  * Deletes all entries of the given hash table without deleting the table
  * itself or changing its structure.
@@ -249,15 +276,17 @@ _mesa_hash_table_clear(struct hash_table *ht,
 
    struct hash_entry *entry;
 
-   for (entry = ht->table; entry != ht->table + ht->size; entry++) {
-      if (entry_is_present(ht, entry) && delete_function != NULL)
-         delete_function(entry);
+   if (delete_function) {
+      for (entry = ht->table; entry != ht->table + ht->size; entry++) {
+         if (entry_is_present(ht, entry))
+            delete_function(entry);
 
-      entry->key = NULL;
-   }
-
-   ht->entries = 0;
-   ht->deleted_entries = 0;
+         entry->key = NULL;
+      }
+      ht->entries = 0;
+      ht->deleted_entries = 0;
+   } else
+      hash_table_clear_fast(ht);
 }
 
 /** Sets the value of the key pointer used for deleted entries in the table.
@@ -361,6 +390,12 @@ _mesa_hash_table_rehash(struct hash_table *ht, unsigned new_size_index)
 {
    struct hash_table old_ht;
    struct hash_entry *table;
+
+   if (ht->size_index == new_size_index && ht->deleted_entries == ht->max_entries) {
+      hash_table_clear_fast(ht);
+      assert(!ht->entries);
+      return;
+   }
 
    if (new_size_index >= ARRAY_SIZE(hash_sizes))
       return;
@@ -507,6 +542,27 @@ void _mesa_hash_table_remove_key(struct hash_table *ht,
                                  const void *key)
 {
    _mesa_hash_table_remove(ht, _mesa_hash_table_search(ht, key));
+}
+
+/**
+ * This function is an iterator over the hash_table when no deleted entries are present.
+ *
+ * Pass in NULL for the first entry, as in the start of a for loop.
+ */
+struct hash_entry *
+_mesa_hash_table_next_entry_unsafe(const struct hash_table *ht, struct hash_entry *entry)
+{
+   assert(!ht->deleted_entries);
+   if (!ht->entries)
+      return NULL;
+   if (entry == NULL)
+      entry = ht->table;
+   else
+      entry = entry + 1;
+   if (entry != ht->table + ht->size)
+      return entry->key ? entry : _mesa_hash_table_next_entry_unsafe(ht, entry);
+
+   return NULL;
 }
 
 /**

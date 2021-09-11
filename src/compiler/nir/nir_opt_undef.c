@@ -91,7 +91,7 @@ opt_undef_vecN(nir_builder *b, nir_alu_instr *alu)
    b->cursor = nir_before_instr(&alu->instr);
    nir_ssa_def *undef = nir_ssa_undef(b, alu->dest.dest.ssa.num_components,
                                       nir_dest_bit_size(alu->dest.dest));
-   nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, nir_src_for_ssa(undef));
+   nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, undef);
 
    return true;
 }
@@ -137,6 +137,7 @@ opt_undef_store(nir_intrinsic_instr *intrin)
       break;
    case nir_intrinsic_store_output:
    case nir_intrinsic_store_per_vertex_output:
+   case nir_intrinsic_store_per_primitive_output:
    case nir_intrinsic_store_ssbo:
    case nir_intrinsic_store_shared:
    case nir_intrinsic_store_global:

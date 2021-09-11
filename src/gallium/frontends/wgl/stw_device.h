@@ -30,13 +30,13 @@
 
 
 #include "pipe/p_compiler.h"
+#include "frontend/api.h"
 #include "util/u_handle_table.h"
+#include "util/u_dynarray.h"
+#include "util/xmlconfig.h"
 #include <GL/gl.h>
 #include "gldrv.h"
 #include "stw_pixelformat.h"
-
-
-#define STW_MAX_PIXELFORMATS   256
 
 #ifdef __cplusplus
 extern "C" {
@@ -63,9 +63,8 @@ struct stw_device
 
    LUID AdapterLuid;
 
-   struct stw_pixelformat_info pixelformats[STW_MAX_PIXELFORMATS];
+   struct util_dynarray pixelformats;
    unsigned pixelformat_count;
-   unsigned pixelformat_extended_count;
 
    struct WGLCALLBACKS callbacks;
 
@@ -86,6 +85,10 @@ struct stw_device
    /** WGL_EXT_swap_control */
    int refresh_rate;
    int swap_interval;
+
+   driOptionCache option_cache;
+   driOptionCache option_info;
+   struct st_config_options st_options;
 
    bool initialized;
 };

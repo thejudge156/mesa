@@ -36,6 +36,7 @@
 #include "mtypes.h"
 #include "pack.h"
 #include "pbo.h"
+#include "pixel.h"
 #include "state.h"
 #include "glformats.h"
 #include "fbobject.h"
@@ -118,6 +119,13 @@ _mesa_get_readpixels_transfer_ops(const struct gl_context *ctx,
           (type != GL_FLOAT && type != GL_HALF_FLOAT &&
            type != GL_UNSIGNED_INT_10F_11F_11F_REV)) {
          transferOps |= IMAGE_CLAMP_BIT;
+      }
+
+      /* For SNORM formats we only clamp if `type` is signed and clamp is `true` */
+      if (!_mesa_get_clamp_read_color(ctx, ctx->ReadBuffer) &&
+          _mesa_get_format_datatype(texFormat) == GL_SIGNED_NORMALIZED &&
+          (type == GL_BYTE || type == GL_SHORT || type == GL_INT)) {
+         transferOps &= ~IMAGE_CLAMP_BIT;
       }
    }
 
@@ -1033,7 +1041,7 @@ read_pixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format,
 
    GET_CURRENT_CONTEXT(ctx);
 
-   FLUSH_VERTICES(ctx, 0);
+   FLUSH_VERTICES(ctx, 0, 0);
 
    if (MESA_VERBOSE & VERBOSE_API)
       _mesa_debug(ctx, "glReadPixels(%d, %d, %s, %s, %p)\n",
@@ -1047,6 +1055,9 @@ read_pixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format,
                    "glReadPixels(width=%d height=%d)", width, height );
       return;
    }
+
+   if (ctx->NewState & _NEW_PIXEL)
+      _mesa_update_pixel(ctx);
 
    if (ctx->NewState)
       _mesa_update_state(ctx);

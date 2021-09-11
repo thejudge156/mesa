@@ -92,7 +92,7 @@ shading_language_version(struct gl_context *ctx)
          return (const GLubyte *) 0;
       }
    case API_OPENGLES:
-      /* fall-through */
+      FALLTHROUGH;
 
    default:
       _mesa_problem(ctx, "Unexpected API value in shading_language_version()");
@@ -126,6 +126,10 @@ _mesa_GetString( GLenum name )
 
    if (ctx->Const.VendorOverride && name == GL_VENDOR) {
       return (const GLubyte *) ctx->Const.VendorOverride;
+   }
+
+   if (ctx->Const.RendererOverride && name == GL_RENDERER) {
+      return (const GLubyte *) ctx->Const.RendererOverride;
    }
 
    /* this is a required driver function */

@@ -240,15 +240,8 @@ nir_insert_phi_undef(nir_block *block, nir_block *pred)
                                     phi->dest.ssa.num_components,
                                     phi->dest.ssa.bit_size);
       nir_instr_insert_before_cf_list(&impl->body, &undef->instr);
-      nir_phi_src *src = ralloc(phi, nir_phi_src);
-      src->pred = pred;
-      src->src.parent_instr = &phi->instr;
-      src->src.is_ssa = true;
-      src->src.ssa = &undef->def;
-
+      nir_phi_src *src = nir_phi_instr_add_src(phi, pred, nir_src_for_ssa(&undef->def));
       list_addtail(&src->src.use_link, &undef->def.uses);
-
-      exec_list_push_tail(&phi->srcs, &src->node);
    }
 }
 
@@ -620,7 +613,7 @@ replace_ssa_def_uses(nir_ssa_def *def, void *void_impl)
       nir_ssa_undef_instr_create(mem_ctx, def->num_components,
                                  def->bit_size);
    nir_instr_insert_before_cf_list(&impl->body, &undef->instr);
-   nir_ssa_def_rewrite_uses(def, nir_src_for_ssa(&undef->def));
+   nir_ssa_def_rewrite_uses(def, &undef->def);
    return true;
 }
 

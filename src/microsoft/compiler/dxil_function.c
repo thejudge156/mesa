@@ -43,12 +43,13 @@ static struct  predefined_func_descr predefined_funcs[] = {
 {"dx.op.tertiary", "O", "iOOO", DXIL_ATTR_KIND_READ_NONE},
 {"dx.op.threadId", "i", "ii", DXIL_ATTR_KIND_READ_NONE},
 {"dx.op.threadIdInGroup", "i", "ii", DXIL_ATTR_KIND_READ_NONE},
+{"dx.op.flattenedThreadIdInGroup", "i", "i", DXIL_ATTR_KIND_READ_NONE},
 {"dx.op.groupId", "i", "ii", DXIL_ATTR_KIND_READ_NONE},
 {"dx.op.unary", "O", "iO", DXIL_ATTR_KIND_READ_NONE},
 {"dx.op.unaryBits", "i", "iO", DXIL_ATTR_KIND_READ_NONE},
 {"dx.op.isSpecialFloat", "b", "iO", DXIL_ATTR_KIND_READ_NONE},
 {"dx.op.binary", "O", "iOO", DXIL_ATTR_KIND_READ_NONE},
-{"dx.op.bufferStore", "v", "i@iiiiiic", DXIL_ATTR_KIND_NONE},
+{"dx.op.bufferStore", "v", "i@iiOOOOc", DXIL_ATTR_KIND_NONE},
 {"dx.op.bufferLoad", "R", "i@ii", DXIL_ATTR_KIND_READ_ONLY},
 {"dx.op.attributeAtVertex", "O", "iiicc", DXIL_ATTR_KIND_READ_NONE},
 {"dx.op.sample", "R", "i@@ffffiiif", DXIL_ATTR_KIND_READ_ONLY},
@@ -59,6 +60,7 @@ static struct  predefined_func_descr predefined_funcs[] = {
 {"dx.op.sampleCmpLevelZero", "R", "i@@ffffiiif", DXIL_ATTR_KIND_READ_ONLY},
 {"dx.op.textureLoad", "R", "i@iiiiiii", DXIL_ATTR_KIND_READ_ONLY},
 {"dx.op.discard", "v", "ib", DXIL_ATTR_KIND_READ_NONE},
+{"dx.op.sampleIndex", "i", "i", DXIL_ATTR_KIND_READ_NONE},
 {"dx.op.emitStream", "v", "ic", DXIL_ATTR_KIND_NONE},
 {"dx.op.cutStream", "v", "ic", DXIL_ATTR_KIND_NONE},
 {"dx.op.getDimensions", "D", "i@i", DXIL_ATTR_KIND_READ_ONLY},
@@ -69,6 +71,8 @@ static struct  predefined_func_descr predefined_funcs[] = {
 {"dx.op.primitiveID", "i", "i", DXIL_ATTR_KIND_READ_NONE},
 {"dx.op.legacyF16ToF32", "f", "ii", DXIL_ATTR_KIND_READ_ONLY},
 {"dx.op.legacyF32ToF16", "i", "if", DXIL_ATTR_KIND_READ_ONLY},
+{"dx.op.makeDouble", "g", "iii", DXIL_ATTR_KIND_READ_NONE},
+{"dx.op.splitDouble", "G", "ig", DXIL_ATTR_KIND_READ_NONE},
 };
 
 struct func_descr {
@@ -171,6 +175,7 @@ get_type_from_string(struct dxil_module *mod, const char *param_descr,
    case DXIL_FUNC_PARAM_RESRET: return dxil_module_get_resret_type(mod, overload);
    case DXIL_FUNC_PARAM_DIM: return dxil_module_get_dimret_type(mod);
    case DXIL_FUNC_PARAM_CBUF_RET: return dxil_module_get_cbuf_ret_type(mod, overload);
+   case DXIL_FUNC_PARAM_SPLIT_DOUBLE: return dxil_module_get_split_double_ret_type(mod);
    case DXIL_FUNC_PARAM_POINTER: {
          const struct dxil_type *target = get_type_from_string(mod, param_descr, overload, idx);
          return dxil_module_get_pointer_type(mod, target);

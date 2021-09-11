@@ -105,7 +105,7 @@ __gen_unpack_uint(const uint8_t *restrict cl, uint32_t start, uint32_t end)
    const int width = end - start + 1;
    const uint64_t mask = (width == 64 ? ~0 : (1ull << width) - 1 );
 
-   for (int byte = start / 8; byte <= end / 8; byte++) {
+   for (uint32_t byte = start / 8; byte <= end / 8; byte++) {
       val |= ((uint64_t) cl[byte]) << ((byte - start / 8) * 8);
    }
 
@@ -132,39 +132,73 @@ __gen_unpack_padded(const uint8_t *restrict cl, uint32_t start, uint32_t end)
    return (2*odd + 1) << shift;
 }
 
+#define PREFIX1(A) MALI_ ## A
+#define PREFIX2(A, B) MALI_ ## A ## _ ## B
+#define PREFIX4(A, B, C, D) MALI_ ## A ## _ ## B ## _ ## C ## _ ## D
+
 #define pan_prepare(dst, T)                                 \\
-   *(dst) = (struct MALI_ ## T){ MALI_ ## T ## _header }
+   *(dst) = (struct PREFIX1(T)){ PREFIX2(T, header) }
 
 #define pan_pack(dst, T, name)                              \\
-   for (struct MALI_ ## T name = { MALI_ ## T ## _header }, \\
+   for (struct PREFIX1(T) name = { PREFIX2(T, header) }, \\
         *_loop_terminate = (void *) (dst);                  \\
         __builtin_expect(_loop_terminate != NULL, 1);       \\
-        ({ MALI_ ## T ## _pack((uint32_t *) (dst), &name);  \\
+        ({ PREFIX2(T, pack)((uint32_t *) (dst), &name);  \\
            _loop_terminate = NULL; }))
 
 #define pan_unpack(src, T, name)                        \\
-        struct MALI_ ## T name;                         \\
-        MALI_ ## T ## _unpack((uint8_t *)(src), &name)
+        struct PREFIX1(T) name;                         \\
+        PREFIX2(T, unpack)((uint8_t *)(src), &name)
 
 #define pan_print(fp, T, var, indent)                   \\
-        MALI_ ## T ## _print(fp, &(var), indent)
+        PREFIX2(T, print)(fp, &(var), indent)
+
+#define pan_size(T) PREFIX2(T, LENGTH)
+#define pan_alignment(T) PREFIX2(T, ALIGN)
+
+#define pan_section_offset(A, S) \\
+        PREFIX4(A, SECTION, S, OFFSET)
 
 #define pan_section_ptr(base, A, S) \\
-        ((void *)((uint8_t *)(base) + MALI_ ## A ## _SECTION_ ## S ## _OFFSET))
+        ((void *)((uint8_t *)(base) + pan_section_offset(A, S)))
 
 #define pan_section_pack(dst, A, S, name)                                                         \\
-   for (MALI_ ## A ## _SECTION_ ## S ## _TYPE name = { MALI_ ## A ## _SECTION_ ## S ## _header }, \\
+   for (PREFIX4(A, SECTION, S, TYPE) name = { PREFIX4(A, SECTION, S, header) }, \\
         *_loop_terminate = (void *) (dst);                                                        \\
         __builtin_expect(_loop_terminate != NULL, 1);                                             \\
-        ({ MALI_ ## A ## _SECTION_ ## S ## _pack(pan_section_ptr(dst, A, S), &name);              \\
+        ({ PREFIX4(A, SECTION, S, pack) (pan_section_ptr(dst, A, S), &name);              \\
            _loop_terminate = NULL; }))
 
 #define pan_section_unpack(src, A, S, name)                               \\
-        MALI_ ## A ## _SECTION_ ## S ## _TYPE name;                       \\
-        MALI_ ## A ## _SECTION_ ## S ## _unpack(pan_section_ptr(src, A, S), &name)
+        PREFIX4(A, SECTION, S, TYPE) name;                             \\
+        PREFIX4(A, SECTION, S, unpack)(pan_section_ptr(src, A, S), &name)
 
 #define pan_section_print(fp, A, S, var, indent)                          \\
-        MALI_ ## A ## _SECTION_ ## S ## _print(fp, &(var), indent)
+        PREFIX4(A, SECTION, S, print)(fp, &(var), indent)
+
+#define pan_merge(packed1, packed2, type) \
+        do { \
+                for (unsigned i = 0; i < (PREFIX2(type, LENGTH) / 4); ++i) \
+                        (packed1).opaque[i] |= (packed2).opaque[i]; \
+        } while(0)
+
+#define mali_pixel_format_print_v6(fp, format) \\
+    fprintf(fp, "%*sFormat (v6): %s%s%s %s%s%s%s\\n", indent, "", \\
+        mali_format_as_str((enum mali_format)((format >> 12) & 0xFF)), \\
+        (format & (1 << 20)) ? " sRGB" : "", \\
+        (format & (1 << 21)) ? " big-endian" : "", \\
+        mali_channel_as_str((enum mali_channel)((format >> 0) & 0x7)), \\
+        mali_channel_as_str((enum mali_channel)((format >> 3) & 0x7)), \\
+        mali_channel_as_str((enum mali_channel)((format >> 6) & 0x7)), \\
+        mali_channel_as_str((enum mali_channel)((format >> 9) & 0x7)));
+
+#define mali_pixel_format_print_v7(fp, format) \\
+    fprintf(fp, "%*sFormat (v7): %s%s %s%s\\n", indent, "", \\
+        mali_format_as_str((enum mali_format)((format >> 12) & 0xFF)), \\
+        (format & (1 << 20)) ? " sRGB" : "", \\
+        mali_rgb_component_order_as_str((enum mali_rgb_component_order)(format & ((1 << 12) - 1))), \\
+        (format & (1 << 21)) ? " XXX BAD BIT" : "");
+
 
 /* From presentations, 16x16 tiles externally. Use shift for fast computation
  * of tile numbers. */
@@ -254,6 +288,7 @@ class Aggregate(object):
         self.name = name
         self.explicit_size = int(attrs["size"]) if "size" in attrs else 0
         self.size = 0
+        self.align = int(attrs["align"]) if "align" in attrs else None
 
     class Section:
         def __init__(self, name):
@@ -332,7 +367,7 @@ class Field(object):
             type = 'uint64_t'
         elif self.type == 'int':
             type = 'int32_t'
-        elif self.type in ['uint', 'padded']:
+        elif self.type in ['uint', 'uint/float', 'padded', 'Pixel Format']:
             type = 'uint32_t'
         elif self.type in self.parser.structs:
             type = 'struct ' + self.parser.gen_prefix(safe_name(self.type.upper()))
@@ -352,11 +387,12 @@ class Field(object):
         return self != field and max(self.start, field.start) <= min(self.end, field.end)
 
 class Group(object):
-    def __init__(self, parser, parent, start, count):
+    def __init__(self, parser, parent, start, count, label):
         self.parser = parser
         self.parent = parent
         self.start = start
         self.count = count
+        self.label = label
         self.size = 0
         self.length = 0
         self.fields = []
@@ -487,7 +523,7 @@ class Group(object):
                     elif field.modifier[0] == "log2":
                         value = "util_logbase2({})".format(value)
 
-                if field.type == "uint" or field.type == "address":
+                if field.type in ["uint", "uint/float", "address", "Pixel Format"]:
                     s = "__gen_uint(%s, %d, %d)" % \
                         (value, start, end)
                 elif field.type == "padded":
@@ -547,8 +583,8 @@ class Group(object):
             ALL_ONES = 0xffffffff
 
             if mask != ALL_ONES:
-                TMPL = '   if (((const uint32_t *) cl)[{}] & {}) fprintf(stderr, "XXX: Invalid field unpacked at word {}\\n");'
-                print(TMPL.format(index, hex(mask ^ ALL_ONES), index))
+                TMPL = '   if (((const uint32_t *) cl)[{}] & {}) fprintf(stderr, "XXX: Invalid field of {} unpacked at word {}\\n");'
+                print(TMPL.format(index, hex(mask ^ ALL_ONES), self.label, index))
 
         fieldrefs = []
         self.collect_fields(self.fields, 0, '', fieldrefs)
@@ -561,8 +597,10 @@ class Group(object):
             args.append(str(fieldref.start))
             args.append(str(fieldref.end))
 
-            if field.type in set(["uint", "address"]) | self.parser.enums:
+            if field.type in set(["uint", "uint/float", "address", "Pixel Format"]):
                 convert = "__gen_unpack_uint"
+            elif field.type in self.parser.enums:
+                convert = "(enum %s)__gen_unpack_uint" % enum_name(field.type)
             elif field.type == "int":
                 convert = "__gen_unpack_sint"
             elif field.type == "padded":
@@ -582,7 +620,7 @@ class Group(object):
                 elif field.modifier[0] == "shr":
                     suffix = " << {}".format(field.modifier[1])
                 if field.modifier[0] == "log2":
-                    prefix = "1 << "
+                    prefix = "1U << "
 
             decoded = '{}{}({}){}'.format(prefix, convert, ', '.join(args), suffix)
 
@@ -613,6 +651,11 @@ class Group(object):
                 print('   fprintf(fp, "%*s{}: %f\\n", indent, "", {});'.format(name, val))
             elif field.type == "uint" and (field.end - field.start) >= 32:
                 print('   fprintf(fp, "%*s{}: 0x%" PRIx64 "\\n", indent, "", {});'.format(name, val))
+            elif field.type == "uint/float":
+                print('   fprintf(fp, "%*s{}: 0x%X (%f)\\n", indent, "", {}, uif({}));'.format(name, val, val))
+            elif field.type == "Pixel Format":
+                print('   mali_pixel_format_print_v6(fp, {});'.format(val))
+                print('   mali_pixel_format_print_v7(fp, {});'.format(val))
             else:
                 print('   fprintf(fp, "%*s{}: %u\\n", indent, "", {});'.format(name, val))
 
@@ -646,9 +689,10 @@ class Parser(object):
             object_name = self.gen_prefix(safe_name(name.upper()))
             self.struct = object_name
 
-            self.group = Group(self, None, 0, 1)
+            self.group = Group(self, None, 0, 1, name)
             if "size" in attrs:
                 self.group.length = int(attrs["size"]) * 4
+            self.group.align = int(attrs["align"]) if "align" in attrs else None
             self.structs[attrs["name"]] = self.group
         elif name == "field":
             self.group.fields.append(Field(self, attrs))
@@ -717,6 +761,8 @@ class Parser(object):
         print("   uint32_t opaque[{}];".format(aggregate.get_size() // 4))
         print("};\n")
         print('#define {}_LENGTH {}'.format(aggregate.name.upper(), aggregate.size))
+        if aggregate.align != None:
+            print('#define {}_ALIGN {}'.format(aggregate.name.upper(), aggregate.align))
         for section in aggregate.sections:
             print('#define {}_SECTION_{}_TYPE struct {}'.format(aggregate.name.upper(), section.name.upper(), section.type_name))
             print('#define {}_SECTION_{}_header {}_header'.format(aggregate.name.upper(), section.name.upper(), section.type_name))
@@ -738,6 +784,8 @@ class Parser(object):
         assert((self.group.length % 4) == 0)
 
         print('#define {} {}'.format (name + "_LENGTH", self.group.length))
+        if self.group.align != None:
+            print('#define {} {}'.format (name + "_ALIGN", self.group.align))
         print('struct {}_packed {{ uint32_t opaque[{}]; }};'.format(name.lower(), self.group.length // 4))
 
     def emit_unpack_function(self, name, group):

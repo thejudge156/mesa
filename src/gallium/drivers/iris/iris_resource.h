@@ -26,6 +26,7 @@
 #include "pipe/p_state.h"
 #include "util/u_inlines.h"
 #include "util/u_range.h"
+#include "util/u_threaded_context.h"
 #include "intel/isl/isl.h"
 #include "iris_bufmgr.h"
 
@@ -40,9 +41,11 @@ struct iris_format_info {
    struct isl_swizzle swizzle;
 };
 
-#define IRIS_RESOURCE_FLAG_SHADER_MEMZONE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
-#define IRIS_RESOURCE_FLAG_SURFACE_MEMZONE (PIPE_RESOURCE_FLAG_DRV_PRIV << 1)
-#define IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE (PIPE_RESOURCE_FLAG_DRV_PRIV << 2)
+#define IRIS_RESOURCE_FLAG_SHADER_MEMZONE   (PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
+#define IRIS_RESOURCE_FLAG_SURFACE_MEMZONE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 1)
+#define IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 2)
+#define IRIS_RESOURCE_FLAG_BINDLESS_MEMZONE (PIPE_RESOURCE_FLAG_DRV_PRIV << 3)
+#define IRIS_RESOURCE_FLAG_DEVICE_MEM       (PIPE_RESOURCE_FLAG_DRV_PRIV << 4)
 
 /**
  * Resources represent a GPU buffer object or image (mipmap tree).
@@ -50,7 +53,7 @@ struct iris_format_info {
  * They contain the storage (BO) and layout information (ISL surface).
  */
 struct iris_resource {
-   struct pipe_resource base;
+   struct threaded_resource base;
    enum pipe_format internal_format;
 
    /**
@@ -111,8 +114,16 @@ struct iris_resource {
       } extra_aux;
 
       /**
+       * When importing resources with a clear color, we may not know the
+       * clear color on the CPU at first.
+       */
+      bool clear_color_unknown;
+
+      /**
        * Fast clear color for this surface.  For depth surfaces, the clear
        * value is stored as a float32 in the red component.
+       *
+       * Do not rely on this value if clear_color_unknown is set.
        */
       union isl_color_value clear_color;
 
@@ -152,11 +163,6 @@ struct iris_resource {
        * aux state for each slice.
        */
       enum isl_aux_state **state;
-
-      /**
-       * If (1 << level) is set, HiZ is enabled for that miplevel.
-       */
-      uint16_t has_hiz;
    } aux;
 
    /**
@@ -206,7 +212,7 @@ struct iris_surface_state {
    unsigned num_states;
 
    /**
-    * Address of the resource (res->bo->gtt_offset).  Note that "Surface
+    * Address of the resource (res->bo->address).  Note that "Surface
     * Base Address" may be offset from this value.
     */
    uint64_t bo_address;
@@ -271,7 +277,7 @@ struct iris_surface {
  * Transfer object - information about a buffer mapping.
  */
 struct iris_transfer {
-   struct pipe_transfer base;
+   struct threaded_transfer base;
    struct pipe_debug_callback *dbg;
    void *buffer;
    void *ptr;
@@ -284,6 +290,16 @@ struct iris_transfer {
    bool dest_had_defined_contents;
 
    void (*unmap)(struct iris_transfer *);
+};
+
+/**
+ * Memory Object
+ */
+struct iris_memory_object {
+   struct pipe_memory_object b;
+   struct iris_bo *bo;
+   uint64_t format;
+   unsigned stride;
 };
 
 /**
@@ -301,10 +317,10 @@ iris_mocs(const struct iris_bo *bo,
           const struct isl_device *dev,
           isl_surf_usage_flags_t usage)
 {
-   return bo && bo->external ? dev->mocs.external : isl_mocs(dev, usage);
+   return isl_mocs(dev, usage, bo && iris_bo_is_external(bo));
 }
 
-struct iris_format_info iris_format_for_usage(const struct gen_device_info *,
+struct iris_format_info iris_format_for_usage(const struct intel_device_info *,
                                               enum pipe_format pf,
                                               isl_surf_usage_flags_t usage);
 
@@ -320,6 +336,14 @@ union isl_color_value
 iris_resource_get_clear_color(const struct iris_resource *res,
                               struct iris_bo **clear_color_bo,
                               uint64_t *clear_color_offset);
+
+void iris_replace_buffer_storage(struct pipe_context *ctx,
+                                 struct pipe_resource *dst,
+                                 struct pipe_resource *src,
+                                 unsigned num_rebinds,
+                                 uint32_t rebind_mask,
+                                 uint32_t delete_buffer_id);
+
 
 void iris_init_screen_resource_functions(struct pipe_screen *pscreen);
 
@@ -453,13 +477,6 @@ iris_resource_access_raw(struct iris_context *ice,
    }
 }
 
-enum isl_dim_layout iris_get_isl_dim_layout(const struct gen_device_info *devinfo,
-                                            enum isl_tiling tiling,
-                                            enum pipe_texture_target target);
-enum isl_surf_dim target_to_isl_surf_dim(enum pipe_texture_target target);
-uint32_t iris_resource_get_tile_offsets(const struct iris_resource *res,
-                                        uint32_t level, uint32_t z,
-                                        uint32_t *tile_x, uint32_t *tile_y);
 enum isl_aux_usage iris_resource_texture_aux_usage(struct iris_context *ice,
                                                    const struct iris_resource *res,
                                                    enum isl_format view_fmt);
@@ -495,8 +512,11 @@ void iris_resource_check_level_layer(const struct iris_resource *res,
 bool iris_resource_level_has_hiz(const struct iris_resource *res,
                                  uint32_t level);
 
-bool iris_sample_with_depth_aux(const struct gen_device_info *devinfo,
+bool iris_sample_with_depth_aux(const struct intel_device_info *devinfo,
                                 const struct iris_resource *res);
+
+bool iris_can_sample_mcs_with_clear(const struct intel_device_info *devinfo,
+                                    const struct iris_resource *res);
 
 bool iris_has_color_unresolved(const struct iris_resource *res,
                                unsigned start_level, unsigned num_levels,
@@ -504,13 +524,14 @@ bool iris_has_color_unresolved(const struct iris_resource *res,
 
 bool iris_render_formats_color_compatible(enum isl_format a,
                                           enum isl_format b,
-                                          union isl_color_value color);
+                                          union isl_color_value color,
+                                          bool clear_color_unknown);
 enum isl_aux_usage iris_resource_render_aux_usage(struct iris_context *ice,
                                                   struct iris_resource *res,
+                                                  uint32_t level,
                                                   enum isl_format render_fmt,
                                                   bool draw_aux_disabled);
 void iris_resource_prepare_render(struct iris_context *ice,
-                                  struct iris_batch *batch,
                                   struct iris_resource *res, uint32_t level,
                                   uint32_t start_layer, uint32_t layer_count,
                                   enum isl_aux_usage aux_usage);
@@ -518,12 +539,4 @@ void iris_resource_finish_render(struct iris_context *ice,
                                  struct iris_resource *res, uint32_t level,
                                  uint32_t start_layer, uint32_t layer_count,
                                  enum isl_aux_usage aux_usage);
-void iris_resource_prepare_depth(struct iris_context *ice,
-                                 struct iris_batch *batch,
-                                 struct iris_resource *res, uint32_t level,
-                                 uint32_t start_layer, uint32_t layer_count);
-void iris_resource_finish_depth(struct iris_context *ice,
-                                struct iris_resource *res, uint32_t level,
-                                uint32_t start_layer, uint32_t layer_count,
-                                bool depth_written);
 #endif

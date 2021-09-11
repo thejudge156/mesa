@@ -113,27 +113,40 @@ main(int argc, char **argv)
       return 1;
    }
 
+   if (file_size % WORD_SIZE != 0) {
+      fprintf(stderr, "%s size == %zu is not a multiple of %d\n", filename,
+              file_size, WORD_SIZE);
+      return 1;
+   }
+
    size_t word_count = file_size / WORD_SIZE;
 
-   void *data;
-   size_t size;
-   if (spirv_to_dxil((void *)file_contents, word_count, NULL, 0,
+   struct dxil_spirv_runtime_conf conf;
+   memset(&conf, 0, sizeof(conf));
+   conf.runtime_data_cbv.base_shader_register = 0;
+   conf.runtime_data_cbv.register_space = 31;
+   conf.zero_based_vertex_instance_id = true;
+
+   struct dxil_spirv_object obj;
+   memset(&obj, 0, sizeof(obj));
+   if (spirv_to_dxil((uint32_t *)file_contents, word_count, NULL, 0,
                      (dxil_spirv_shader_stage)shader_stage, entry_point,
-                     &data, &size)) {
-      FILE *file = fopen(output_file, "w");
+                     &conf, &obj)) {
+      FILE *file = fopen(output_file, "wb");
       if (!file) {
          fprintf(stderr, "Failed to open %s, %s\n", output_file,
                  strerror(errno));
-         spirv_to_dxil_free(data);
+         spirv_to_dxil_free(&obj);
          free(file_contents);
          return 1;
       }
 
-      fwrite(data, 1, size, file);
+      fwrite(obj.binary.buffer, sizeof(char), obj.binary.size, file);
       fclose(file);
-      spirv_to_dxil_free(data);
+      spirv_to_dxil_free(&obj);
    } else {
       fprintf(stderr, "Compilation failed\n");
+      return 1;
    }
 
    free(file_contents);

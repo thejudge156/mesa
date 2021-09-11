@@ -996,15 +996,16 @@ _mesa_GetUniformui64vARB(GLuint program, GLint location, GLuint64 *params)
 }
 
 
-GLint GLAPIENTRY
-_mesa_GetUniformLocation(GLuint programObj, const GLcharARB *name)
+GLint
+_mesa_GetUniformLocation_impl(GLuint programObj, const GLcharARB *name,
+                              bool glthread)
 {
    struct gl_shader_program *shProg;
 
    GET_CURRENT_CONTEXT(ctx);
 
-   shProg = _mesa_lookup_shader_program_err(ctx, programObj,
-					    "glGetUniformLocation");
+   shProg = _mesa_lookup_shader_program_err_glthread(ctx, programObj, glthread,
+                                                     "glGetUniformLocation");
    if (!shProg || !name)
       return -1;
 
@@ -1014,12 +1015,18 @@ _mesa_GetUniformLocation(GLuint programObj, const GLcharARB *name)
     *     INVALID_OPERATION is generated."
     */
    if (shProg->data->LinkStatus == LINKING_FAILURE) {
-      _mesa_error(ctx, GL_INVALID_OPERATION,
-		  "glGetUniformLocation(program not linked)");
+      _mesa_error_glthread_safe(ctx, GL_INVALID_OPERATION, glthread,
+                                "glGetUniformLocation(program not linked)");
       return -1;
    }
 
    return _mesa_program_resource_location(shProg, GL_UNIFORM, name);
+}
+
+GLint GLAPIENTRY
+_mesa_GetUniformLocation(GLuint programObj, const GLcharARB *name)
+{
+   return _mesa_GetUniformLocation_impl(programObj, name, false);
 }
 
 GLint GLAPIENTRY
@@ -1100,7 +1107,7 @@ uniform_block_binding(struct gl_context *ctx, struct gl_shader_program *shProg,
    if (shProg->data->UniformBlocks[uniformBlockIndex].Binding !=
        uniformBlockBinding) {
 
-      FLUSH_VERTICES(ctx, 0);
+      FLUSH_VERTICES(ctx, 0, 0);
       ctx->NewDriverState |= ctx->DriverFlags.NewUniformBuffer;
 
       shProg->data->UniformBlocks[uniformBlockIndex].Binding =
@@ -1162,7 +1169,7 @@ shader_storage_block_binding(struct gl_context *ctx,
    if (shProg->data->ShaderStorageBlocks[shaderStorageBlockIndex].Binding !=
        shaderStorageBlockBinding) {
 
-      FLUSH_VERTICES(ctx, 0);
+      FLUSH_VERTICES(ctx, 0, 0);
       ctx->NewDriverState |= ctx->DriverFlags.NewShaderStorageBuffer;
 
       shProg->data->ShaderStorageBlocks[shaderStorageBlockIndex].Binding =

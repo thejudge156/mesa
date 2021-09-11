@@ -107,7 +107,7 @@ static void si_dump_shader(struct si_screen *sscreen, struct si_shader *shader, 
       unsigned size = shader->bo->b.b.width0;
       fprintf(f, "BO: VA=%" PRIx64 " Size=%u\n", shader->bo->gpu_address, size);
 
-      const char *mapped = sscreen->ws->buffer_map(
+      const char *mapped = sscreen->ws->buffer_map(sscreen->ws,
          shader->bo->buf, NULL,
          PIPE_MAP_UNSYNCHRONIZED | PIPE_MAP_READ | RADEON_MAP_TEMPORARY);
 
@@ -115,7 +115,7 @@ static void si_dump_shader(struct si_screen *sscreen, struct si_shader *shader, 
          fprintf(f, " %4x: %08x\n", i, *(uint32_t *)(mapped + i));
       }
 
-      sscreen->ws->buffer_unmap(shader->bo->buf);
+      sscreen->ws->buffer_unmap(sscreen->ws, shader->bo->buf);
 
       fprintf(f, "\n");
    }
@@ -344,7 +344,6 @@ struct si_log_chunk_cs {
    struct si_saved_cs *cs;
    bool dump_bo_list;
    unsigned gfx_begin, gfx_end;
-   unsigned compute_begin, compute_end;
 };
 
 static void si_log_chunk_type_cs_destroy(void *data)
@@ -390,24 +389,27 @@ static void si_parse_current_ib(FILE *f, struct radeon_cmdbuf *cs, unsigned begi
    fprintf(f, "------------------- %s end (dw = %u) -------------------\n\n", name, orig_end);
 }
 
+void si_print_current_ib(struct si_context *sctx, FILE *f)
+{
+   si_parse_current_ib(f, &sctx->gfx_cs, 0, sctx->gfx_cs.prev_dw + sctx->gfx_cs.current.cdw,
+                       NULL, 0, "GFX", sctx->chip_class);
+}
+
 static void si_log_chunk_type_cs_print(void *data, FILE *f)
 {
    struct si_log_chunk_cs *chunk = data;
    struct si_context *ctx = chunk->ctx;
    struct si_saved_cs *scs = chunk->cs;
    int last_trace_id = -1;
-   int last_compute_trace_id = -1;
 
    /* We are expecting that the ddebug pipe has already
     * waited for the context, so this buffer should be idle.
     * If the GPU is hung, there is no point in waiting for it.
     */
-   uint32_t *map = ctx->ws->buffer_map(scs->trace_buf->buf, NULL,
+   uint32_t *map = ctx->ws->buffer_map(ctx->ws, scs->trace_buf->buf, NULL,
                                        PIPE_MAP_UNSYNCHRONIZED | PIPE_MAP_READ);
-   if (map) {
+   if (map)
       last_trace_id = map[0];
-      last_compute_trace_id = map[1];
-   }
 
    if (chunk->gfx_end != chunk->gfx_begin) {
       if (chunk->gfx_begin == 0) {
@@ -426,20 +428,6 @@ static void si_log_chunk_type_cs_print(void *data, FILE *f)
       } else {
          si_parse_current_ib(f, &ctx->gfx_cs, chunk->gfx_begin, chunk->gfx_end, &last_trace_id,
                              map ? 1 : 0, "IB", ctx->chip_class);
-      }
-   }
-
-   if (chunk->compute_end != chunk->compute_begin) {
-      assert(ctx->prim_discard_compute_cs.priv);
-
-      if (scs->flushed) {
-         ac_parse_ib(f, scs->compute.ib + chunk->compute_begin,
-                     chunk->compute_end - chunk->compute_begin, &last_compute_trace_id, map ? 1 : 0,
-                     "Compute IB", ctx->chip_class, NULL, NULL);
-      } else {
-         si_parse_current_ib(f, &ctx->prim_discard_compute_cs, chunk->compute_begin,
-                             chunk->compute_end, &last_compute_trace_id, map ? 1 : 0, "Compute IB",
-                             ctx->chip_class);
       }
    }
 
@@ -462,13 +450,8 @@ static void si_log_cs(struct si_context *ctx, struct u_log_context *log, bool du
 
    struct si_saved_cs *scs = ctx->current_saved_cs;
    unsigned gfx_cur = ctx->gfx_cs.prev_dw + ctx->gfx_cs.current.cdw;
-   unsigned compute_cur = 0;
 
-   if (ctx->prim_discard_compute_cs.priv)
-      compute_cur =
-         ctx->prim_discard_compute_cs.prev_dw + ctx->prim_discard_compute_cs.current.cdw;
-
-   if (!dump_bo_list && gfx_cur == scs->gfx_last_dw && compute_cur == scs->compute_last_dw)
+   if (!dump_bo_list && gfx_cur == scs->gfx_last_dw)
       return;
 
    struct si_log_chunk_cs *chunk = calloc(1, sizeof(*chunk));
@@ -480,10 +463,6 @@ static void si_log_cs(struct si_context *ctx, struct u_log_context *log, bool du
    chunk->gfx_begin = scs->gfx_last_dw;
    chunk->gfx_end = gfx_cur;
    scs->gfx_last_dw = gfx_cur;
-
-   chunk->compute_begin = scs->compute_last_dw;
-   chunk->compute_end = compute_cur;
-   scs->compute_last_dw = compute_cur;
 
    u_log_chunk(log, &si_log_chunk_type_cs, chunk);
 }
@@ -791,7 +770,7 @@ static void si_dump_descriptors(struct si_context *sctx, gl_shader_stage stage,
    if (info) {
       enabled_constbuf = u_bit_consecutive(0, info->base.num_ubos);
       enabled_shaderbuf = u_bit_consecutive(0, info->base.num_ssbos);
-      enabled_samplers = info->base.textures_used;
+      enabled_samplers = info->base.textures_used[0];
       enabled_images = u_bit_consecutive(0, info->base.num_images);
    } else {
       enabled_constbuf =
@@ -807,7 +786,7 @@ static void si_dump_descriptors(struct si_context *sctx, gl_shader_stage stage,
    }
 
    if (stage == MESA_SHADER_VERTEX && sctx->vb_descriptors_buffer &&
-       sctx->vb_descriptors_gpu_list && sctx->vertex_elements) {
+       sctx->vb_descriptors_gpu_list) {
       assert(info); /* only CS may not have an info struct */
       struct si_descriptors desc = {};
 
@@ -1012,11 +991,11 @@ static void si_dump_annotated_shaders(struct si_context *sctx, FILE *f)
 
    fprintf(f, COLOR_CYAN "The number of active waves = %u" COLOR_RESET "\n\n", num_waves);
 
-   si_print_annotated_shader(sctx->vs_shader.current, waves, num_waves, f);
-   si_print_annotated_shader(sctx->tcs_shader.current, waves, num_waves, f);
-   si_print_annotated_shader(sctx->tes_shader.current, waves, num_waves, f);
-   si_print_annotated_shader(sctx->gs_shader.current, waves, num_waves, f);
-   si_print_annotated_shader(sctx->ps_shader.current, waves, num_waves, f);
+   si_print_annotated_shader(sctx->shader.vs.current, waves, num_waves, f);
+   si_print_annotated_shader(sctx->shader.tcs.current, waves, num_waves, f);
+   si_print_annotated_shader(sctx->shader.tes.current, waves, num_waves, f);
+   si_print_annotated_shader(sctx->shader.gs.current, waves, num_waves, f);
+   si_print_annotated_shader(sctx->shader.ps.current, waves, num_waves, f);
 
    /* Print waves executing shaders that are not currently bound. */
    unsigned i;
@@ -1077,26 +1056,26 @@ void si_log_draw_state(struct si_context *sctx, struct u_log_context *log)
    if (!log)
       return;
 
-   tcs_shader = &sctx->tcs_shader;
-   if (sctx->tes_shader.cso && !sctx->tcs_shader.cso)
+   tcs_shader = &sctx->shader.tcs;
+   if (sctx->shader.tes.cso && !sctx->shader.tcs.cso)
       tcs_shader = &sctx->fixed_func_tcs_shader;
 
    si_dump_framebuffer(sctx, log);
 
-   si_dump_gfx_shader(sctx, &sctx->vs_shader, log);
+   si_dump_gfx_shader(sctx, &sctx->shader.vs, log);
    si_dump_gfx_shader(sctx, tcs_shader, log);
-   si_dump_gfx_shader(sctx, &sctx->tes_shader, log);
-   si_dump_gfx_shader(sctx, &sctx->gs_shader, log);
-   si_dump_gfx_shader(sctx, &sctx->ps_shader, log);
+   si_dump_gfx_shader(sctx, &sctx->shader.tes, log);
+   si_dump_gfx_shader(sctx, &sctx->shader.gs, log);
+   si_dump_gfx_shader(sctx, &sctx->shader.ps, log);
 
-   si_dump_descriptor_list(sctx->screen, &sctx->descriptors[SI_DESCS_RW_BUFFERS], "", "RW buffers",
-                           4, sctx->descriptors[SI_DESCS_RW_BUFFERS].num_active_slots, si_identity,
+   si_dump_descriptor_list(sctx->screen, &sctx->descriptors[SI_DESCS_INTERNAL], "", "RW buffers",
+                           4, sctx->descriptors[SI_DESCS_INTERNAL].num_active_slots, si_identity,
                            log);
-   si_dump_gfx_descriptors(sctx, &sctx->vs_shader, log);
+   si_dump_gfx_descriptors(sctx, &sctx->shader.vs, log);
    si_dump_gfx_descriptors(sctx, tcs_shader, log);
-   si_dump_gfx_descriptors(sctx, &sctx->tes_shader, log);
-   si_dump_gfx_descriptors(sctx, &sctx->gs_shader, log);
-   si_dump_gfx_descriptors(sctx, &sctx->ps_shader, log);
+   si_dump_gfx_descriptors(sctx, &sctx->shader.tes, log);
+   si_dump_gfx_descriptors(sctx, &sctx->shader.gs, log);
+   si_dump_gfx_descriptors(sctx, &sctx->shader.ps, log);
 }
 
 void si_log_compute_state(struct si_context *sctx, struct u_log_context *log)

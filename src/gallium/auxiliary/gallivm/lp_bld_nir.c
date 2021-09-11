@@ -35,6 +35,7 @@
 #include "lp_bld_debug.h"
 #include "lp_bld_printf.h"
 #include "nir_deref.h"
+#include "nir_search_helpers.h"
 
 static void visit_cf_list(struct lp_build_nir_context *bld_base,
                           struct exec_list *list);
@@ -78,6 +79,7 @@ static LLVMValueRef cast_type(struct lp_build_nir_context *bld_base, LLVMValueRe
          return LLVMBuildBitCast(builder, val, bld_base->uint8_bld.vec_type, "");
       case 16:
          return LLVMBuildBitCast(builder, val, bld_base->uint16_bld.vec_type, "");
+      case 1:
       case 32:
          return LLVMBuildBitCast(builder, val, bld_base->uint_bld.vec_type, "");
       case 64:
@@ -96,15 +98,6 @@ static LLVMValueRef cast_type(struct lp_build_nir_context *bld_base, LLVMValueRe
 }
 
 
-static struct lp_build_context *get_flt_bld(struct lp_build_nir_context *bld_base,
-                                            unsigned op_bit_size)
-{
-   if (op_bit_size == 64)
-      return &bld_base->dbl_bld;
-   else
-      return &bld_base->base;
-}
-
 static unsigned glsl_sampler_to_pipe(int sampler_dim, bool is_array)
 {
    unsigned pipe_target = PIPE_BUFFER;
@@ -113,14 +106,16 @@ static unsigned glsl_sampler_to_pipe(int sampler_dim, bool is_array)
       pipe_target = is_array ? PIPE_TEXTURE_1D_ARRAY : PIPE_TEXTURE_1D;
       break;
    case GLSL_SAMPLER_DIM_2D:
-   case GLSL_SAMPLER_DIM_SUBPASS:
       pipe_target = is_array ? PIPE_TEXTURE_2D_ARRAY : PIPE_TEXTURE_2D;
+      break;
+   case GLSL_SAMPLER_DIM_SUBPASS:
+   case GLSL_SAMPLER_DIM_SUBPASS_MS:
+      pipe_target = PIPE_TEXTURE_2D_ARRAY;
       break;
    case GLSL_SAMPLER_DIM_3D:
       pipe_target = PIPE_TEXTURE_3D;
       break;
    case GLSL_SAMPLER_DIM_MS:
-   case GLSL_SAMPLER_DIM_SUBPASS_MS:
       pipe_target = is_array ? PIPE_TEXTURE_2D_ARRAY : PIPE_TEXTURE_2D;
       break;
    case GLSL_SAMPLER_DIM_CUBE:
@@ -453,6 +448,43 @@ merge_16bit(struct lp_build_nir_context *bld_base,
    return LLVMBuildShuffleVector(builder, input, input2, LLVMConstVector(shuffles, len), "");
 }
 
+static LLVMValueRef get_signed_divisor(struct gallivm_state *gallivm,
+                                       struct lp_build_context *int_bld,
+                                       struct lp_build_context *mask_bld,
+                                       int src_bit_size,
+                                       LLVMValueRef src, LLVMValueRef divisor)
+{
+   LLVMBuilderRef builder = gallivm->builder;
+   /* However for signed divides SIGFPE can occur if the numerator is INT_MIN
+      and divisor is -1. */
+   /* set mask if numerator == INT_MIN */
+   long long min_val;
+   switch (src_bit_size) {
+   case 8:
+      min_val = INT8_MIN;
+      break;
+   case 16:
+      min_val = INT16_MIN;
+      break;
+   default:
+   case 32:
+      min_val = INT_MIN;
+      break;
+   case 64:
+      min_val = INT64_MIN;
+      break;
+   }
+   LLVMValueRef div_mask2 = lp_build_cmp(mask_bld, PIPE_FUNC_EQUAL, src,
+                                         lp_build_const_int_vec(gallivm, int_bld->type, min_val));
+   /* set another mask if divisor is - 1 */
+   LLVMValueRef div_mask3 = lp_build_cmp(mask_bld, PIPE_FUNC_EQUAL, divisor,
+                                         lp_build_const_int_vec(gallivm, int_bld->type, -1));
+   div_mask2 = LLVMBuildAnd(builder, div_mask2, div_mask3, "");
+
+   divisor = lp_build_select(mask_bld, div_mask2, int_bld->one, divisor);
+   return divisor;
+}
+
 static LLVMValueRef
 do_int_divide(struct lp_build_nir_context *bld_base,
               bool is_unsigned, unsigned src_bit_size,
@@ -462,16 +494,16 @@ do_int_divide(struct lp_build_nir_context *bld_base,
    LLVMBuilderRef builder = gallivm->builder;
    struct lp_build_context *int_bld = get_int_bld(bld_base, is_unsigned, src_bit_size);
    struct lp_build_context *mask_bld = get_int_bld(bld_base, true, src_bit_size);
+
+   /* avoid divide by 0. Converted divisor from 0 to -1 */
    LLVMValueRef div_mask = lp_build_cmp(mask_bld, PIPE_FUNC_EQUAL, src2,
                                         mask_bld->zero);
 
+   LLVMValueRef divisor = LLVMBuildOr(builder, div_mask, src2, "");
    if (!is_unsigned) {
-      /* INT_MIN (0x80000000) / -1 (0xffffffff) causes sigfpe, seen with blender. */
-      div_mask = LLVMBuildAnd(builder, div_mask, lp_build_const_int_vec(gallivm, int_bld->type, 0x7fffffff), "");
+      divisor = get_signed_divisor(gallivm, int_bld, mask_bld,
+                                   src_bit_size, src, divisor);
    }
-   LLVMValueRef divisor = LLVMBuildOr(builder,
-                                      div_mask,
-                                      src2, "");
    LLVMValueRef result = lp_build_div(int_bld, src, divisor);
 
    if (!is_unsigned) {
@@ -491,11 +523,16 @@ do_int_mod(struct lp_build_nir_context *bld_base,
    struct gallivm_state *gallivm = bld_base->base.gallivm;
    LLVMBuilderRef builder = gallivm->builder;
    struct lp_build_context *int_bld = get_int_bld(bld_base, is_unsigned, src_bit_size);
-   LLVMValueRef div_mask = lp_build_cmp(int_bld, PIPE_FUNC_EQUAL, src2,
-                                        int_bld->zero);
+   struct lp_build_context *mask_bld = get_int_bld(bld_base, true, src_bit_size);
+   LLVMValueRef div_mask = lp_build_cmp(mask_bld, PIPE_FUNC_EQUAL, src2,
+                                        mask_bld->zero);
    LLVMValueRef divisor = LLVMBuildOr(builder,
                                       div_mask,
                                       src2, "");
+   if (!is_unsigned) {
+      divisor = get_signed_divisor(gallivm, int_bld, mask_bld,
+                                   src_bit_size, src, divisor);
+   }
    LLVMValueRef result = lp_build_mod(int_bld, src, divisor);
    return LLVMBuildOr(builder, div_mask, result, "");
 }
@@ -522,13 +559,15 @@ do_quantize_to_f16(struct lp_build_nir_context *bld_base,
 }
 
 static LLVMValueRef do_alu_action(struct lp_build_nir_context *bld_base,
-                                  nir_op op, unsigned src_bit_size[NIR_MAX_VEC_COMPONENTS], LLVMValueRef src[NIR_MAX_VEC_COMPONENTS])
+                                  const nir_alu_instr *instr,
+                                  unsigned src_bit_size[NIR_MAX_VEC_COMPONENTS],
+                                  LLVMValueRef src[NIR_MAX_VEC_COMPONENTS])
 {
    struct gallivm_state *gallivm = bld_base->base.gallivm;
    LLVMBuilderRef builder = gallivm->builder;
    LLVMValueRef result;
-   enum gallivm_nan_behavior minmax_nan = bld_base->shader->info.stage == MESA_SHADER_KERNEL ? GALLIVM_NAN_RETURN_OTHER : GALLIVM_NAN_BEHAVIOR_UNDEFINED;
-   switch (op) {
+
+   switch (instr->op) {
    case nir_op_b2f32:
       result = emit_b2f(bld_base, src[0], 32);
       break;
@@ -552,6 +591,10 @@ static LLVMValueRef do_alu_action(struct lp_build_nir_context *bld_base,
       break;
    case nir_op_bit_count:
       result = lp_build_popcount(get_int_bld(bld_base, false, src_bit_size[0]), src[0]);
+      if (src_bit_size[0] < 32)
+         result = LLVMBuildZExt(builder, result, bld_base->int_bld.vec_type, "");
+      else if (src_bit_size[0] > 32)
+         result = LLVMBuildTrunc(builder, result, bld_base->int_bld.vec_type, "");
       break;
    case nir_op_bitfield_select:
       result = lp_build_xor(&bld_base->uint_bld, src[2], lp_build_and(&bld_base->uint_bld, src[0], lp_build_xor(&bld_base->uint_bld, src[1], src[2])));
@@ -676,6 +719,9 @@ static LLVMValueRef do_alu_action(struct lp_build_nir_context *bld_base,
          result = LLVMBuildTrunc(builder, result, bld_base->uint_bld.vec_type, "");
       break;
    }
+   case nir_op_fisfinite32:
+      result = lp_build_isfinite(get_flt_bld(bld_base, src_bit_size[0]), src[0]);
+      break;
    case nir_op_flog2:
       result = lp_build_log2_safe(&bld_base->base, src[0]);
       break;
@@ -683,9 +729,36 @@ static LLVMValueRef do_alu_action(struct lp_build_nir_context *bld_base,
    case nir_op_flt32:
       result = fcmp32(bld_base, PIPE_FUNC_LESS, src_bit_size[0], src);
       break;
-   case nir_op_fmin:
-      result = lp_build_min_ext(get_flt_bld(bld_base, src_bit_size[0]), src[0], src[1], minmax_nan);
+   case nir_op_fmax:
+   case nir_op_fmin: {
+      enum gallivm_nan_behavior minmax_nan;
+      int first = 0;
+
+      /* If one of the sources is known to be a number (i.e., not NaN), then
+       * better code can be generated by passing that information along.
+       */
+      if (is_a_number(bld_base->range_ht, instr, 1,
+                      0 /* unused num_components */,
+                      NULL /* unused swizzle */)) {
+         minmax_nan = GALLIVM_NAN_RETURN_OTHER_SECOND_NONNAN;
+      } else if (is_a_number(bld_base->range_ht, instr, 0,
+                             0 /* unused num_components */,
+                             NULL /* unused swizzle */)) {
+         first = 1;
+         minmax_nan = GALLIVM_NAN_RETURN_OTHER_SECOND_NONNAN;
+      } else {
+         minmax_nan = GALLIVM_NAN_RETURN_OTHER;
+      }
+
+      if (instr->op == nir_op_fmin) {
+         result = lp_build_min_ext(get_flt_bld(bld_base, src_bit_size[0]),
+                                   src[first], src[1 - first], minmax_nan);
+      } else {
+         result = lp_build_max_ext(get_flt_bld(bld_base, src_bit_size[0]),
+                                   src[first], src[1 - first], minmax_nan);
+      }
       break;
+   }
    case nir_op_fmod: {
       struct lp_build_context *flt_bld = get_flt_bld(bld_base, src_bit_size[0]);
       result = lp_build_div(flt_bld, src[0], src[1]);
@@ -697,9 +770,6 @@ static LLVMValueRef do_alu_action(struct lp_build_nir_context *bld_base,
    case nir_op_fmul:
       result = lp_build_mul(get_flt_bld(bld_base, src_bit_size[0]),
                             src[0], src[1]);
-      break;
-   case nir_op_fmax:
-      result = lp_build_max_ext(get_flt_bld(bld_base, src_bit_size[0]), src[0], src[1], minmax_nan);
       break;
    case nir_op_fneu32:
       result = fcmp32(bld_base, PIPE_FUNC_NOTEQUAL, src_bit_size[0], src);
@@ -877,7 +947,7 @@ static LLVMValueRef do_alu_action(struct lp_build_nir_context *bld_base,
       break;
    case nir_op_pack_64_2x32_split: {
       LLVMValueRef tmp = merge_64bit(bld_base, src[0], src[1]);
-      result = LLVMBuildBitCast(builder, tmp, bld_base->dbl_bld.vec_type, "");
+      result = LLVMBuildBitCast(builder, tmp, bld_base->uint64_bld.vec_type, "");
       break;
    }
    case nir_op_u2f32:
@@ -976,14 +1046,14 @@ static void visit_alu(struct lp_build_nir_context *bld_base, const nir_alu_instr
    case nir_op_unpack_half_2x16:
       src_components = 1;
       break;
-   case nir_op_cube_face_coord:
-   case nir_op_cube_face_index:
+   case nir_op_cube_face_coord_amd:
+   case nir_op_cube_face_index_amd:
       src_components = 3;
       break;
    case nir_op_fsum2:
    case nir_op_fsum3:
    case nir_op_fsum4:
-      src_components = nir_src_num_components(instr->src[0].src);
+      src_components = nir_op_infos[instr->op].input_sizes[0];
       break;
    default:
       src_components = num_components;
@@ -1000,7 +1070,7 @@ static void visit_alu(struct lp_build_nir_context *bld_base, const nir_alu_instr
          result[i] = cast_type(bld_base, src[i], nir_op_infos[instr->op].input_types[i], src_bit_size[i]);
       }
    } else if (instr->op == nir_op_fsum4 || instr->op == nir_op_fsum3 || instr->op == nir_op_fsum2) {
-      for (unsigned c = 0; c < nir_src_num_components(instr->src[0].src); c++) {
+      for (unsigned c = 0; c < nir_op_infos[instr->op].input_sizes[0]; c++) {
          LLVMValueRef temp_chan = LLVMBuildExtractValue(gallivm->builder,
                                                           src[0], c, "");
          temp_chan = cast_type(bld_base, temp_chan, nir_op_infos[instr->op].input_types[0], src_bit_size[0]);
@@ -1018,7 +1088,7 @@ static void visit_alu(struct lp_build_nir_context *bld_base, const nir_alu_instr
                src_chan[i] = src[i];
             src_chan[i] = cast_type(bld_base, src_chan[i], nir_op_infos[instr->op].input_types[i], src_bit_size[i]);
          }
-         result[c] = do_alu_action(bld_base, instr->op, src_bit_size, src_chan);
+         result[c] = do_alu_action(bld_base, instr, src_bit_size, src_chan);
          result[c] = cast_type(bld_base, result[c], nir_op_infos[instr->op].output_type, nir_dest_bit_size(instr->dest.dest));
       }
    }
@@ -1032,6 +1102,7 @@ static void visit_load_const(struct lp_build_nir_context *bld_base,
    struct lp_build_context *int_bld = get_int_bld(bld_base, true, instr->def.bit_size);
    for (unsigned i = 0; i < instr->def.num_components; i++)
       result[i] = lp_build_const_int_vec(bld_base->base.gallivm, int_bld->type, instr->def.bit_size == 32 ? instr->value[i].u32 : instr->value[i].u64);
+   memset(&result[instr->def.num_components], 0, NIR_MAX_VEC_COMPONENTS - instr->def.num_components);
    assign_ssa_dest(bld_base, &instr->def, result);
 }
 
@@ -1280,10 +1351,11 @@ static void visit_ssbo_atomic(struct lp_build_nir_context *bld_base,
    LLVMValueRef offset = get_src(bld_base, instr->src[1]);
    LLVMValueRef val = get_src(bld_base, instr->src[2]);
    LLVMValueRef val2 = NULL;
+   int bitsize = nir_src_bit_size(instr->src[2]);
    if (instr->intrinsic == nir_intrinsic_ssbo_atomic_comp_swap)
       val2 = get_src(bld_base, instr->src[3]);
 
-   bld_base->atomic_mem(bld_base, instr->intrinsic, idx, offset, val, val2, &result[0]);
+   bld_base->atomic_mem(bld_base, instr->intrinsic, bitsize, idx, offset, val, val2, &result[0]);
 
 }
 
@@ -1506,10 +1578,11 @@ static void visit_shared_atomic(struct lp_build_nir_context *bld_base,
    LLVMValueRef offset = get_src(bld_base, instr->src[0]);
    LLVMValueRef val = get_src(bld_base, instr->src[1]);
    LLVMValueRef val2 = NULL;
+   int bitsize = nir_src_bit_size(instr->src[1]);
    if (instr->intrinsic == nir_intrinsic_shared_atomic_comp_swap)
       val2 = get_src(bld_base, instr->src[2]);
 
-   bld_base->atomic_mem(bld_base, instr->intrinsic, NULL, offset, val, val2, &result[0]);
+   bld_base->atomic_mem(bld_base, instr->intrinsic, bitsize, NULL, offset, val, val2, &result[0]);
 
 }
 
@@ -1569,10 +1642,12 @@ static void visit_global_atomic(struct lp_build_nir_context *bld_base,
    LLVMValueRef val = get_src(bld_base, instr->src[1]);
    LLVMValueRef val2 = NULL;
    int addr_bitsize = nir_src_bit_size(instr->src[0]);
+   int val_bitsize = nir_src_bit_size(instr->src[1]);
    if (instr->intrinsic == nir_intrinsic_global_atomic_comp_swap)
       val2 = get_src(bld_base, instr->src[2]);
 
-   bld_base->atomic_global(bld_base, instr->intrinsic, addr_bitsize, addr, val, val2, &result[0]);
+   bld_base->atomic_global(bld_base, instr->intrinsic, addr_bitsize,
+                           val_bitsize, addr, val, val2, &result[0]);
 }
 
 static void visit_interp(struct lp_build_nir_context *bld_base,
@@ -1663,13 +1738,15 @@ static void visit_intrinsic(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_load_instance_id:
    case nir_intrinsic_load_base_instance:
    case nir_intrinsic_load_base_vertex:
-   case nir_intrinsic_load_work_group_id:
+   case nir_intrinsic_load_first_vertex:
+   case nir_intrinsic_load_workgroup_id:
    case nir_intrinsic_load_local_invocation_id:
-   case nir_intrinsic_load_num_work_groups:
+   case nir_intrinsic_load_local_invocation_index:
+   case nir_intrinsic_load_num_workgroups:
    case nir_intrinsic_load_invocation_id:
    case nir_intrinsic_load_front_face:
    case nir_intrinsic_load_draw_id:
-   case nir_intrinsic_load_local_group_size:
+   case nir_intrinsic_load_workgroup_size:
    case nir_intrinsic_load_work_dim:
    case nir_intrinsic_load_tess_coord:
    case nir_intrinsic_load_tess_level_outer:
@@ -1678,6 +1755,10 @@ static void visit_intrinsic(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_load_sample_id:
    case nir_intrinsic_load_sample_pos:
    case nir_intrinsic_load_sample_mask_in:
+   case nir_intrinsic_load_view_index:
+   case nir_intrinsic_load_subgroup_invocation:
+   case nir_intrinsic_load_subgroup_id:
+   case nir_intrinsic_load_num_subgroups:
       bld_base->sysval_intrin(bld_base, instr, result);
       break;
    case nir_intrinsic_load_helper_invocation:
@@ -1782,8 +1863,29 @@ static void visit_intrinsic(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_vote_all:
    case nir_intrinsic_vote_any:
    case nir_intrinsic_vote_ieq:
-      bld_base->vote(bld_base, cast_type(bld_base, get_src(bld_base, instr->src[0]), nir_type_int, 32), instr, result);
+   case nir_intrinsic_vote_feq:
+      bld_base->vote(bld_base, cast_type(bld_base, get_src(bld_base, instr->src[0]), nir_type_int, nir_src_bit_size(instr->src[0])), instr, result);
       break;
+   case nir_intrinsic_elect:
+      bld_base->elect(bld_base, result);
+      break;
+   case nir_intrinsic_reduce:
+   case nir_intrinsic_inclusive_scan:
+   case nir_intrinsic_exclusive_scan:
+      bld_base->reduce(bld_base, cast_type(bld_base, get_src(bld_base, instr->src[0]), nir_type_int, nir_src_bit_size(instr->src[0])), instr, result);
+      break;
+   case nir_intrinsic_ballot:
+      bld_base->ballot(bld_base, cast_type(bld_base, get_src(bld_base, instr->src[0]), nir_type_int, 32), instr, result);
+      break;
+   case nir_intrinsic_read_invocation:
+   case nir_intrinsic_read_first_invocation: {
+      LLVMValueRef src1 = NULL;
+
+      if (instr->intrinsic == nir_intrinsic_read_invocation)
+         src1 = cast_type(bld_base, get_src(bld_base, instr->src[1]), nir_type_int, 32);
+      bld_base->read_invocation(bld_base, get_src(bld_base, instr->src[0]), nir_src_bit_size(instr->src[0]), src1, result);
+      break;
+   }
    case nir_intrinsic_interp_deref_at_offset:
    case nir_intrinsic_interp_deref_at_centroid:
    case nir_intrinsic_interp_deref_at_sample:
@@ -1864,7 +1966,7 @@ static void visit_tex(struct lp_build_nir_context *bld_base, nir_tex_instr *inst
    LLVMBuilderRef builder = gallivm->builder;
    LLVMValueRef coords[5];
    LLVMValueRef offsets[3] = { NULL };
-   LLVMValueRef explicit_lod = NULL, projector = NULL, ms_index = NULL;
+   LLVMValueRef explicit_lod = NULL, ms_index = NULL;
    struct lp_sampler_params params;
    struct lp_derivatives derivs;
    unsigned sample_key = 0;
@@ -1910,9 +2012,6 @@ static void visit_tex(struct lp_build_nir_context *bld_base, nir_tex_instr *inst
          break;
       case nir_tex_src_sampler_deref:
          sampler_deref_instr = nir_src_as_deref(instr->src[i].src);
-         break;
-      case nir_tex_src_projector:
-         projector = lp_build_rcp(&bld_base->base, cast_type(bld_base, get_src(bld_base, instr->src[i].src), nir_type_float, 32));
          break;
       case nir_tex_src_comparator:
          sample_key |= LP_SAMPLER_SHADOW;
@@ -2014,13 +2113,6 @@ static void visit_tex(struct lp_build_nir_context *bld_base, nir_tex_instr *inst
       coords[1] = coord_undef;
    }
 
-   if (projector) {
-      for (unsigned chan = 0; chan < instr->coord_components; ++chan)
-         coords[chan] = lp_build_mul(&bld_base->base, coords[chan], projector);
-      if (sample_key & LP_SAMPLER_SHADOW)
-         coords[4] = lp_build_mul(&bld_base->base, coords[4], projector);
-   }
-
    uint32_t samp_base_index = 0, tex_base_index = 0;
    if (!sampler_deref_instr) {
       int samp_src_index = nir_tex_instr_src_index(instr, nir_tex_src_sampler_handle);
@@ -2057,7 +2149,28 @@ static void visit_tex(struct lp_build_nir_context *bld_base, nir_tex_instr *inst
    params.texel = texel;
    params.lod = explicit_lod;
    params.ms_index = ms_index;
+   params.aniso_filter_table = bld_base->aniso_filter_table;
    bld_base->tex(bld_base, &params);
+
+   if (nir_dest_bit_size(instr->dest) != 32) {
+      assert(nir_dest_bit_size(instr->dest) == 16);
+      LLVMTypeRef vec_type;
+      switch (nir_alu_type_get_base_type(instr->dest_type)) {
+      case nir_type_int:
+         vec_type = bld_base->int16_bld.vec_type;
+         break;
+      case nir_type_uint:
+         vec_type = bld_base->uint16_bld.vec_type;
+         break;
+      default:
+         unreachable("unexpected alu type");
+      }
+      for (int i = 0; i < nir_dest_num_components(instr->dest); ++i) {
+         texel[i] = LLVMBuildBitCast(builder, texel[i], bld_base->int_bld.vec_type, "");
+         texel[i] = LLVMBuildTrunc(builder, texel[i], vec_type, "");
+      }
+   }
+
    assign_dest(bld_base, &instr->dest, texel);
 }
 
@@ -2069,6 +2182,7 @@ static void visit_ssa_undef(struct lp_build_nir_context *bld_base,
    struct lp_build_context *undef_bld = get_int_bld(bld_base, true, instr->def.bit_size);
    for (unsigned i = 0; i < num_components; i++)
       undef[i] = LLVMGetUndef(undef_bld->vec_type);
+   memset(&undef[num_components], 0, NIR_MAX_VEC_COMPONENTS - num_components);
    assign_ssa_dest(bld_base, &instr->def, undef);
 }
 
@@ -2209,7 +2323,7 @@ handle_shader_output_decl(struct lp_build_nir_context *bld_base,
 static LLVMTypeRef get_register_type(struct lp_build_nir_context *bld_base,
                                      nir_register *reg)
 {
-   struct lp_build_context *int_bld = get_int_bld(bld_base, true, reg->bit_size);
+   struct lp_build_context *int_bld = get_int_bld(bld_base, true, reg->bit_size == 1 ? 32 : reg->bit_size);
 
    LLVMTypeRef type = int_bld->vec_type;
    if (reg->num_array_elems)
@@ -2255,6 +2369,7 @@ bool lp_build_nir_llvm(
                                             _mesa_key_pointer_equal);
    bld_base->vars = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
                                             _mesa_key_pointer_equal);
+   bld_base->range_ht = _mesa_pointer_hash_table_create(NULL);
 
    func = (struct nir_function *)exec_list_get_head(&nir->functions);
 
@@ -2271,6 +2386,7 @@ bool lp_build_nir_llvm(
    free(bld_base->ssa_defs);
    ralloc_free(bld_base->vars);
    ralloc_free(bld_base->regs);
+   ralloc_free(bld_base->range_ht);
    return true;
 }
 
@@ -2281,20 +2397,41 @@ void lp_build_opt_nir(struct nir_shader *nir)
 
    static const struct nir_lower_tex_options lower_tex_options = {
       .lower_tg4_offsets = true,
+      .lower_txp = ~0u,
    };
    NIR_PASS_V(nir, nir_lower_tex, &lower_tex_options);
    NIR_PASS_V(nir, nir_lower_frexp);
 
    NIR_PASS_V(nir, nir_lower_flrp, 16|32|64, true);
+   NIR_PASS_V(nir, nir_lower_fp16_casts);
+   do {
+      progress = false;
+      NIR_PASS(progress, nir, nir_opt_constant_folding);
+      NIR_PASS(progress, nir, nir_opt_algebraic);
+      NIR_PASS(progress, nir, nir_lower_pack);
+
+      nir_lower_tex_options options = { 0, };
+      NIR_PASS_V(nir, nir_lower_tex, &options);
+
+      const nir_lower_subgroups_options subgroups_options = {
+	.subgroup_size = lp_native_vector_width / 32,
+	.ballot_bit_size = 32,
+        .ballot_components = 1,
+	.lower_to_scalar = true,
+	.lower_subgroup_masks = true,
+      };
+      NIR_PASS_V(nir, nir_lower_subgroups, &subgroups_options);
+
+   } while (progress);
+   nir_lower_bool_to_int32(nir);
 
    do {
       progress = false;
-      NIR_PASS_V(nir, nir_opt_constant_folding);
-      NIR_PASS_V(nir, nir_opt_algebraic);
-      NIR_PASS_V(nir, nir_lower_pack);
-
-      nir_lower_tex_options options = { .lower_tex_without_implicit_lod = true };
-      NIR_PASS_V(nir, nir_lower_tex, &options);
+      NIR_PASS(progress, nir, nir_opt_algebraic_late);
+      if (progress) {
+         NIR_PASS_V(nir, nir_copy_prop);
+         NIR_PASS_V(nir, nir_opt_dce);
+         NIR_PASS_V(nir, nir_opt_cse);
+      }
    } while (progress);
-   nir_lower_bool_to_int32(nir);
 }

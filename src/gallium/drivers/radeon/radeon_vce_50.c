@@ -38,22 +38,22 @@
 static void rate_control(struct rvce_encoder *enc)
 {
    RVCE_BEGIN(0x04000005);                                 // rate control
-   RVCE_CS(enc->pic.rate_ctrl.rate_ctrl_method);           // encRateControlMethod
-   RVCE_CS(enc->pic.rate_ctrl.target_bitrate);             // encRateControlTargetBitRate
-   RVCE_CS(enc->pic.rate_ctrl.peak_bitrate);               // encRateControlPeakBitRate
-   RVCE_CS(enc->pic.rate_ctrl.frame_rate_num);             // encRateControlFrameRateNum
+   RVCE_CS(enc->pic.rate_ctrl[0].rate_ctrl_method);           // encRateControlMethod
+   RVCE_CS(enc->pic.rate_ctrl[0].target_bitrate);             // encRateControlTargetBitRate
+   RVCE_CS(enc->pic.rate_ctrl[0].peak_bitrate);               // encRateControlPeakBitRate
+   RVCE_CS(enc->pic.rate_ctrl[0].frame_rate_num);             // encRateControlFrameRateNum
    RVCE_CS(0x00000000);                                    // encGOPSize
    RVCE_CS(enc->pic.quant_i_frames);                       // encQP_I
    RVCE_CS(enc->pic.quant_p_frames);                       // encQP_P
    RVCE_CS(enc->pic.quant_b_frames);                       // encQP_B
-   RVCE_CS(enc->pic.rate_ctrl.vbv_buffer_size);            // encVBVBufferSize
-   RVCE_CS(enc->pic.rate_ctrl.frame_rate_den);             // encRateControlFrameRateDen
+   RVCE_CS(enc->pic.rate_ctrl[0].vbv_buffer_size);            // encVBVBufferSize
+   RVCE_CS(enc->pic.rate_ctrl[0].frame_rate_den);             // encRateControlFrameRateDen
    RVCE_CS(0x00000000);                                    // encVBVBufferLevel
    RVCE_CS(0x00000000);                                    // encMaxAUSize
    RVCE_CS(0x00000000);                                    // encQPInitialMode
-   RVCE_CS(enc->pic.rate_ctrl.target_bits_picture);        // encTargetBitsPerPicture
-   RVCE_CS(enc->pic.rate_ctrl.peak_bits_picture_integer);  // encPeakBitsPerPictureInteger
-   RVCE_CS(enc->pic.rate_ctrl.peak_bits_picture_fraction); // encPeakBitsPerPictureFractional
+   RVCE_CS(enc->pic.rate_ctrl[0].target_bits_picture);        // encTargetBitsPerPicture
+   RVCE_CS(enc->pic.rate_ctrl[0].peak_bits_picture_integer);  // encPeakBitsPerPictureInteger
+   RVCE_CS(enc->pic.rate_ctrl[0].peak_bits_picture_fraction); // encPeakBitsPerPictureFractional
    RVCE_CS(0x00000000);                                    // encMinQP
    RVCE_CS(0x00000033);                                    // encMaxQP
    RVCE_CS(0x00000000);                                    // encSkipFrameEnable
@@ -118,9 +118,9 @@ static void encode(struct rvce_encoder *enc)
    RVCE_CS(0x00000000);                      // endOfSequence
    RVCE_CS(0x00000000);                      // endOfStream
    RVCE_READ(enc->handle, RADEON_DOMAIN_VRAM,
-             enc->luma->u.legacy.level[0].offset); // inputPictureLumaAddressHi/Lo
+             (uint64_t)enc->luma->u.legacy.level[0].offset_256B * 256); // inputPictureLumaAddressHi/Lo
    RVCE_READ(enc->handle, RADEON_DOMAIN_VRAM,
-             enc->chroma->u.legacy.level[0].offset);              // inputPictureChromaAddressHi/Lo
+             (uint64_t)enc->chroma->u.legacy.level[0].offset_256B * 256);              // inputPictureChromaAddressHi/Lo
    RVCE_CS(align(enc->luma->u.legacy.level[0].nblk_y, 16));       // encInputFrameYPitch
    RVCE_CS(enc->luma->u.legacy.level[0].nblk_x * enc->luma->bpe); // encInputPicLumaPitch
    RVCE_CS(enc->chroma->u.legacy.level[0].nblk_x * enc->chroma->bpe); // encInputPicChromaPitch

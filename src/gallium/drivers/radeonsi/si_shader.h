@@ -156,17 +156,12 @@ struct si_context;
 #define SI_MAX_ATTRIBS    16
 #define SI_MAX_VS_OUTPUTS 40
 
-/* Shader IO unique indices are supported for VARYING_SLOT_VARn with an
- * index smaller than this.
- */
-#define SI_MAX_IO_GENERIC 32
-
 #define SI_NGG_PRIM_EDGE_FLAG_BITS ((1 << 9) | (1 << 19) | (1 << 29))
 
 /* SGPR user data indices */
 enum
 {
-   SI_SGPR_RW_BUFFERS, /* rings (& stream-out, VS only) */
+   SI_SGPR_INTERNAL_BINDINGS,
    SI_SGPR_BINDLESS_SAMPLERS_AND_IMAGES,
    SI_SGPR_CONST_AND_SHADER_BUFFERS, /* or just a constant buffer 0 pointer */
    SI_SGPR_SAMPLERS_AND_IMAGES,
@@ -277,7 +272,7 @@ enum
    SI_VS_BLIT_SGPRS_POS_TEXCOORD = 9,
 };
 
-#define SI_NGG_CULL_VIEW_SMALLPRIMS          (1 << 0)   /* view.xy + small prims */
+#define SI_NGG_CULL_ENABLED                  (1 << 0)   /* this implies W, view.xy, and small prim culling */
 #define SI_NGG_CULL_BACK_FACE                (1 << 1)   /* back faces */
 #define SI_NGG_CULL_FRONT_FACE               (1 << 2)   /* front faces */
 #define SI_NGG_CULL_GS_FAST_LAUNCH_TRI_LIST  (1 << 3)   /* GS fast launch: triangles */
@@ -338,8 +333,9 @@ struct si_shader_info {
    ubyte input_semantic[PIPE_MAX_SHADER_INPUTS];
    ubyte input_interpolate[PIPE_MAX_SHADER_INPUTS];
    ubyte input_usage_mask[PIPE_MAX_SHADER_INPUTS];
+   ubyte input_fp16_lo_hi_valid[PIPE_MAX_SHADER_INPUTS];
    ubyte output_semantic[PIPE_MAX_SHADER_OUTPUTS];
-   char output_semantic_to_slot[VARYING_SLOT_TESS_MAX];
+   char output_semantic_to_slot[VARYING_SLOT_VAR15_16BIT + 1];
    ubyte output_usagemask[PIPE_MAX_SHADER_OUTPUTS];
    ubyte output_readmask[PIPE_MAX_SHADER_OUTPUTS];
    ubyte output_streams[PIPE_MAX_SHADER_OUTPUTS];
@@ -394,6 +390,10 @@ struct si_shader_info {
    bool writes_layer;
    bool uses_bindless_samplers;
    bool uses_bindless_images;
+   bool uses_indirect_descriptor;
+
+   bool uses_vmem_return_type_sampler_or_bvh;
+   bool uses_vmem_return_type_other; /* all other VMEM loads and atomics with return */
 
    /** Whether all codepaths write tess factors in all invocations. */
    bool tessfactors_are_def_in_all_invocs;
@@ -402,6 +402,13 @@ struct si_shader_info {
     * fragment shader invocations if flat shading.
     */
    bool allow_flat_shading;
+
+   /* Optimization: if the texture bound to this texunit has been cleared to 1,
+    * then the draw can be skipped (see si_draw_vbo_skip_noop). Initially the
+    * value is 0xff (undetermined) and can be later changed to 0 (= false) or
+    * texunit + 1.
+    */
+   uint8_t writes_1_if_tex_is_1;
 };
 
 /* A shader selector is a gallium CSO and contains shader variants and
@@ -439,7 +446,6 @@ struct si_shader_selector {
    ubyte const_and_shader_buf_descriptors_index;
    ubyte sampler_and_images_descriptors_index;
    bool vs_needs_prolog;
-   bool prim_discard_cs_allowed;
    ubyte cs_shaderbufs_sgpr_index;
    ubyte cs_num_shaderbufs_in_user_sgprs;
    ubyte cs_images_sgpr_index;
@@ -449,7 +455,6 @@ struct si_shader_selector {
    ubyte num_vbos_in_user_sgprs;
    unsigned pa_cl_vs_out_cntl;
    unsigned ngg_cull_vert_threshold; /* UINT32_MAX = disabled */
-   unsigned ngg_cull_nonindexed_fast_launch_vert_threshold; /* UINT32_MAX = disabled */
    ubyte clipdist_mask;
    ubyte culldist_mask;
    enum pipe_prim_type rast_prim;
@@ -522,7 +527,6 @@ struct si_vs_prolog_bits {
    uint16_t instance_divisor_is_one;     /* bitmask of inputs */
    uint16_t instance_divisor_is_fetched; /* bitmask of inputs */
    unsigned ls_vgpr_fix : 1;
-   unsigned unpack_instance_id_from_vertex_id : 1;
 };
 
 /* Common TCS bits between the shader key and the epilog key. */
@@ -572,10 +576,10 @@ union si_shader_part_key {
       unsigned as_ls : 1;
       unsigned as_es : 1;
       unsigned as_ngg : 1;
-      unsigned as_prim_discard_cs : 1;
       unsigned gs_fast_launch_tri_list : 1;  /* for NGG culling */
       unsigned gs_fast_launch_tri_strip : 1; /* for NGG culling */
       unsigned gs_fast_launch_index_size_packed : 2;
+      unsigned load_vgprs_after_culling : 1;
       /* Prologs for monolithic shaders shouldn't set EXEC. */
       unsigned is_monolithic : 1;
    } vs_prolog;
@@ -634,9 +638,10 @@ struct si_shader_key {
    /* These three are initially set according to the NEXT_SHADER property,
     * or guessed if the property doesn't seem correct.
     */
-   unsigned as_es : 1;  /* export shader, which precedes GS */
-   unsigned as_ls : 1;  /* local shader, which precedes TCS */
-   unsigned as_ngg : 1; /* VS, TES, or GS compiled as NGG primitive shader */
+   unsigned as_es : 1;  /* whether it's a shader before GS */
+   unsigned as_ls : 1;  /* whether it's VS before TCS */
+   unsigned as_ngg : 1; /* whether it's the last GE stage and NGG is enabled,
+                           also set for the stage right before GS */
 
    /* Flags for monolithic compilation only. */
    struct {
@@ -677,24 +682,14 @@ struct si_shader_key {
        */
       unsigned prefer_mono : 1;
 
-      /* Primitive discard compute shader. */
-      unsigned vs_as_prim_discard_cs : 1;
-      unsigned cs_prim_type : 4;
-      unsigned cs_indexed : 1;
-      unsigned cs_instancing : 1;
-      unsigned cs_primitive_restart : 1;
-      unsigned cs_provoking_vertex_first : 1;
-      unsigned cs_need_correct_orientation : 1;
-      unsigned cs_cull_front : 1;
-      unsigned cs_cull_back : 1;
-      unsigned cs_cull_z : 1;
-      unsigned cs_halfz_clip_space : 1;
-
       /* VS and TCS have the same number of patch vertices. */
       unsigned same_patch_vertices:1;
 
       unsigned inline_uniforms:1;
 
+      /* This must be kept last to limit the number of variants
+       * depending only on the uniform values.
+       */
       uint32_t inlined_uniform_values[MAX_INLINABLE_UNIFORMS];
    } opt;
 };
@@ -719,6 +714,9 @@ struct si_shader_binary_info {
 struct si_shader_binary {
    const char *elf_buffer;
    size_t elf_size;
+
+   char *uploaded_code;
+   size_t uploaded_code_size;
 
    char *llvm_ir_string;
 };
@@ -878,11 +876,13 @@ struct si_shader *si_generate_gs_copy_shader(struct si_screen *sscreen,
 /* si_shader_nir.c */
 void si_nir_scan_shader(const struct nir_shader *nir, struct si_shader_info *info);
 void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first);
-void si_finalize_nir(struct pipe_screen *screen, void *nirptr, bool optimize);
+void si_nir_late_opts(nir_shader *nir);
+char *si_finalize_nir(struct pipe_screen *screen, void *nirptr);
 
 /* si_state_shaders.c */
 void gfx9_get_gs_info(struct si_shader_selector *es, struct si_shader_selector *gs,
                       struct gfx9_gs_info *out);
+bool gfx10_is_ngg_passthrough(struct si_shader *shader);
 
 /* Inline helpers. */
 
@@ -899,15 +899,6 @@ static inline struct si_shader **si_get_main_shader_part(struct si_shader_select
    if (key->as_ngg)
       return &sel->main_shader_part_ngg;
    return &sel->main_shader_part;
-}
-
-static inline bool gfx10_is_ngg_passthrough(struct si_shader *shader)
-{
-   struct si_shader_selector *sel = shader->selector;
-
-   return sel->info.stage != MESA_SHADER_GEOMETRY && !sel->so.num_outputs && !sel->info.writes_edgeflag &&
-          !shader->key.opt.ngg_culling &&
-          (sel->info.stage != MESA_SHADER_VERTEX || !shader->key.mono.u.vs_export_prim_id);
 }
 
 static inline bool si_shader_uses_bindless_samplers(struct si_shader_selector *selector)

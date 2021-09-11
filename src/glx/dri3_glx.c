@@ -241,39 +241,26 @@ dri3_create_context_attribs(struct glx_screen *base,
    __GLXDRIconfigPrivate *config = (__GLXDRIconfigPrivate *) config_base;
    __DRIcontext *shared = NULL;
 
-   uint32_t minor_ver = 1;
-   uint32_t major_ver = 2;
-   uint32_t flags = 0;
-   unsigned api;
-   int reset = __DRI_CTX_RESET_NO_NOTIFICATION;
-   int release = __DRI_CTX_RELEASE_BEHAVIOR_FLUSH;
+   struct dri_ctx_attribs dca;
    uint32_t ctx_attribs[2 * 6];
    unsigned num_ctx_attribs = 0;
-   uint32_t render_type;
 
-   /* Remap the GLX tokens to DRI2 tokens.
-    */
-   if (!dri2_convert_glx_attribs(num_attribs, attribs,
-                                 &major_ver, &minor_ver,
-                                 &render_type, &flags, &api,
-                                 &reset, &release, error))
+   *error = dri_convert_glx_attribs(num_attribs, attribs, &dca);
+   if (*error != __DRI_CTX_ERROR_SUCCESS)
       goto error_exit;
 
-   if (!dri2_check_no_error(flags, shareList, major_ver, error)) {
+   if (!dri2_check_no_error(dca.flags, shareList, dca.major_ver, error)) {
       goto error_exit;
    }
 
    /* Check the renderType value */
-   if (!validate_renderType_against_config(config_base, render_type))
+   if (!validate_renderType_against_config(config_base, dca.render_type))
        goto error_exit;
 
    if (shareList) {
-      /* If the shareList context is not a DRI3 context, we cannot possibly
-       * create a DRI3 context that shares it.
-       */
-      if (shareList->vtable->destroy != dri3_destroy_context) {
-	 return NULL;
-      }
+      /* We can't share with an indirect context */
+      if (!shareList->isDirect)
+         return NULL;
 
       pcp_shared = (struct dri3_context *) shareList;
       shared = pcp_shared->driContext;
@@ -289,39 +276,39 @@ dri3_create_context_attribs(struct glx_screen *base,
       goto error_exit;
 
    ctx_attribs[num_ctx_attribs++] = __DRI_CTX_ATTRIB_MAJOR_VERSION;
-   ctx_attribs[num_ctx_attribs++] = major_ver;
+   ctx_attribs[num_ctx_attribs++] = dca.major_ver;
    ctx_attribs[num_ctx_attribs++] = __DRI_CTX_ATTRIB_MINOR_VERSION;
-   ctx_attribs[num_ctx_attribs++] = minor_ver;
+   ctx_attribs[num_ctx_attribs++] = dca.minor_ver;
 
    /* Only send a value when the non-default value is requested.  By doing
     * this we don't have to check the driver's DRI3 version before sending the
     * default value.
     */
-   if (reset != __DRI_CTX_RESET_NO_NOTIFICATION) {
+   if (dca.reset != __DRI_CTX_RESET_NO_NOTIFICATION) {
       ctx_attribs[num_ctx_attribs++] = __DRI_CTX_ATTRIB_RESET_STRATEGY;
-      ctx_attribs[num_ctx_attribs++] = reset;
+      ctx_attribs[num_ctx_attribs++] = dca.reset;
    }
 
-   if (release != __DRI_CTX_RELEASE_BEHAVIOR_FLUSH) {
+   if (dca.release != __DRI_CTX_RELEASE_BEHAVIOR_FLUSH) {
       ctx_attribs[num_ctx_attribs++] = __DRI_CTX_ATTRIB_RELEASE_BEHAVIOR;
-      ctx_attribs[num_ctx_attribs++] = release;
+      ctx_attribs[num_ctx_attribs++] = dca.release;
    }
 
-   if (flags != 0) {
+   if (dca.flags != 0) {
       ctx_attribs[num_ctx_attribs++] = __DRI_CTX_ATTRIB_FLAGS;
 
       /* The current __DRI_CTX_FLAG_* values are identical to the
        * GLX_CONTEXT_*_BIT values.
        */
-      ctx_attribs[num_ctx_attribs++] = flags;
+      ctx_attribs[num_ctx_attribs++] = dca.flags;
 
-      if (flags & __DRI_CTX_FLAG_NO_ERROR)
+      if (dca.flags & __DRI_CTX_FLAG_NO_ERROR)
          pcp->base.noError = GL_TRUE;
    }
 
    pcp->driContext =
       (*psc->image_driver->createContextAttribs) (psc->driScreen,
-                                                  api,
+                                                  dca.api,
                                                   config ? config->driConfig
                                                          : NULL,
                                                   shared,
@@ -333,7 +320,7 @@ dri3_create_context_attribs(struct glx_screen *base,
    if (pcp->driContext == NULL)
       goto error_exit;
 
-   pcp->base.vtable = &dri3_context_vtable;
+   pcp->base.vtable = base->context_vtable;
 
    return &pcp->base;
 
@@ -395,6 +382,7 @@ dri3_create_drawable(struct glx_screen *base, XID xDrawable,
       return NULL;
    }
 
+   pdraw->loader_drawable.dri_screen_display_gpu = psc->driScreenDisplayGPU;
    return &pdraw->base;
 }
 
@@ -607,6 +595,13 @@ dri3_destroy_screen(struct glx_screen *base)
    struct dri3_screen *psc = (struct dri3_screen *) base;
 
    /* Free the direct rendering per screen data */
+   if (psc->is_different_gpu) {
+      if (psc->driScreenDisplayGPU) {
+         loader_dri3_close_screen(psc->driScreenDisplayGPU);
+         (*psc->core->destroyScreen) (psc->driScreenDisplayGPU);
+      }
+      close(psc->fd_display_gpu);
+   }
    loader_dri3_close_screen(psc->driScreen);
    (*psc->core->destroyScreen) (psc->driScreen);
    driDestroyConfigs(psc->driver_configs);
@@ -664,13 +659,11 @@ dri3_get_swap_interval(__GLXDRIdrawable *pdraw)
 }
 
 static void
-dri3_bind_tex_image(Display * dpy,
-                    GLXDrawable drawable,
+dri3_bind_tex_image(__GLXDRIdrawable *base,
                     int buffer, const int *attrib_list)
 {
    struct glx_context *gc = __glXGetCurrentContext();
    struct dri3_context *pcp = (struct dri3_context *) gc;
-   __GLXDRIdrawable *base = GetGLXDRIDrawable(dpy, drawable);
    struct dri3_drawable *pdraw = (struct dri3_drawable *) base;
    struct dri3_screen *psc;
 
@@ -679,7 +672,7 @@ dri3_bind_tex_image(Display * dpy,
 
       psc->f->invalidate(pdraw->loader_drawable.dri_drawable);
 
-      XSync(dpy, false);
+      XSync(gc->currentDpy, false);
 
       (*psc->texBuffer->setTexBuffer2) (pcp->driContext,
                                         pdraw->base.textureTarget,
@@ -689,11 +682,10 @@ dri3_bind_tex_image(Display * dpy,
 }
 
 static void
-dri3_release_tex_image(Display * dpy, GLXDrawable drawable, int buffer)
+dri3_release_tex_image(__GLXDRIdrawable *base, int buffer)
 {
    struct glx_context *gc = __glXGetCurrentContext();
    struct dri3_context *pcp = (struct dri3_context *) gc;
-   __GLXDRIdrawable *base = GetGLXDRIDrawable(dpy, drawable);
    struct dri3_drawable *pdraw = (struct dri3_drawable *) base;
    struct dri3_screen *psc;
 
@@ -714,10 +706,6 @@ static const struct glx_context_vtable dri3_context_vtable = {
    .unbind              = dri3_unbind_context,
    .wait_gl             = dri3_wait_gl,
    .wait_x              = dri3_wait_x,
-   .use_x_font          = DRI_glXUseXFont,
-   .bind_tex_image      = dri3_bind_tex_image,
-   .release_tex_image   = dri3_release_tex_image,
-   .get_proc_address    = NULL,
    .interop_query_device_info = dri3_interop_query_device_info,
    .interop_export_object = dri3_interop_export_object
 };
@@ -747,6 +735,7 @@ dri3_bind_extensions(struct dri3_screen *psc, struct glx_display * priv,
 
    __glXEnableDirectExtension(&psc->base, "GLX_ARB_create_context");
    __glXEnableDirectExtension(&psc->base, "GLX_ARB_create_context_profile");
+   __glXEnableDirectExtension(&psc->base, "GLX_EXT_no_config_context");
 
    if ((mask & ((1 << __DRI_API_GLES) |
                 (1 << __DRI_API_GLES2) |
@@ -840,7 +829,7 @@ dri3_create_screen(int screen, struct glx_display * priv)
    struct dri3_screen *psc;
    __GLXDRIscreen *psp;
    struct glx_config *configs = NULL, *visuals = NULL;
-   char *driverName, *tmp;
+   char *driverName, *driverNameDisplayGPU, *tmp;
    int i;
 
    psc = calloc(1, sizeof *psc);
@@ -848,6 +837,7 @@ dri3_create_screen(int screen, struct glx_display * priv)
       return NULL;
 
    psc->fd = -1;
+   psc->fd_display_gpu = -1;
 
    if (!glx_screen_init(&psc->base, screen, priv)) {
       free(psc);
@@ -868,7 +858,12 @@ dri3_create_screen(int screen, struct glx_display * priv)
       return NULL;
    }
 
+   psc->fd_display_gpu = fcntl(psc->fd, F_DUPFD_CLOEXEC, 3);
    psc->fd = loader_get_user_preferred_fd(psc->fd, &psc->is_different_gpu);
+   if (!psc->is_different_gpu) {
+      close(psc->fd_display_gpu);
+      psc->fd_display_gpu = -1;
+   }
 
    driverName = loader_get_driver_for_fd(psc->fd);
    if (!driverName) {
@@ -896,6 +891,27 @@ dri3_create_screen(int screen, struct glx_display * priv)
    if (psc->image_driver == NULL) {
       ErrorMessageF("image driver extension not found\n");
       goto handle_error;
+   }
+
+   if (psc->is_different_gpu) {
+      driverNameDisplayGPU = loader_get_driver_for_fd(psc->fd_display_gpu);
+      if (driverNameDisplayGPU) {
+
+         /* check if driver name is matching so that non mesa drivers
+          * will not crash. Also need this check since image extension
+          * pointer from render gpu is shared with display gpu. Image
+          * extension pointer is shared because it keeps things simple.
+          */
+         if (strcmp(driverName, driverNameDisplayGPU) == 0) {
+            psc->driScreenDisplayGPU =
+               psc->image_driver->createNewScreen2(screen, psc->fd_display_gpu,
+                                                   pdp->loader_extensions,
+                                                   extensions,
+                                                   &driver_configs, psc);
+         }
+
+         free(driverNameDisplayGPU);
+      }
    }
 
    psc->driScreen =
@@ -962,6 +978,7 @@ dri3_create_screen(int screen, struct glx_display * priv)
    psc->driver_configs = driver_configs;
 
    psc->base.vtable = &dri3_screen_vtable;
+   psc->base.context_vtable = &dri3_context_vtable;
    psp = &psc->vtable;
    psc->base.driScreen = psp;
    psp->destroyScreen = dri3_destroy_screen;
@@ -973,6 +990,8 @@ dri3_create_screen(int screen, struct glx_display * priv)
    psp->waitForSBC = dri3_wait_for_sbc;
    psp->setSwapInterval = dri3_set_swap_interval;
    psp->getSwapInterval = dri3_get_swap_interval;
+   psp->bindTexImage = dri3_bind_tex_image;
+   psp->releaseTexImage = dri3_release_tex_image;
 
    __glXEnableDirectExtension(&psc->base, "GLX_OML_sync_control");
    __glXEnableDirectExtension(&psc->base, "GLX_SGI_video_sync");
@@ -1015,8 +1034,13 @@ handle_error:
    if (psc->driScreen)
        psc->core->destroyScreen(psc->driScreen);
    psc->driScreen = NULL;
+   if (psc->driScreenDisplayGPU)
+       psc->core->destroyScreen(psc->driScreenDisplayGPU);
+   psc->driScreenDisplayGPU = NULL;
    if (psc->fd >= 0)
       close(psc->fd);
+   if (psc->fd_display_gpu >= 0)
+      close(psc->fd_display_gpu);
    if (psc->driver)
       dlclose(psc->driver);
 

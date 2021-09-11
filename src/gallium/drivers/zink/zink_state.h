@@ -29,7 +29,19 @@
 #include "pipe/p_state.h"
 
 struct zink_vertex_elements_hw_state {
-   VkVertexInputAttributeDescription attribs[PIPE_MAX_ATTRIBS];
+   uint32_t hash;
+   union {
+      VkVertexInputAttributeDescription attribs[PIPE_MAX_ATTRIBS];
+      VkVertexInputAttributeDescription2EXT dynattribs[PIPE_MAX_ATTRIBS];
+   };
+   union {
+      struct {
+         VkVertexInputBindingDivisorDescriptionEXT divisors[PIPE_MAX_ATTRIBS];
+         VkVertexInputBindingDescription bindings[PIPE_MAX_ATTRIBS]; // combination of element_state and stride
+         uint8_t divisors_present;
+      } b;
+      VkVertexInputBindingDescription2EXT dynbindings[PIPE_MAX_ATTRIBS];
+   };
    uint32_t num_bindings, num_attribs;
 };
 
@@ -44,22 +56,30 @@ struct zink_vertex_elements_state {
 };
 
 struct zink_rasterizer_hw_state {
-   VkBool32 depth_clamp;
-   VkBool32 rasterizer_discard;
-   VkFrontFace front_face;
-   VkPolygonMode polygon_mode;
-   VkCullModeFlags cull_mode;
+   unsigned polygon_mode : 2; //VkPolygonMode
+   unsigned cull_mode : 2; //VkCullModeFlags
+   unsigned line_mode : 2; //VkLineRasterizationModeEXT
+   bool depth_clamp:1;
+   bool rasterizer_discard:1;
+   bool pv_last:1;
+   bool line_stipple_enable:1;
+   bool force_persample_interp:1;
+   bool clip_halfz:1;
 };
+#define ZINK_RAST_HW_STATE_SIZE 12
+
 
 struct zink_rasterizer_state {
    struct pipe_rasterizer_state base;
    bool offset_point, offset_line, offset_tri;
    float offset_units, offset_clamp, offset_scale;
    float line_width;
+   VkFrontFace front_face;
    struct zink_rasterizer_hw_state hw_state;
 };
 
 struct zink_blend_state {
+   uint32_t hash;
    VkPipelineColorBlendAttachmentState attachments[PIPE_MAX_COLOR_BUFS];
 
    VkBool32 logicop_enable;
@@ -69,6 +89,7 @@ struct zink_blend_state {
    VkBool32 alpha_to_one;
 
    bool need_blend_constants;
+   bool dual_src_blend;
 };
 
 struct zink_depth_stencil_alpha_hw_state {

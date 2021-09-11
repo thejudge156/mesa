@@ -24,8 +24,6 @@
 # _mesa_initialize_exec_table().  It is responsible for populating all
 # entries in the "exec" dispatch table that aren't dynamic.
 
-from __future__ import print_function
-
 import argparse
 import collections
 import license
@@ -149,8 +147,6 @@ _mesa_initialize_exec_table(struct gl_context *ctx)
    assert(exec != NULL);
 
    assert(ctx->Version > 0);
-
-   _mesa_initialize_exec_dispatch(ctx, exec);
 """
 
 

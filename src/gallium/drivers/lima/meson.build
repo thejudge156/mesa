@@ -50,6 +50,7 @@ files_lima = files(
   'ir/lima_nir_duplicate_intrinsic.c',
   'ir/lima_nir_lower_uniform_to_scalar.c',
   'ir/lima_nir_split_load_input.c',
+  'ir/lima_nir_split_loads.c',
 
   'ir/lima_ir.h',
 
@@ -60,6 +61,8 @@ files_lima = files(
   'lima_resource.c',
   'lima_resource.h',
   'lima_state.c',
+  'lima_disk_cache.c',
+  'lima_disk_cache.h',
   'lima_draw.c',
   'lima_program.c',
   'lima_query.c',
@@ -150,3 +153,7 @@ lima_disasm = executable(
   build_by_default : with_tools.contains('lima'),
   install : with_tools.contains('lima'),
 )
+
+if with_tools.contains('drm-shim')
+  subdir('drm-shim')
+endif

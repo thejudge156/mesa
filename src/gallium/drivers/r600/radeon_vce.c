@@ -270,7 +270,7 @@ static void rvce_begin_frame(struct pipe_video_codec *encoder,
 	struct pipe_h264_enc_picture_desc *pic = (struct pipe_h264_enc_picture_desc *)picture;
 
 	bool need_rate_control =
-		enc->pic.rate_ctrl.rate_ctrl_method != pic->rate_ctrl.rate_ctrl_method ||
+		enc->pic.rate_ctrl[0].rate_ctrl_method != pic->rate_ctrl[0].rate_ctrl_method ||
 		enc->pic.quant_i_frames != pic->quant_i_frames ||
 		enc->pic.quant_p_frames != pic->quant_p_frames ||
 		enc->pic.quant_b_frames != pic->quant_b_frames;
@@ -357,7 +357,7 @@ static void rvce_get_feedback(struct pipe_video_codec *encoder,
 	struct rvid_buffer *fb = feedback;
 
 	if (size) {
-		uint32_t *ptr = enc->ws->buffer_map(
+		uint32_t *ptr = enc->ws->buffer_map(enc->ws,
 			fb->res->buf, &enc->cs,
 			PIPE_MAP_READ_WRITE | RADEON_MAP_TEMPORARY);
 
@@ -367,7 +367,7 @@ static void rvce_get_feedback(struct pipe_video_codec *encoder,
 			*size = 0;
 		}
 
-		enc->ws->buffer_unmap(fb->res->buf);
+		enc->ws->buffer_unmap(enc->ws, fb->res->buf);
 	}
 	//dump_feedback(enc, fb);
 	rvid_destroy_buffer(fb);

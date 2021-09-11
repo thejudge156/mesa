@@ -85,10 +85,8 @@ namespace clover {
             constant,
             global,
             local,
-            image2d_rd,
-            image2d_wr,
-            image3d_rd,
-            image3d_wr,
+            image_rd,
+            image_wr,
             sampler
          };
 
@@ -127,7 +125,9 @@ namespace clover {
          type type;
          size_t size;
          size_t target_size;
-         size_t target_align;
+         size_t target_align; // For arguments of type local, this represents
+                              // the alignment requirement for the pointed
+                              // type and for the pointer itself.
          ext_type ext_type;
          semantic semantic;
          arg_info info;
