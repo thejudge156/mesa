@@ -217,6 +217,7 @@ osmesa_read_buffer(OSMesaContext osmesa, struct pipe_resource *res, void *dst,
    unsigned bpp = util_format_get_blocksize(res->format);
    for (unsigned y = 0; y < res->height0; y++)
    {
+      printf("osmesa_read_buffer y %d copying %d\n", y, bpp);
       memcpy(dst, src, bpp * res->width0);
       dst = (ubyte *)dst + dst_stride;
       src += transfer->stride;
