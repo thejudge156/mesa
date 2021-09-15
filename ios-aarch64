@@ -1,8 +1,8 @@
 [binaries]
 
 ar = 'ar'
-c = ['ccache', 'clang', '-DVK_USE_PLATFORM_IOS_MVK', '-arch', 'arm64', '-isysroot', '/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk', '-miphoneos-version-min=12.0', '-fPIC']
-cpp = ['ccache', 'clang++', '-DVK_USE_PLATFORM_IOS_MVK', '-arch', 'arm64', '-isysroot', '/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk', '-miphoneos-version-min=12.0', '-fPIC', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-static-libstdc++']
+c = ['ccache', 'clang', '-DVK_USE_PLATFORM_IOS_MVK', '-DVK_ENABLE_BETA_EXTENSIONS', '-arch', 'arm64', '-isysroot', '/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk', '-miphoneos-version-min=12.0', '-fPIC']
+cpp = ['ccache', 'clang++', '-DVK_USE_PLATFORM_IOS_MVK', '-DVK_ENABLE_BETA_EXTENSIONS', '-arch', 'arm64', '-isysroot', '/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk', '-miphoneos-version-min=12.0', '-fPIC', '-fno-exceptions', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-static-libstdc++']
 c_ld = 'ld'
 cpp_ld = 'ld'
 strip = 'strip'
