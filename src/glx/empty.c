@@ -1,4 +1,5 @@
 #include <GL/gl.h>
+#include <GL/glext.h>
 
 GLboolean
 glAreTexturesResidentEXT(GLsizei n, const GLuint * textures,
@@ -6,6 +7,7 @@ glAreTexturesResidentEXT(GLsizei n, const GLuint * textures,
 {
     return glAreTexturesResident(n, textures, residences);
 }
+
 void glDeleteTexturesEXT(GLsizei n, const GLuint *textures)
 {
     glDeleteTextures(n, textures);
