@@ -16,7 +16,6 @@
 		gl*;
 		mgl*;
 		st*;
-		zink*;
 	local:
 		*;
 };
