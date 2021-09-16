@@ -2,6 +2,8 @@
 #include <GL/gl.h>
 #include <GL/glext.h>
 
+#ifdef __APPLE__
+// iOS build lacks these functions for unknown reasons
 GLboolean
 glAreTexturesResidentEXT(GLsizei n, const GLuint * textures,
                          GLboolean * residences)
@@ -23,3 +25,4 @@ GLboolean glIsTextureEXT(GLuint texture)
 {
     return glIsTexture(texture);
 }
+#endif
