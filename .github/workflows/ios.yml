@@ -41,6 +41,7 @@ jobs:
             -Dshared-glapi=false
           ninja -C build-ios-aarch64 install
           cp build-ios-aarch64/src/gallium/drivers/zink/libzink.a /tmp/zink/lib/
+          install_name_tool -add_rpath @executable_path/Frameworks/libMoltenVK.dylib.framework /tmp/zink/lib/libOSMesa.8.dylib
       - name: Upload libraries
         uses: actions/upload-artifact@v2
         with:
