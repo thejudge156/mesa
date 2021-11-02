@@ -50,7 +50,8 @@ jobs:
             -Dshared-glapi=false
           ninja -C "build-android-${{matrix.arch}}" install
           cp "build-android-${{matrix.arch}}/src/gallium/drivers/zink/libzink.a" /tmp/zink/lib/
-          rm /tmp/zink/lib/libOSMesa.so /tmp/zink/lib/libOSMesa.so.8.0.0
+          rm /tmp/zink/lib/libOSMesa.so /tmp/zink/lib/libOSMesa.so.8
+          mv /tmp/zink/lib/libOSMesa.so.8.0.0 /tmp/zink/lib/libOSMesa.so.8
       - name: Upload libraries
         uses: actions/upload-artifact@v2
         with:
