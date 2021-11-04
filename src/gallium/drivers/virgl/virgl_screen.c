@@ -20,7 +20,6 @@
  * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-#include "util/build_id.h"
 #include "util/u_memory.h"
 #include "util/format/u_format.h"
 #include "util/format/u_format_s3tc.h"
@@ -41,6 +40,19 @@
 #include "virgl_context.h"
 #include "virtio-gpu/virgl_protocol.h"
 #include "virgl_encode.h"
+
+#ifdef __APPLE__
+struct build_id_note;
+
+const struct build_id_note *
+build_id_find_nhdr_for_addr(const void *addr);
+
+unsigned
+build_id_length(const struct build_id_note *note);
+
+const uint8_t *
+build_id_data(const struct build_id_note *note);
+#endif
 
 int virgl_debug = 0;
 static const struct debug_named_value virgl_debug_options[] = {
