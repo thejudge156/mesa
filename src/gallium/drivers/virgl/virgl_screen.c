@@ -41,19 +41,6 @@
 #include "virtio-gpu/virgl_protocol.h"
 #include "virgl_encode.h"
 
-#ifdef __APPLE__
-struct build_id_note;
-
-const struct build_id_note *
-build_id_find_nhdr_for_addr(const void *addr);
-
-unsigned
-build_id_length(const struct build_id_note *note);
-
-const uint8_t *
-build_id_data(const struct build_id_note *note);
-#endif
-
 int virgl_debug = 0;
 static const struct debug_named_value virgl_debug_options[] = {
    { "verbose",   VIRGL_DEBUG_VERBOSE,             NULL },
@@ -911,6 +898,7 @@ static struct disk_cache *virgl_get_disk_shader_cache (struct pipe_screen *pscre
 
 static void virgl_disk_cache_create(struct virgl_screen *screen)
 {
+#ifndef __APPLE__
    const struct build_id_note *note =
       build_id_find_nhdr_for_addr(virgl_disk_cache_create);
    assert(note && build_id_length(note) == 20); /* sha1 */
@@ -922,6 +910,9 @@ static void virgl_disk_cache_create(struct virgl_screen *screen)
    _mesa_sha1_format(timestamp, id_sha1);
 
    screen->disk_cache = disk_cache_create("virgl", timestamp, 0);
+#else
+   screen->disk_cache = disk_cache_create("virgl", "??? (build_id unimplemented)", 0);
+#endif
 }
 
 static void
