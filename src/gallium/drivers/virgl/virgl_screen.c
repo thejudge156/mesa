@@ -20,6 +20,7 @@
  * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+#include "util/build_id.h"
 #include "util/u_memory.h"
 #include "util/format/u_format.h"
 #include "util/format/u_format_s3tc.h"
