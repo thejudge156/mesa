@@ -40,7 +40,7 @@ endif
 
 libosmesa = shared_library(
   osmesa_lib_name,
-  'target.c',
+  'target.c', '../../../util/build_id.c',
   gnu_symbol_visibility : 'hidden',
   link_args : [ld_args_gc_sections, osmesa_link_args],
   vs_module_defs : osmesa_def,
@@ -56,7 +56,6 @@ libosmesa = shared_library(
   dependencies : [
     dep_ws2_32, dep_selinux, dep_thread, dep_clock, dep_unwind,
     driver_swrast, driver_swr, driver_virgl, driver_zink, idep_xmlconfig,
-    idep_mesautil,
   ],
   name_prefix : host_machine.system() == 'windows' ? '' : 'lib',  # otherwise mingw will create libosmesa.dll
   soversion : host_machine.system() == 'windows' ? '' : '8',
