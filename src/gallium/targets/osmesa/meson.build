@@ -40,7 +40,7 @@ endif
 
 libosmesa = shared_library(
   osmesa_lib_name,
-  'target.c', '../../../util/build_id.c',
+  'target.c',
   gnu_symbol_visibility : 'hidden',
   link_args : [ld_args_gc_sections, osmesa_link_args],
   vs_module_defs : osmesa_def,
