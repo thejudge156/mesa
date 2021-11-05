@@ -46,10 +46,10 @@ jobs:
             -Dopengl=true \
             -Dosmesa=true \
             -Dvulkan-drivers= \
-            -Dgallium-drivers=virgl,swrast,zink \
+            -Dgallium-drivers=virgl \
             -Dshared-glapi=false
           ninja -C "build-android-${{matrix.arch}}" install
-          cp "build-android-${{matrix.arch}}/src/gallium/drivers/zink/libzink.a" /tmp/zink/lib/
+          # cp "build-android-${{matrix.arch}}/src/gallium/drivers/zink/libzink.a" /tmp/zink/lib/
           rm /tmp/zink/lib/libOSMesa.so /tmp/zink/lib/libOSMesa.so.8
           mv /tmp/zink/lib/libOSMesa.so.8.0.0 /tmp/zink/lib/libOSMesa.so.8
       - name: Upload libraries
