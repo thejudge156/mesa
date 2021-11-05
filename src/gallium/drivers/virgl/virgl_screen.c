@@ -898,6 +898,7 @@ static struct disk_cache *virgl_get_disk_shader_cache (struct pipe_screen *pscre
 
 static void virgl_disk_cache_create(struct virgl_screen *screen)
 {
+/*
 #ifndef __APPLE__
    const struct build_id_note *note =
       build_id_find_nhdr_for_addr(virgl_disk_cache_create);
@@ -913,6 +914,8 @@ static void virgl_disk_cache_create(struct virgl_screen *screen)
 #else
    screen->disk_cache = disk_cache_create("virgl", "??? (build_id unimplemented)", 0);
 #endif
+*/
+   screen->disk_cache = disk_cache_create("virgl", "unknown", 0);
 }
 
 static void
