@@ -731,7 +731,7 @@ OSMesaCreateContextAttribs(const int *attribList, OSMesaContext sharelist)
       return NULL;
    }
 
-   osmesa->stctx->should_flush_frontbuffer = getenv("OSMESA_NO_FLUSH_FRONTBUFFER") != NULL;
+   osmesa->stctx->should_flush_frontbuffer = getenv("OSMESA_NO_FLUSH_FRONTBUFFER") == NULL;
    osmesa->stctx->st_manager_private = osmesa;
 
    osmesa->format = format;
