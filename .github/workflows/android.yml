@@ -12,7 +12,7 @@ jobs:
         arch: [ "arm32", "aarch64", "x86_64" ]
       fail-fast: false
 
-    name: "Build ${{matrix.arch}}"
+    name: "Build for ${{matrix.arch}}"
 
     runs-on: ubuntu-20.04
 
@@ -52,6 +52,12 @@ jobs:
           # cp "build-android-${{matrix.arch}}/src/gallium/drivers/zink/libzink.a" /tmp/zink/lib/
           rm /tmp/zink/lib/libOSMesa.so /tmp/zink/lib/libOSMesa.so.8
           mv /tmp/zink/lib/libOSMesa.so.8.0.0 /tmp/zink/lib/libOSMesa.so.8
+          cp /tmp/zink/lib/libOSMesa.so.8 /tmp/zink/lib/libOSMesa_unstripped.so.8
+          if [ "${{matrix.arch}}" == "arm32" ]; then
+            /usr/local/lib/android/sdk/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin/arm-linux-androideabi24-strip /tmp/zink/lib/libOSMesa.so.8
+          else
+            /usr/local/lib/android/sdk/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin/${{matrix.arch}}-linux-android-strip /tmp/zink/lib/libOSMesa.so.8
+          fi
       - name: Upload libraries
         uses: actions/upload-artifact@v2
         with:
