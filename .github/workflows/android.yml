@@ -54,7 +54,7 @@ jobs:
           mv /tmp/zink/lib/libOSMesa.so.8.0.0 /tmp/zink/lib/libOSMesa.so.8
           cp /tmp/zink/lib/libOSMesa.so.8 /tmp/zink/lib/libOSMesa_unstripped.so.8
           if [ "${{matrix.arch}}" == "arm32" ]; then
-            /usr/local/lib/android/sdk/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin/arm-linux-androideabi24-strip /tmp/zink/lib/libOSMesa.so.8
+            /usr/local/lib/android/sdk/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strip /tmp/zink/lib/libOSMesa.so.8
           else
             /usr/local/lib/android/sdk/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin/${{matrix.arch}}-linux-android-strip /tmp/zink/lib/libOSMesa.so.8
           fi
