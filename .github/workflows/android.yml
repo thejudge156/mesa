@@ -35,7 +35,7 @@ jobs:
             --cross-file "android-${{matrix.arch}}" \
             --buildtype debug \
             -Dplatforms=android \
-            -Dplatform-sdk-version=24 \
+            -Dplatform-sdk-version=26 \
             -Dandroid-stub=true \
             -Dllvm=disabled \
             -Dxlib-lease=disabled \
