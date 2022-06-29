@@ -36,6 +36,11 @@ init_dt_type(struct kopper_displaytarget *cdt)
 {
     VkStructureType type = cdt->info.bos.sType;
     switch (type) {
+#ifdef VK_USE_PLATFORM_ANDROID_KHR
+    case VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR:
+       cdt->type = KOPPER_ANDROID;
+       break;
+#endif
 #ifdef VK_USE_PLATFORM_XCB_KHR
     case VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR:
        cdt->type = KOPPER_X11;
@@ -72,6 +77,11 @@ kopper_CreateSurface(struct zink_screen *screen, struct kopper_displaytarget *cd
     init_dt_type(cdt);
     VkStructureType type = cdt->info.bos.sType;
     switch (type) {
+#ifdef VK_USE_PLATFORM_ANDROID_KHR
+    case VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR:
+       error = VKSCR(CreateAndroidSurfaceKHR)(screen->instance, &cdt->info.android, NULL, &surface);
+       break;
+#endif
 #ifdef VK_USE_PLATFORM_XCB_KHR
     case VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR:
        error = VKSCR(CreateXcbSurfaceKHR)(screen->instance, &cdt->info.xcb, NULL, &surface);
@@ -163,6 +173,11 @@ find_dt_entry(struct zink_screen *screen, const struct kopper_displaytarget *cdt
 {
    struct hash_entry *he = NULL;
    switch (cdt->type) {
+#ifdef VK_USE_PLATFORM_ANDROID_KHR
+   case KOPPER_ANDROID:
+      he = _mesa_hash_table_search(&screen->dts, cdt->info.android.window);
+      break;
+#endif
 #ifdef VK_USE_PLATFORM_XCB_KHR
    case KOPPER_X11:
       he = _mesa_hash_table_search_pre_hashed(&screen->dts, cdt->info.xcb.window, (void*)(uintptr_t)cdt->info.xcb.window);
@@ -254,6 +269,7 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
       cswap->scci.imageExtent.width = cdt->caps.currentExtent.width;
       cswap->scci.imageExtent.height = cdt->caps.currentExtent.height;
       break;
+   case KOPPER_ANDROID:
    case KOPPER_WAYLAND:
       /* On Wayland, currentExtent is the special value (0xFFFFFFFF, 0xFFFFFFFF), indicating that the
        * surface size will be determined by the extent of a swapchain targeting the surface. Whatever the
@@ -354,6 +370,7 @@ zink_kopper_displaytarget_create(struct zink_screen *screen, unsigned tex_usage,
          case KOPPER_X11:
             _mesa_hash_table_init(&screen->dts, screen, NULL, _mesa_key_pointer_equal);
             break;
+         case KOPPER_ANDROID:
          case KOPPER_WAYLAND:
          case KOPPER_WIN32:
             _mesa_hash_table_init(&screen->dts, screen, _mesa_hash_pointer, _mesa_key_pointer_equal);
@@ -408,6 +425,11 @@ zink_kopper_displaytarget_create(struct zink_screen *screen, unsigned tex_usage,
 
    simple_mtx_lock(&screen->dt_lock);
    switch (cdt->type) {
+#ifdef VK_USE_PLATFORM_ANDROID_KHR
+   case KOPPER_ANDROID:
+      _mesa_hash_table_insert(&screen->dts, cdt->info.android.window, cdt);
+      break;
+#endif
 #ifdef VK_USE_PLATFORM_XCB_KHR
    case KOPPER_X11:
       _mesa_hash_table_insert_pre_hashed(&screen->dts, cdt->info.xcb.window, (void*)(uintptr_t)cdt->info.xcb.window, cdt);
@@ -777,6 +799,8 @@ zink_kopper_present_readback(struct zink_context *ctx, struct zink_resource *res
    si.pWaitDstStageMask = &mask;
    VkSemaphore acquire = zink_kopper_acquire_submit(screen, res);
    VkSemaphore present = res->obj->present ? res->obj->present : zink_kopper_present(screen, res);
+   if (!res->obj->present)
+      res->obj->present = present;
    if (screen->threaded)
       util_queue_finish(&screen->flush_queue);
    si.waitSemaphoreCount = !!acquire;

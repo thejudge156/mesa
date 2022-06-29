@@ -313,6 +313,7 @@ st_framebuffer_update_attachments(struct gl_framebuffer *stfb)
          continue;
 
       statt = buffer_index_to_attachment(idx);
+      printf("got statt %d\n", statt);
       if (statt != ST_ATTACHMENT_INVALID &&
           st_visual_have_buffers(stfb->iface->visual, 1 << statt))
          stfb->statts[stfb->num_statts++] = statt;

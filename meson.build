@@ -302,7 +302,8 @@ with_libclc = with_clc
 with_spirv_to_dxil = get_option('spirv-to-dxil')
 
 if host_machine.system() == 'darwin'
-  with_dri_platform = 'apple'
+  with_dri_platform = 'none'
+  # 'apple'
   pre_args += '-DBUILDING_MESA'
 elif ['windows', 'cygwin'].contains(host_machine.system())
   with_dri_platform = 'windows'
@@ -555,7 +556,7 @@ endif
 
 if with_glx != 'disabled'
   if not (with_platform_x11 and with_any_opengl)
-    error('Cannot build GLX support without X11 platform support and at least one OpenGL API')
+    warning('Cannot build GLX support without X11 platform support and at least one OpenGL API')
   elif with_glx == 'xlib'
     if not with_gallium
       error('xlib based GLX requires at least one gallium driver')
@@ -1628,7 +1629,7 @@ with_gallium_drisw_kms = false
 dep_libdrm = dependency(
   'libdrm', version : '>=' + _drm_ver,
   # GNU/Hurd includes egl_dri2, without drm.
-  required : (with_dri2 and host_machine.system() != 'gnu') or with_dri3
+  required : not with_platform_android and ((with_dri2 and host_machine.system() != 'gnu') or with_dri3)
 )
 if dep_libdrm.found()
   pre_args += '-DHAVE_LIBDRM'
@@ -1963,7 +1964,7 @@ endif
 
 if with_osmesa
   if not with_gallium_softpipe
-    error('OSMesa gallium requires gallium softpipe or llvmpipe.')
+    warning('OSMesa gallium requires gallium softpipe or llvmpipe.')
   endif
   if host_machine.system() == 'windows'
     osmesa_lib_name = 'osmesa'
@@ -2032,7 +2033,7 @@ if host_machine.cpu_family() == 'x86_64' and cc.get_id() == 'gcc'
   endif
 endif
 
-if with_platform_x11
+if with_platform_x11 and host_machine.system() != 'darwin'
   if with_glx == 'xlib' or with_glx == 'gallium-xlib'
     dep_x11 = dependency('x11')
     dep_xext = dependency('xext')

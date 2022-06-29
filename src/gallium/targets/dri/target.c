@@ -7,7 +7,9 @@
 const __DRIextension **__driDriverGetExtensions_##drivername(void);       \
 PUBLIC const __DRIextension **__driDriverGetExtensions_##drivername(void) \
 {                                                                         \
-   return galliumdrm_driver_extensions;                                   \
+   /* return galliumdrm_driver_extensions; */                             \
+   printf("STUB: __driDriverGetExtensions_swrast\n");                     \
+   return NULL;                                                           \
 }
 
 #if defined(GALLIUM_SOFTPIPE)
@@ -123,12 +125,14 @@ DEFINE_LOADER_DRM_ENTRYPOINT(sun4i_drm)
 DEFINE_LOADER_DRM_ENTRYPOINT(lima)
 #endif
 
-#if defined(GALLIUM_ZINK) && !defined(__APPLE__)
+#if defined(GALLIUM_ZINK) //&& !defined(__APPLE__)
 const __DRIextension **__driDriverGetExtensions_zink(void);
 
 PUBLIC const __DRIextension **__driDriverGetExtensions_zink(void)
 {
-   return galliumvk_driver_extensions;
+   //return galliumvk_driver_extensions;
+   printf("STUB: __driDriverGetExtensions_zink\n");
+   return NULL;
 }
 
 #endif

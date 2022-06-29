@@ -26,6 +26,10 @@
  *
  **************************************************************************/
 
+#ifdef ANDROID
+#undef HAVE_SYS_SHM_H
+#endif
+
 #ifdef HAVE_SYS_SHM_H
 #include <sys/ipc.h>
 #include <sys/shm.h>

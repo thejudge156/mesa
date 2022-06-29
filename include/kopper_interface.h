@@ -36,6 +36,9 @@
 
 #include <GL/internal/dri_interface.h>
 #include <vulkan/vulkan.h>
+#ifdef VK_USE_PLATFORM_ANDROID_KHR
+#include <vulkan/vulkan_android.h>
+#endif
 #ifdef VK_USE_PLATFORM_XCB_KHR
 #include <xcb/xcb.h>
 #include <vulkan/vulkan_xcb.h>
@@ -84,6 +87,9 @@ struct __DRIkopperExtensionRec {
 struct kopper_loader_info {
    union {
       VkBaseOutStructure bos;
+#ifdef VK_USE_PLATFORM_ANDROID_KHR
+      VkAndroidSurfaceCreateInfoKHR android;
+#endif
 #ifdef VK_USE_PLATFORM_XCB_KHR
       VkXcbSurfaceCreateInfoKHR xcb;
 #endif
