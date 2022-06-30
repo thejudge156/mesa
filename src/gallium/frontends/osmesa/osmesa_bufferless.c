@@ -75,6 +75,9 @@
 #define GALLIUM_ZINK
 #ifdef GALLIUM_ZINK
 #include "kopper_interface.h"
+struct zink_screen {
+   struct pipe_screen base;
+};
 #endif
 
 
@@ -361,11 +364,13 @@ osmesa_st_framebuffer_flush_front(struct st_context_iface *stctx,
    //assert(!"FIXME: swap the swapchain");
    struct pipe_screen *screen = get_st_manager()->screen;
 
-   printf("BACK_LEFT: %p\n", osbuffer->textures[ST_ATTACHMENT_BACK_LEFT]);
-   printf("FRONT_LEFT: %p\n", osbuffer->textures[ST_ATTACHMENT_FRONT_LEFT]);
+   //printf("BACK_LEFT: %p\n", osbuffer->textures[ST_ATTACHMENT_BACK_LEFT]);
+   //printf("FRONT_LEFT: %p\n", osbuffer->textures[ST_ATTACHMENT_FRONT_LEFT]);
 
-   screen->flush_frontbuffer(screen, stctx->pipe, res, 0, 0, NULL /* drawable */, NULL /* sub_box */);
-   printf("flush_frontbuffer ptr %p\n", screen->flush_frontbuffer);
+   //osmesa_st_framebuffer_flush_front
+
+   //printf("screen->flush_frontbuffer = %p\n", screen->flush_frontbuffer);
+   ((struct zink_screen *)screen)->base.flush_frontbuffer(screen, stctx->pipe, res, 0, 0, NULL /* drawable */, NULL /* sub_box */);
 
    //osbuffer->textures[ST_ATTACHMENT_BACK_LEFT] = osbuffer->textures[ST_ATTACHMENT_FRONT_LEFT];
    //osbuffer->textures[ST_ATTACHMENT_FRONT_LEFT] = res;
@@ -398,7 +403,7 @@ osmesa_fill_private_loader_data(struct osmesa_buffer *osbuffer, struct kopper_lo
    out->android.flags = 0;
    out->android.window = osbuffer->map;
    assert(osbuffer->map);
-   printf("osbuffer->map is %p\n", osbuffer->map);
+   //printf("osbuffer->map is %p\n", osbuffer->map);
 }
 #endif
 

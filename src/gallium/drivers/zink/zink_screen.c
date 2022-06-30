@@ -2371,7 +2371,6 @@ fail:
 struct pipe_screen *
 zink_create_screen(struct sw_winsys *winsys, const struct pipe_screen_config *config)
 {
-   printf("zink_flush_frontbuffer ptr %p\n", zink_flush_frontbuffer);
    struct zink_screen *ret = zink_internal_create_screen(config);
 
    return &ret->base;
