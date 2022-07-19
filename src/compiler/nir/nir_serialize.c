@@ -213,7 +213,7 @@ union packed_var {
       unsigned data_encoding:2;
       unsigned type_same_as_last:1;
       unsigned interface_type_same_as_last:1;
-      unsigned _pad:1;
+      unsigned ray_query:1;
       unsigned num_members:16;
    } u;
 };
@@ -283,6 +283,8 @@ write_variable(write_ctx *ctx, const nir_variable *var)
       else
          flags.u.data_encoding = var_encode_full;
    }
+
+   flags.u.ray_query = var->data.ray_query;
 
    blob_write_uint32(ctx->blob, flags.u32);
 
@@ -384,6 +386,8 @@ read_variable(read_ctx *ctx)
 
       ctx->last_var_data = var->data;
    }
+
+   var->data.ray_query = flags.u.ray_query;
 
    var->num_state_slots = flags.u.num_state_slots;
    if (var->num_state_slots != 0) {
@@ -663,9 +667,9 @@ union packed_instr {
    struct {
       unsigned instr_type:4;
       unsigned num_srcs:4;
-      unsigned op:4;
+      unsigned op:5;
+      unsigned _pad:11;
       unsigned dest:8;
-      unsigned _pad:12;
    } tex;
    struct {
       unsigned instr_type:4;
@@ -1498,7 +1502,7 @@ static void
 write_tex(write_ctx *ctx, const nir_tex_instr *tex)
 {
    assert(tex->num_srcs < 16);
-   assert(tex->op < 16);
+   assert(tex->op < 32);
 
    union packed_instr header;
    header.u32 = 0;

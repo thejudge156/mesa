@@ -188,7 +188,7 @@ zink_get_framebuffer_imageless(struct zink_context *ctx)
    state.num_attachments += num_resolves;
    state.width = MAX2(ctx->fb_state.width, 1);
    state.height = MAX2(ctx->fb_state.height, 1);
-   state.layers = MAX2(util_framebuffer_get_num_layers(&ctx->fb_state), 1) - 1;
+   state.layers = MAX2(zink_framebuffer_get_num_layers(&ctx->fb_state), 1) - 1;
    state.samples = ctx->fb_state.samples - 1;
 
    struct zink_framebuffer *fb;
@@ -377,4 +377,27 @@ zink_get_framebuffer(struct zink_context *ctx)
    simple_mtx_unlock(&screen->framebuffer_mtx);
 
    return fb;
+}
+
+/* same as u_framebuffer_get_num_layers, but clamp to lowest layer count */
+unsigned
+zink_framebuffer_get_num_layers(const struct pipe_framebuffer_state *fb)
+{
+   unsigned i, num_layers = UINT32_MAX;
+   if (!(fb->nr_cbufs || fb->zsbuf))
+      return MAX2(fb->layers, 1);
+
+   for (i = 0; i < fb->nr_cbufs; i++) {
+      if (fb->cbufs[i]) {
+         unsigned num = fb->cbufs[i]->u.tex.last_layer -
+         fb->cbufs[i]->u.tex.first_layer + 1;
+         num_layers = MIN2(num_layers, num);
+      }
+   }
+   if (fb->zsbuf) {
+      unsigned num = fb->zsbuf->u.tex.last_layer -
+      fb->zsbuf->u.tex.first_layer + 1;
+      num_layers = MIN2(num_layers, num);
+   }
+   return MAX2(num_layers, 1);
 }
